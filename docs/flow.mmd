@@ -1,0 +1,23 @@
+graph TD
+    User[User — Strategies page] --> Wizard[StrategyBuilderModal: legs, expiry, entry, exit rules]
+    Wizard --> API[POST /api/custom-strategies]
+    API --> DB[(custom_strategies table — rules_json)]
+
+    DB --> Backtest[POST .../backtest]
+    Backtest --> CE[backtest/custom_engine.py]
+    CE --> BhavDB[(dataset/fno_bhavcopy.db)]
+
+    DB --> Scheduler[api/custom_strategy_scheduler.py — background task in the API process]
+    Scheduler --> RS[strategies/custom/rule_strategy.py: RuleBasedStrategy]
+    RS --> SEBI[compliance/sebi_rules.py]
+    RS --> Factory[broker_factory.py]
+    Factory --> Broker[PaperBroker / UpstoxBroker]
+    Broker --> IC[utils/instrument_cache.py]
+    IC --> API1[Upstox: Scrip Master]
+
+    Scheduler --> Notify[utils/notify.py]
+    Notify --> Bell[In-app Notification Bell]
+    Notify --> TG[Telegram]
+
+    RS --> Greeks[utils/black76.py — Greeks/IV]
+    RS --> Payoff[utils/payoff.py — Max P/L, POP]

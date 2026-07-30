@@ -1,0 +1,19 @@
+graph TD
+    Rules[custom_strategies.rules_json — legs / entry / expiry / exit] --> RS[RuleBasedStrategy]
+    HandWritten[Hand-written strategies — strategies/registry.py, optional] --> BS
+    RS --> |Inherits| BS[BaseStrategy]
+    BS --> |Executes on| B{BaseBroker Interface}
+
+    B --> |Live Trading| L[UpstoxBroker]
+    L --> |Real API| E((NSE Exchange))
+
+    B --> |Paper Trading| P[PaperBroker]
+    P --> |Gets Live Data| L
+    P --> |Saves Orders| DB[(MySQL: custom_strategy_positions)]
+
+    B --> |Backtesting| M[MockBroker]
+    M --> |Reads History| DF[BhavcopyDataFeed]
+    DF --> |Reads| C[(dataset/fno_bhavcopy.db)]
+
+    RS --> Greeks[utils/black76.py: Black-76 pricing/IV/Greeks]
+    RS --> Payoff[utils/payoff.py: Max Profit/Loss, POP, breakevens]

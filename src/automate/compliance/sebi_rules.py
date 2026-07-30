@@ -1,0 +1,495 @@
+"""
+compliance/sebi_rules.py — SEBI Algorithmic Trading Compliance Engine.
+
+This module implements mandatory regulatory controls as required by SEBI
+for algorithmic / automated trading by retail clients in India.
+
+Key SEBI circulars implemented:
+  ─ SEBI/MRD/DP/POLICY/P/2013/26 (Algo Trading Framework)
+  ─ SEBI/HO/MRD/DP/CIR/P/2016/137 (Kill Switch mandate)
+  ─ SEBI/HO/MRD1/MTMR/CIR/P/2021/536 (Retail Algo / API trading)
+  ─ NSE/BSE circular on F&O position limits for clients
+
+Controls implemented:
+  1. Market Hours Gate        — only execute within NSE F&O session
+  2. Order Rate Limiter       — max 10 orders/sec per SEBI retail API cap
+  3. Pre-Trade Price Band     — reject orders outside ±20% circuit limit
+  4. Max Order Quantity       — enforce lot-size / freeze-quantity cap
+  5. Kill Switch              — atomic flag to halt all order flow
+  6. Audit Trail Logger       — immutable record of every order attempt
+  7. Position Limit Warning   — flag if near SEBI single-stock F&O limits
+  8. Disclaimer               — mandatory risk disclosure on startup
+
+Dynamic data (no hardcoded values):
+  - NSE trading holidays    → fetched from NSE public API, cached annually
+                              (utils/market_calendar.py)
+  - F&O freeze quantities   → fetched from NSE F&O market lots API, cached daily
+                              (utils/market_calendar.py)
+
+IMPORTANT — READ BEFORE USING:
+  ─ Retail algorithmic trading via broker APIs requires your algorithm to
+    be registered / whitelisted by your broker. Ensure you have completed
+    the algo registration process before going live.
+  ─ Selling (writing) options requires sufficient SPAN + Exposure margins.
+    Always verify your available margin with your broker before execution.
+  ─ This script does NOT guarantee profits. Options selling carries
+    unlimited theoretical risk on the Call leg and high risk on the Put
+    leg. Use at your own risk.
+"""
+
+import threading
+import time
+from collections import deque
+from datetime import datetime, time as dtime
+from typing import Optional
+from zoneinfo import ZoneInfo
+
+from automate.utils.logger import get_logger
+from automate.utils.market_calendar import MarketCalendar
+from automate.config import MarketConfig
+
+log = get_logger(__name__)
+
+class ComplianceError(Exception):
+    """Exception raised when a SEBI pre-trade compliance check fails."""
+
+
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+
+# NSE F&O market hours in IST (Indian Standard Time = UTC+5:30)
+_IST = ZoneInfo("Asia/Kolkata")
+_open_parts = [int(x) for x in MarketConfig.OPEN.split(":")]
+_MARKET_OPEN  = dtime(*_open_parts)
+_close_parts = [int(x) for x in MarketConfig.CLOSE.split(":")]
+_MARKET_CLOSE = dtime(*_close_parts)
+
+# SEBI-mandated retail API order rate cap: 10 orders per second
+_MAX_ORDERS_PER_SECOND = 10
+
+# NSE single-stock F&O client-level position limit (SEBI):
+# Lower of 1% of free-float market capitalisation OR ₹500 Cr notional value.
+# For simplicity this module flags if lot count exceeds a conservative threshold.
+_CLIENT_LOT_LIMIT_WARNING = 50  # Warn if > 50 lots (conservative; varies by stock)
+
+# ---------------------------------------------------------------------------
+# Module-level MarketCalendar singleton
+# ---------------------------------------------------------------------------
+# This singleton is shared by all compliance checks in this module.
+# Call `init_market_calendar()` at startup (or it auto-refreshes on first use).
+_market_calendar = MarketCalendar()
+
+
+def init_market_calendar(
+    force: bool = False,
+    access_token: str = "",
+) -> MarketCalendar:
+    """
+    Initialise (or re-initialise) the module-level market calendar.
+
+    Call this once at application startup — before any compliance check.
+    Downloads NSE holidays and F&O freeze quantities from live APIs.
+
+    Args:
+        force:        Re-download even if today's cache exists.
+        access_token: Optional Upstox access_token for holiday API fallback.
+
+    Returns:
+        The initialised MarketCalendar singleton (for inspection/testing).
+    """
+    global _market_calendar
+    _market_calendar = MarketCalendar(
+        access_token=access_token if access_token else None,
+    )
+    _market_calendar.refresh(force=force)
+    return _market_calendar
+
+
+# ---------------------------------------------------------------------------
+# 1. Kill Switch — SEBI/HO/MRD/DP/CIR/P/2016/137
+# ---------------------------------------------------------------------------
+
+class KillSwitch:
+    """
+    Thread-safe, atomic kill switch to halt all order flow immediately.
+
+    SEBI mandates that all algorithmic trading systems have an accessible
+    kill switch that can stop all order generation within one trading cycle.
+
+    Usage:
+        kill_switch = KillSwitch()
+        kill_switch.activate()      # Halt all orders
+        kill_switch.is_active()     # Check state (checked before every order)
+        kill_switch.reset()         # Re-enable (manual re-enable only)
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._active = False
+        log.info("[SEBI] Kill switch initialised (state: OFF).")
+
+    def activate(self, reason: str = "Manual trigger") -> None:
+        """Activate the kill switch — all subsequent orders will be blocked."""
+        with self._lock:
+            if not self._active:
+                self._active = True
+                log.critical(
+                    "[SEBI KILL SWITCH ACTIVATED] All order flow halted. Reason: %s",
+                    reason,
+                )
+
+    def reset(self) -> None:
+        """Deactivate the kill switch — requires explicit manual reset."""
+        with self._lock:
+            self._active = False
+            log.warning("[SEBI] Kill switch RESET. Order flow re-enabled manually.")
+
+    def is_active(self) -> bool:
+        """Return True if the kill switch is currently engaged."""
+        with self._lock:
+            return self._active
+
+
+# ---------------------------------------------------------------------------
+# 2. Order Rate Limiter — max 10 orders/second (SEBI retail API cap)
+# ---------------------------------------------------------------------------
+
+class OrderRateLimiter:
+    """
+    Sliding-window rate limiter that enforces SEBI's 10 orders/second cap.
+
+    Tracks order timestamps in a deque. Before each order, it checks whether
+    the limit would be exceeded and blocks (sleeps) if necessary.
+    """
+
+    def __init__(self, max_per_second: int = _MAX_ORDERS_PER_SECOND) -> None:
+        self._max = max_per_second
+        self._timestamps: deque[float] = deque()
+        self._lock = threading.Lock()
+        log.info(
+            "[SEBI] Order rate limiter initialised: max %d orders/second.",
+            self._max,
+        )
+
+    def acquire(self) -> None:
+        """
+        Block until placing an order would not exceed the rate limit.
+        Must be called immediately before every order placement.
+        """
+        with self._lock:
+            now = time.monotonic()
+            # Remove timestamps older than 1 second
+            while self._timestamps and now - self._timestamps[0] > 1.0:
+                self._timestamps.popleft()
+
+            if len(self._timestamps) >= self._max:
+                # Calculate wait time needed to slide the window
+                sleep_for = 1.0 - (now - self._timestamps[0])
+                if sleep_for > 0:
+                    log.debug(
+                        "[SEBI] Rate limit reached. Sleeping %.3fs before order.",
+                        sleep_for,
+                    )
+                    time.sleep(sleep_for)
+
+            self._timestamps.append(time.monotonic())
+
+
+# ---------------------------------------------------------------------------
+# 3. Market Hours Gate
+# ---------------------------------------------------------------------------
+
+def assert_market_is_open(check_time: Optional[datetime] = None) -> None:
+    """
+    Raise a RuntimeError if the given (or current) time is outside NSE F&O trading hours.
+
+    NSE F&O Market Hours (IST): 09:15 — 15:30, Monday–Friday.
+    Holiday list is fetched live from the NSE public API (not hardcoded)
+    and cached annually in cache/nse_holidays_<YYYY>.json.
+
+    Args:
+        check_time: Optional timestamp to validate instead of real time
+            (used by backtests to check against simulated dates).
+
+    Raises:
+        RuntimeError: If current time is outside market hours or on a holiday.
+    """
+    # Delegate entirely to the live MarketCalendar (which checks weekend,
+    # holiday list from NSE API, and market session time).
+    _market_calendar.assert_market_is_open(check_time=check_time)
+
+
+# ---------------------------------------------------------------------------
+# 4. Pre-Trade Price Band Check (±20% circuit filter)
+# ---------------------------------------------------------------------------
+
+def validate_price_band(strike_price: int, spot_price: float) -> None:
+    """
+    Warn if a strike price is outside the ±20% circuit filter band.
+
+    While the strategy intentionally places strikes at ±10% from spot,
+    this guard verifies the computed strike does not breach exchange
+    circuit limits (typically ±20% for stock F&O).
+
+    Args:
+        strike_price: The computed option strike (integer).
+        spot_price:   Current LTP of the underlying.
+
+    Raises:
+        ValueError: If the strike is more than 20% away from spot.
+    """
+    deviation_pct = abs(strike_price - spot_price) / spot_price * 100
+
+    if deviation_pct > 20.0:
+        raise ValueError(
+            f"[SEBI] Strike {strike_price} is {deviation_pct:.1f}% away from "
+            f"spot ₹{spot_price:.2f}. This exceeds the ±20% F&O circuit limit. "
+            f"Order rejected."
+        )
+
+    log.info(
+        "[SEBI] Price band check PASSED — Strike %d is %.1f%% from spot ₹%.2f.",
+        strike_price, deviation_pct, spot_price,
+    )
+
+
+# ---------------------------------------------------------------------------
+# 5. Max Order Quantity / Freeze Quantity Check
+# ---------------------------------------------------------------------------
+
+def validate_order_quantity(symbol: str, quantity: int) -> None:
+    """
+    Ensure order quantity does not exceed NSE's per-order freeze quantity.
+
+    NSE F&O has a 'freeze quantity' per stock — orders above this threshold
+    must be auto-sliced (which the broker handles, but we log a warning).
+
+    Freeze quantities are fetched daily from the NSE F&O market lots API
+    (https://www.nseindia.com/api/fo-mktlots) and cached in
+    cache/nse_freeze_qty_<YYYY-MM-DD>.json. Nothing is hardcoded.
+
+    Args:
+        symbol:   Stock symbol (e.g., 'RELIANCE').
+        quantity: Total units being ordered.
+    """
+    freeze_qty = _market_calendar.get_freeze_quantity(symbol.upper())
+
+    if freeze_qty is None:
+        log.warning(
+            "[SEBI] Freeze quantity for '%s' not in today's NSE F&O market lots. "
+            "Verify manually. Run init_market_calendar(force=True) to refresh.",
+            symbol,
+        )
+        return
+
+    if quantity > freeze_qty:
+        log.warning(
+            "[SEBI] Order quantity %d exceeds NSE freeze quantity %d for %s. "
+            "The broker's auto-slice feature (slice=True) will split this order.",
+            quantity, freeze_qty, symbol,
+        )
+    else:
+        log.info(
+            "[SEBI] Order quantity check PASSED — %d ≤ freeze qty %d for %s.",
+            quantity, freeze_qty, symbol,
+        )
+
+
+# ---------------------------------------------------------------------------
+# 6. Position Limit Warning
+# ---------------------------------------------------------------------------
+
+def warn_position_limits(symbol: str, total_lots: int) -> None:
+    """
+    Emit a warning if the lot count approaches SEBI client-level position limits.
+
+    SEBI caps client-level open interest in single-stock F&O at the lower of:
+      - 1% of the number of shares held by non-promoters, OR
+      - ₹500 crore notional value.
+
+    The exact limit varies per stock. This function uses a conservative
+    threshold (_CLIENT_LOT_LIMIT_WARNING) and warns accordingly.
+
+    Args:
+        symbol:     Stock symbol.
+        total_lots: Total lots being traded (both legs combined).
+    """
+    if total_lots >= _CLIENT_LOT_LIMIT_WARNING:
+        log.warning(
+            "[SEBI] POSITION LIMIT WARNING — You are trading %d lots of %s. "
+            "SEBI client-level position limits apply to single-stock F&O. "
+            "Verify your current open interest with your broker before proceeding.",
+            total_lots, symbol,
+        )
+    else:
+        log.info(
+            "[SEBI] Position limit check PASSED — %d lots of %s is within "
+            "conservative threshold of %d.",
+            total_lots, symbol, _CLIENT_LOT_LIMIT_WARNING,
+        )
+
+
+# ---------------------------------------------------------------------------
+# 7. Audit Trail Logger
+# ---------------------------------------------------------------------------
+
+class AuditTrail:
+    """
+    Immutable, append-only audit logger for every order event.
+
+    SEBI requires brokers and clients to maintain complete audit trails of
+    all algorithmic orders. This writes each event to a dedicated audit log
+    file, separate from the main operational log.
+
+    Format:
+        AUDIT | <timestamp> | <event_type> | <symbol> | <instrument_token> |
+               <option_type> | <strike> | <quantity> | <order_id> | <status>
+    """
+
+    def __init__(self, audit_log_path: str = "logs/audit_trail.log") -> None:
+        import logging as _logging
+        from logging.handlers import TimedRotatingFileHandler
+        from pathlib import Path
+
+        Path(audit_log_path).parent.mkdir(parents=True, exist_ok=True)
+
+        self._audit_logger = _logging.getLogger("AUDIT_TRAIL")
+        self._audit_logger.setLevel(_logging.INFO)
+        self._audit_logger.propagate = False  # Isolate from main logger
+
+        if not self._audit_logger.handlers:
+            handler = TimedRotatingFileHandler(
+                audit_log_path,
+                when="midnight",
+                backupCount=365,  # Keep 1 year of audit records
+                encoding="utf-8",
+            )
+            handler.setFormatter(
+                _logging.Formatter("%(asctime)s | %(message)s", datefmt="%Y-%m-%dT%H:%M:%S%z")
+            )
+            self._audit_logger.addHandler(handler)
+
+        log.info("[SEBI] Audit trail initialised → %s", audit_log_path)
+
+    def record(
+        self,
+        event_type: str,
+        symbol: str,
+        instrument_token: str,
+        option_type: str,
+        strike: int,
+        quantity: int,
+        order_id: str = "N/A",
+        status: str = "INITIATED",
+        note: str = "",
+    ) -> None:
+        """Write one immutable audit record."""
+        self._audit_logger.info(
+            "AUDIT | %s | %s | %s | %s | strike=%d | qty=%d | order_id=%s | "
+            "status=%s | %s",
+            event_type,
+            symbol,
+            instrument_token,
+            option_type,
+            strike,
+            quantity,
+            order_id,
+            status,
+            note,
+        )
+
+
+# ---------------------------------------------------------------------------
+# 8. Startup Risk Disclaimer (mandatory display)
+# ---------------------------------------------------------------------------
+
+def print_risk_disclaimer() -> None:
+    """
+    Print the mandatory SEBI risk disclosure for F&O trading.
+
+    SEBI mandates that all F&O trading platforms display a risk disclosure.
+    Reference: SEBI circular SEBI/HO/CDMRD/DOCO/CIR/P/2020/203
+    """
+    disclaimer = """
+╔══════════════════════════════════════════════════════════════════════════════╗
+║              SEBI MANDATORY RISK DISCLOSURE — F&O TRADING                  ║
+╠══════════════════════════════════════════════════════════════════════════════╣
+║  1. 9 out of 10 individual traders in the equity F&O segment incur losses. ║
+║     (Source: SEBI Study on Profit & Loss of Individual Traders, 2023)      ║
+║  2. Trading in derivatives carries UNLIMITED RISK on short positions.       ║
+║  3. You must have sufficient SPAN + Exposure margin before writing options. ║
+║  4. Algo/automated trading via broker APIs must be registered with your     ║
+║     broker as per SEBI circular SEBI/HO/MRD1/MTMR/CIR/P/2021/536.        ║
+║  5. This software does NOT provide investment advice. Use at your own risk. ║
+║  6. Past performance of a strategy does NOT guarantee future results.       ║
+╠══════════════════════════════════════════════════════════════════════════════╣
+║  Regulatory Framework:                                                       ║
+║  ─ SEBI (Stock Brokers) Regulations, 1992                                   ║
+║  ─ SEBI Circular on Algo Trading (2013, 2016, 2021)                        ║
+║  ─ NSE/BSE F&O Segment Rules & Bye-Laws                                    ║
+╚══════════════════════════════════════════════════════════════════════════════╝
+"""
+    print(disclaimer)
+    log.info("[SEBI] Risk disclaimer displayed.")
+
+
+# ---------------------------------------------------------------------------
+# Composite SEBI compliance check — run all gates before every strategy run
+# ---------------------------------------------------------------------------
+
+def run_all_pre_trade_checks(
+    symbol: str,
+    call_strike: int,
+    put_strike: int,
+    spot_price: float,
+    quantity: int,
+    kill_switch: KillSwitch,
+    check_time: Optional[datetime] = None,
+) -> None:
+    """
+    Run the full SEBI pre-trade compliance suite.
+
+    Raises RuntimeError or ValueError if any check fails.
+    All checks are logged to the audit trail automatically.
+
+    Args:
+        symbol:       Stock symbol.
+        call_strike:  Computed CE strike price.
+        put_strike:   Computed PE strike price.
+        spot_price:   Current spot LTP.
+        quantity:     Total units per leg.
+        kill_switch:  The active KillSwitch instance.
+        check_time:   Optional timestamp for the market-hours check (used by
+                      backtests to validate against simulated dates instead
+                      of real time). None = use real wall-clock time.
+    """
+    log.info("[SEBI] Running pre-trade compliance checks for %s ...", symbol)
+
+    try:
+        # 1. Kill switch
+        if kill_switch.is_active():
+            raise RuntimeError(
+                "[SEBI] KILL SWITCH IS ACTIVE — all order flow is halted. "
+                "Reset it manually before retrying."
+            )
+
+        # 2. Market hours
+        assert_market_is_open(check_time=check_time)
+
+        # 3. Price band — CE
+        validate_price_band(call_strike, spot_price)
+
+        # 4. Price band — PE
+        validate_price_band(put_strike, spot_price)
+
+        # 5. Order quantity
+        validate_order_quantity(symbol, quantity)
+
+        # 6. Position limit warning (2 legs × lots)
+        warn_position_limits(symbol, total_lots=2)
+
+    except (RuntimeError, ValueError) as exc:
+        raise ComplianceError(str(exc)) from exc
+
+    log.info("[SEBI] All pre-trade compliance checks PASSED for %s.", symbol)

@@ -1,0 +1,68 @@
+# ── Virtual environment ────────────────────────────────────────────────────
+.venv/
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+
+# ── Secrets — NEVER commit these ──────────────────────────────────────────
+.env
+.panel_jwt_secret
+*.token
+jwt_secret.txt
+
+# ── Logs ──────────────────────────────────────────────────────────────────
+logs/
+*.log
+
+# ── Auto-downloaded data and cache ──────────────────────────────────────────
+# *.json is deliberately NOT a blanket ignore here — it would silently catch
+# frontend/package.json, package-lock.json, tsconfig*.json too. The runtime
+# JSON this comment used to mean (strategy_overrides.json, download
+# manifests) already lives under data/, which is ignored below regardless.
+cache/
+*.csv
+temp_form.html
+
+# ── Frontend (Node/Vite) ─────────────────────────────────────────────────────
+frontend/node_modules/
+frontend/dist/
+
+# ── IDE / editor ───────────────────────────────────────────────────────────
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# ── Backups / patch artifacts ───────────────────────────────────────────────
+*.bak
+*.orig
+*.rej
+
+# ── Paper Trading & Backtesting ─────────────────────────────────────────────
+# data/historical/ holds real downloaded candle CSVs (via
+# scripts/download_real_history.py) — user/account-specific, not source.
+# data/runtime/ holds trading.db — the single db for the whole bot (paper +
+# live positions; see utils/position_tracker.py), also not source.
+# dataset/ holds raw third-party archives (e.g. Kaggle NSE bhavcopy dumps,
+# multi-GB) and the built dataset/fno_bhavcopy.db (10s of GB) — never commit these.
+data/
+dataset/
+*.db
+*.sqlite
+*.sqlite3
+
+# NOTE: *.png is intentionally NOT ignored — docs/architecture.png and
+# docs/flow.png are committed documentation diagrams referenced by README.md.
+
+# ── Testing / type-checking / lint caches ───────────────────────────────────
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# ── Packaging (pip install -e .) ────────────────────────────────────────────
+src/automate.egg-info/

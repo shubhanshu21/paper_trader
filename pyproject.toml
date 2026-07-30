@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "automate"
+version = "0.1.0"
+description = "Multi-broker SEBI-compliant options trading bot — backtest, paper, and live."
+requires-python = ">=3.11"
+# Actual runtime dependencies are pinned in requirements.txt (pip install
+# -r requirements.txt), not duplicated here — this file exists only to
+# make `automate` (src/automate/) importable as a real package via
+# `pip install -e .`, matching how every internal module now imports
+# (`from automate.config import ...` etc.) instead of relying on sys.path
+# hacks or always running from the exact repo-root directory.
+
+[tool.setuptools.packages.find]
+where = ["src"]
