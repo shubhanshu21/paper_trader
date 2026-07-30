@@ -1,4 +1,4 @@
-# Automated Trading Bot (Upstox)
+# Paper Trading
 
 A robust, Python-based algorithmic trading system designed specifically for the Indian Stock Market (NSE/NFO), built strictly in adherence to SEBI regulations for retail API trading. Uses `upstox-python` for all real broker/market-data access, with a `BaseStrategy` architecture and `PaperBroker`/`MockBroker` simulation layers so the same strategy code runs unmodified in backtest, paper, and live trading. Fully usable from the CLI/cron alone, or through a React + FastAPI web control panel.
 
