@@ -17,13 +17,20 @@ def record_open_position(
     quantity: int, product: str,
     take_profit_pct: Optional[float], stop_loss_pct: Optional[float],
     exit_days_before_expiry: int = 1,
+    user_id: Optional[int] = None,
 ) -> int:
     """
     Record a newly-opened strangle position in the MySQL database.
     Returns the new row's ID.
+
+    user_id: the owning account, when this came from a real HTTP request
+    (e.g. a manual terminal trade — see routes_terminal.py). Left None for
+    the legacy CLI daemon, which has no per-request user context at all —
+    those rows are system-wide/admin-only, same convention as Notification.
     """
     with get_session() as session:
         pos = Position(
+            user_id=user_id,
             strategy_name=strategy_name,
             mode=mode,
             symbol=symbol,
@@ -49,23 +56,32 @@ def record_open_position(
         return pos.id
 
 
-def get_open_positions(strategy_name: Optional[str] = None, mode: Optional[str] = None) -> List[dict]:
-    """Return open positions as a list of dicts, optionally filtered by strategy and/or mode."""
+def get_open_positions(strategy_name: Optional[str] = None, mode: Optional[str] = None, user_id: Optional[int] = None) -> List[dict]:
+    """
+    Return open positions as a list of dicts, optionally filtered by
+    strategy and/or mode. user_id: pass a real id to scope to one
+    account's own positions; leave None for the unscoped/admin view
+    (includes system-wide rows with no owner, e.g. the legacy daemon's).
+    """
     with get_session() as session:
         query = session.query(Position).filter_by(status="OPEN")
         if strategy_name:
             query = query.filter_by(strategy_name=strategy_name)
         if mode:
             query = query.filter_by(mode=mode)
+        if user_id is not None:
+            query = query.filter_by(user_id=user_id)
         return [p.to_dict() for p in query.all()]
 
 
-def get_closed_positions(limit: Optional[int] = 50, mode: Optional[str] = None) -> List[dict]:
+def get_closed_positions(limit: Optional[int] = 50, mode: Optional[str] = None, user_id: Optional[int] = None) -> List[dict]:
     """Most-recently-closed positions first. limit=None returns the full history (e.g. for wallet/ledger math)."""
     with get_session() as session:
         query = session.query(Position).filter_by(status="CLOSED")
         if mode:
             query = query.filter_by(mode=mode)
+        if user_id is not None:
+            query = query.filter_by(user_id=user_id)
         query = query.order_by(Position.exit_date.desc(), Position.id.desc())
         if limit is not None:
             query = query.limit(limit)
@@ -90,15 +106,20 @@ def has_open_position(strategy_name: str, symbol: str) -> bool:
         return exists is not None
 
 
-def delete_closed_positions(mode: str) -> int:
+def delete_closed_positions(mode: str, user_id: Optional[int] = None) -> int:
     """
     Permanently delete every CLOSED position for one mode (used by the
     "reset paper trading history" control-panel action). Open positions are
     never touched — an in-progress trade shouldn't be silently abandoned by
     a history reset. Returns the number of rows deleted.
+
+    user_id: scope the reset to one account's own history — resetting
+    YOUR wallet must never wipe another account's closed trades.
     """
     with get_session() as session:
         query = session.query(Position).filter_by(status="CLOSED", mode=mode)
+        if user_id is not None:
+            query = query.filter_by(user_id=user_id)
         count = query.count()
         query.delete(synchronize_session=False)
         return count

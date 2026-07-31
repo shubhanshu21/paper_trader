@@ -21,6 +21,7 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from sqlalchemy import select
 
+from automate.api.auth import get_current_user_ws
 from automate.utils.position_tracker import get_open_positions
 from automate.api.deps import get_brokers, compute_mtm_economics
 from automate.db.engine import get_session
@@ -32,8 +33,13 @@ router = APIRouter()
 _POLL_INTERVAL_SEC = 3.0
 
 
-def _snapshot_options(brokers) -> list:
-    positions = get_open_positions()
+def _scope_user_id(user: dict):
+    """Admins also see system-wide (no-owner) rows from the legacy CLI daemon — see Position.user_id's docstring."""
+    return None if user.get("role") == "admin" else int(user["sub"])
+
+
+def _snapshot_options(brokers, user: dict) -> list:
+    positions = get_open_positions(user_id=_scope_user_id(user))
     for pos in positions:
         econ = compute_mtm_economics(pos, brokers)
         pos["mtm"] = None if econ is None else econ["gross_pnl"]
@@ -42,7 +48,7 @@ def _snapshot_options(brokers) -> list:
     return positions
 
 
-def _snapshot_equity(brokers) -> list:
+def _snapshot_equity(brokers, user: dict) -> list:
     """
     Fetch live LTP for every OPEN equity position and persist current_price/
     unrealized_pnl back to the row, so any other read path (REST, future
@@ -53,10 +59,12 @@ def _snapshot_equity(brokers) -> list:
     """
     from automate.utils.instrument_display import resolve_display_symbols
 
+    scoped_user_id = _scope_user_id(user)
     with get_session() as session:
-        rows = session.execute(
-            select(EquityPosition).where(EquityPosition.status == "OPEN")
-        ).scalars().all()
+        stmt = select(EquityPosition).where(EquityPosition.status == "OPEN")
+        if scoped_user_id is not None:
+            stmt = stmt.where(EquityPosition.user_id == scoped_user_id)
+        rows = session.execute(stmt).scalars().all()
 
         ltp_by_mode: dict[str, dict[str, float]] = {}
         if brokers:
@@ -92,20 +100,25 @@ def _snapshot_equity(brokers) -> list:
         return result
 
 
-def _snapshot() -> dict:
+def _snapshot(user: dict) -> dict:
     brokers = get_brokers()
     return {
-        "options": _snapshot_options(brokers),
-        "equity": _snapshot_equity(brokers),
+        "options": _snapshot_options(brokers, user),
+        "equity": _snapshot_equity(brokers, user),
     }
 
 
 @router.websocket("/ws/positions")
 async def positions_ws(websocket: WebSocket):
     await websocket.accept()
+    user = get_current_user_ws(websocket)
+    if user is None:
+        await websocket.send_json({"type": "error", "detail": "Not authenticated"})
+        await websocket.close()
+        return
     try:
         while True:
-            snapshot = await asyncio.to_thread(_snapshot)
+            snapshot = await asyncio.to_thread(_snapshot, user)
             await websocket.send_json({"type": "positions", **snapshot})
             await asyncio.sleep(_POLL_INTERVAL_SEC)
     except WebSocketDisconnect:

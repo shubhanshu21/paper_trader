@@ -58,7 +58,7 @@ _EXIT_RETRY_DELAY_SEC = 2.0
 def _close_leg(
     broker, rate_limiter: OrderRateLimiter, audit: AuditTrail,
     symbol: str, token: str, option_type: str, quantity: int, product: str, tag_prefix: str,
-    log: logging.Logger,
+    log: logging.Logger, user_id: Optional[int] = None,
 ) -> Optional[str]:
     """Buy back one leg, retrying like the live strategy's own auto-unwind (see TenPercentOTMStrangle._unwind_filled_legs)."""
     for attempt in range(1, _EXIT_MAX_ATTEMPTS + 1):
@@ -67,6 +67,7 @@ def _close_leg(
             order_id = broker.place_buy_order(
                 instrument_token=token, quantity=quantity, product=product,
                 order_type="MARKET", tag=(f"{tag_prefix}_{option_type}")[:20],
+                user_id=user_id,
             )
             audit.record(
                 event_type="POSITION_EXIT", symbol=symbol, instrument_token=token,
@@ -172,8 +173,8 @@ def monitor_once(brokers: dict, audit: AuditTrail, rate_limiter: OrderRateLimite
             "[%s] Closing position #%d (%s/%s) — pnl=%+.1f%%",
             trigger, pos["id"], pos["strategy_name"], pos["symbol"], pnl_pct,
         )
-        call_exit_id = _close_leg(broker, rate_limiter, audit, pos["symbol"], pos["call_token"], "CE", pos["quantity"], pos["product"], trigger, log)
-        put_exit_id = _close_leg(broker, rate_limiter, audit, pos["symbol"], pos["put_token"], "PE", pos["quantity"], pos["product"], trigger, log)
+        call_exit_id = _close_leg(broker, rate_limiter, audit, pos["symbol"], pos["call_token"], "CE", pos["quantity"], pos["product"], trigger, log, pos.get("user_id"))
+        put_exit_id = _close_leg(broker, rate_limiter, audit, pos["symbol"], pos["put_token"], "PE", pos["quantity"], pos["product"], trigger, log, pos.get("user_id"))
 
         if call_exit_id is None or put_exit_id is None:
             log.critical(
@@ -215,8 +216,8 @@ def close_position_manual(
     call_ltp = broker.get_ltp(pos["call_token"]) or pos["call_entry_price"]
     put_ltp = broker.get_ltp(pos["put_token"]) or pos["put_entry_price"]
 
-    call_exit_id = _close_leg(broker, rate_limiter, audit, pos["symbol"], pos["call_token"], "CE", pos["quantity"], pos["product"], "MANUAL", log)
-    put_exit_id = _close_leg(broker, rate_limiter, audit, pos["symbol"], pos["put_token"], "PE", pos["quantity"], pos["product"], "MANUAL", log)
+    call_exit_id = _close_leg(broker, rate_limiter, audit, pos["symbol"], pos["call_token"], "CE", pos["quantity"], pos["product"], "MANUAL", log, pos.get("user_id"))
+    put_exit_id = _close_leg(broker, rate_limiter, audit, pos["symbol"], pos["put_token"], "PE", pos["quantity"], pos["product"], "MANUAL", log, pos.get("user_id"))
 
     if call_exit_id is None or put_exit_id is None:
         _write_alert(pos, {"CE": call_exit_id or "FAILED", "PE": put_exit_id or "FAILED"}, log)

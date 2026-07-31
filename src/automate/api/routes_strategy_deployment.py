@@ -10,11 +10,25 @@ from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from automate.api.auth import get_current_user
 from automate.db.engine import get_db
 from automate.db.models import CustomStrategy, CustomStrategyPosition
 from automate.utils.logger import get_logger
 
 log = get_logger(__name__)
+
+
+def _current_user_id(user: dict) -> int:
+    return int(user["sub"])
+
+
+def _get_owned_strategy(db: Session, strategy_id: int, user_id: int) -> CustomStrategy:
+    strategy = db.query(CustomStrategy).filter(
+        CustomStrategy.id == strategy_id, CustomStrategy.user_id == user_id
+    ).first()
+    if not strategy:
+        raise HTTPException(status_code=404, detail="Strategy not found")
+    return strategy
 
 
 def _square_off_open_positions(strategy: CustomStrategy, db: Session) -> int:
@@ -46,6 +60,7 @@ def _square_off_open_positions(strategy: CustomStrategy, db: Session) -> int:
             exit_order_id = opposite(
                 instrument_token=leg.instrument_key, quantity=leg.quantity, order_type="MARKET",
                 tag=f"CUSTOM_STOP_{strategy.id}_{leg.leg_index}"[:20],
+                user_id=strategy.user_id,
             )
         except Exception as exc:
             log.critical("Failed to square off leg %s for strategy %s on pause/stop: %s", leg.instrument_key, strategy.id, exc)
@@ -77,17 +92,14 @@ class DeploymentResponse(BaseModel):
 
 
 @router.post("/deploy")
-def deploy_strategy(request: DeploymentRequest, db: Session = Depends(get_db)):
+def deploy_strategy(request: DeploymentRequest, db: Session = Depends(get_db), user: dict = Depends(get_current_user)):
     """
     Deploy a custom strategy to paper trading or live mode.
-    
+
     This integrates the custom strategy with the existing strategy execution system.
     """
-    strategy = db.query(CustomStrategy).filter(CustomStrategy.id == request.strategy_id).first()
-    
-    if not strategy:
-        raise HTTPException(status_code=404, detail="Strategy not found")
-    
+    strategy = _get_owned_strategy(db, request.strategy_id, _current_user_id(user))
+
     # Check if strategy can be deployed
     if strategy.status not in ["BACKTESTING", "PAUSED"]:
         raise HTTPException(
@@ -136,13 +148,10 @@ def deploy_strategy(request: DeploymentRequest, db: Session = Depends(get_db)):
 
 
 @router.post("/pause/{strategy_id}")
-def pause_strategy(strategy_id: int, db: Session = Depends(get_db)):
+def pause_strategy(strategy_id: int, db: Session = Depends(get_db), user: dict = Depends(get_current_user)):
     """Pause a running strategy."""
-    strategy = db.query(CustomStrategy).filter(CustomStrategy.id == strategy_id).first()
-    
-    if not strategy:
-        raise HTTPException(status_code=404, detail="Strategy not found")
-    
+    strategy = _get_owned_strategy(db, strategy_id, _current_user_id(user))
+
     if strategy.status not in ["PAPER_TRADING", "LIVE"]:
         raise HTTPException(
             status_code=400, 
@@ -162,13 +171,10 @@ def pause_strategy(strategy_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/resume/{strategy_id}")
-def resume_strategy(strategy_id: int, db: Session = Depends(get_db)):
+def resume_strategy(strategy_id: int, db: Session = Depends(get_db), user: dict = Depends(get_current_user)):
     """Resume a paused strategy."""
-    strategy = db.query(CustomStrategy).filter(CustomStrategy.id == strategy_id).first()
-    
-    if not strategy:
-        raise HTTPException(status_code=404, detail="Strategy not found")
-    
+    strategy = _get_owned_strategy(db, strategy_id, _current_user_id(user))
+
     if strategy.status != "PAUSED":
         raise HTTPException(
             status_code=400, 
@@ -191,13 +197,10 @@ def resume_strategy(strategy_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/stop/{strategy_id}")
-def stop_strategy(strategy_id: int, db: Session = Depends(get_db)):
+def stop_strategy(strategy_id: int, db: Session = Depends(get_db), user: dict = Depends(get_current_user)):
     """Stop a strategy completely."""
-    strategy = db.query(CustomStrategy).filter(CustomStrategy.id == strategy_id).first()
-    
-    if not strategy:
-        raise HTTPException(status_code=404, detail="Strategy not found")
-    
+    strategy = _get_owned_strategy(db, strategy_id, _current_user_id(user))
+
     if strategy.status not in ["PAPER_TRADING", "LIVE", "PAUSED"]:
         raise HTTPException(
             status_code=400, 
@@ -217,13 +220,10 @@ def stop_strategy(strategy_id: int, db: Session = Depends(get_db)):
 
 
 @router.get("/status/{strategy_id}")
-def get_deployment_status(strategy_id: int, db: Session = Depends(get_db)):
+def get_deployment_status(strategy_id: int, db: Session = Depends(get_db), user: dict = Depends(get_current_user)):
     """Get current deployment status of a strategy."""
-    strategy = db.query(CustomStrategy).filter(CustomStrategy.id == strategy_id).first()
-    
-    if not strategy:
-        raise HTTPException(status_code=404, detail="Strategy not found")
-    
+    strategy = _get_owned_strategy(db, strategy_id, _current_user_id(user))
+
     return {
         "strategy_id": strategy.id,
         "name": strategy.name,
@@ -238,10 +238,11 @@ def get_deployment_status(strategy_id: int, db: Session = Depends(get_db)):
 
 
 @router.get("/active")
-def list_active_deployments(db: Session = Depends(get_db)):
-    """List all actively deployed strategies (paper or live)."""
+def list_active_deployments(db: Session = Depends(get_db), user: dict = Depends(get_current_user)):
+    """List all actively deployed strategies (paper or live) owned by the caller."""
     strategies = db.query(CustomStrategy).filter(
-        CustomStrategy.status.in_(["PAPER_TRADING", "LIVE", "PAUSED"])
+        CustomStrategy.status.in_(["PAPER_TRADING", "LIVE", "PAUSED"]),
+        CustomStrategy.user_id == _current_user_id(user),
     ).all()
     
     return {
@@ -263,22 +264,20 @@ def list_active_deployments(db: Session = Depends(get_db)):
 
 @router.patch("/performance/{strategy_id}")
 def update_deployment_performance(
-    strategy_id: int, 
+    strategy_id: int,
     paper_return_pct: Optional[float] = None,
     live_return_pct: Optional[float] = None,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    user: dict = Depends(get_current_user),
 ):
     """
     Update performance metrics for a deployed strategy.
-    
+
     This endpoint is called by the strategy execution system to update
     performance metrics as the strategy runs.
     """
-    strategy = db.query(CustomStrategy).filter(CustomStrategy.id == strategy_id).first()
-    
-    if not strategy:
-        raise HTTPException(status_code=404, detail="Strategy not found")
-    
+    strategy = _get_owned_strategy(db, strategy_id, _current_user_id(user))
+
     if paper_return_pct is not None:
         strategy.paper_return_pct = paper_return_pct
     

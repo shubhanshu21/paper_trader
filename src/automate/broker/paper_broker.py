@@ -72,6 +72,7 @@ class PaperBroker(BaseBroker):
         product: str = "NRML",
         order_type: str = "MARKET",
         tag: str = "",
+        user_id: Optional[int] = None,
     ) -> Optional[str]:
         """
         Simulate a paper fill: validates virtual balance/margin for both spot equities
@@ -106,13 +107,25 @@ class PaperBroker(BaseBroker):
         except Exception as exc:
             log.warning("PaperBroker: could not resolve instrument details for balance check: %s", exc)
 
-        # 2. Query available virtual balance
-        try:
-            summary = get_wallet_summary()
-            available = summary["available_balance"]
-        except Exception as exc:
-            log.error("PaperBroker: could not query virtual balance: %s", exc)
-            available = 0.0
+        # 2. Query THIS order's own account's available virtual balance —
+        # each user has their own paper wallet (see utils/wallet.py,
+        # migration 0015). user_id is threaded down from whichever caller
+        # actually knows who's trading: RuleBasedStrategy.user_id (custom
+        # strategies), the scheduler's strategy.user_id (square-offs), or
+        # the authenticated user on a manual terminal trade. Call sites
+        # with no real per-request user (the legacy CLI daemon, backtest)
+        # leave it None — skip the check rather than guess whose wallet to
+        # charge (matches this check's pre-per-user-wallet behavior, which
+        # had no user concept to skip in the first place).
+        if user_id is None:
+            available = float("inf")
+        else:
+            try:
+                summary = get_wallet_summary(user_id)
+                available = summary["available_balance"]
+            except Exception as exc:
+                log.error("PaperBroker: could not query virtual balance for user_id=%s: %s", user_id, exc)
+                available = 0.0
 
         # 3. Perform validations based on segment (Equity vs F&O)
         if inst_type in ("EQUITY", "EQ", "ES"):
@@ -188,9 +201,10 @@ class PaperBroker(BaseBroker):
         product: str = "NRML",
         order_type: str = "MARKET",
         tag: str = "",
+        user_id: Optional[int] = None,
     ) -> Optional[str]:
         """Place a SELL (write) order for one options leg. See BaseBroker."""
-        return self._place_order("SELL", instrument_token, quantity, product, order_type, tag)
+        return self._place_order("SELL", instrument_token, quantity, product, order_type, tag, user_id)
 
     def place_buy_order(
         self,
@@ -199,6 +213,7 @@ class PaperBroker(BaseBroker):
         product: str = "NRML",
         order_type: str = "MARKET",
         tag: str = "",
+        user_id: Optional[int] = None,
     ) -> Optional[str]:
         """Place a BUY order to square off an options leg. See BaseBroker."""
-        return self._place_order("BUY", instrument_token, quantity, product, order_type, tag)
+        return self._place_order("BUY", instrument_token, quantity, product, order_type, tag, user_id)

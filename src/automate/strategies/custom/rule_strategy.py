@@ -172,6 +172,7 @@ class RuleBasedStrategy(BaseStrategy):
             product=self.product,
             order_type="MARKET",
             tag=f"CUSTOM_{resolved['option_type']}_{self.symbol[:6]}_{idx}"[:20],
+            user_id=self.user_id,
         )
         status = "DRY_RUN" if self.broker.dry_run else ("PLACED" if order_id else "FAILED")
 
@@ -231,6 +232,7 @@ class RuleBasedStrategy(BaseStrategy):
                     product=self.product,
                     order_type="MARKET",
                     tag=f"UNWIND_{resolved['option_type']}_{self.symbol[:6]}_{idx}"[:20],
+                    user_id=self.user_id,
                 )
                 self.audit.record(
                     event_type="AUTO_UNWIND",

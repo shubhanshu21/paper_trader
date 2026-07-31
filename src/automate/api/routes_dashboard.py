@@ -6,8 +6,9 @@ uncomparable views.
 """
 from collections import defaultdict
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 
+from automate.api.auth import get_current_user
 from automate.utils.backtest_history import get_latest_backtest_per_symbol
 from automate.utils.pnl import compute_strangle_pnl
 from automate.utils.position_tracker import get_closed_positions
@@ -25,7 +26,7 @@ def _closed_pnl(position: dict) -> float:
 
 
 @router.get("")
-def performance():
+def performance(user: dict = Depends(get_current_user)):
     backtest_by_symbol = {r["symbol"]: r for r in get_latest_backtest_per_symbol()}
 
     paper_pnl: dict = defaultdict(float)
@@ -35,7 +36,7 @@ def performance():
     live_trades: dict = defaultdict(int)
     live_wins: dict = defaultdict(int)
 
-    for pos in get_closed_positions(limit=100000):
+    for pos in get_closed_positions(limit=100000, user_id=int(user["sub"])):
         pnl = _closed_pnl(pos)
         symbol = pos["symbol"]
         if pos["mode"] == "live":

@@ -1,6 +1,6 @@
 import React, { useState } from "react";
 import { User as UserType, LedgerItem, api } from "../api";
-import { C, FONT, inr, Banner } from "./Common";
+import { C, FONT, inr, Banner, fmtDate } from "./Common";
 
 interface ProfileProps {
   currentUser: UserType | null;
@@ -212,7 +212,7 @@ export default function ProfileView({ currentUser, ledger, onRefreshData }: Prof
               <tbody className="divide-y text-xs" style={{ borderColor: C.border }}>
                 {ledger.map((item, idx) => (
                   <tr key={idx} className="hover:bg-gray-50 transition-colors" style={{ height: "40px" }}>
-                    <td className="px-4 py-3 text-gray-500 font-medium font-mono">{item.date}</td>
+                    <td className="px-4 py-3 text-gray-500 font-medium font-mono">{fmtDate(item.date)}</td>
                     <td className="px-4 py-3 text-gray-800 font-medium">{item.description}</td>
                     <td className="px-4 py-3 text-right text-red-600 font-normal tabular-nums">
                       {item.debit > 0 ? `-${inr(item.debit)}` : "—"}

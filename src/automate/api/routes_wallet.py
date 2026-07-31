@@ -1,9 +1,10 @@
 """api/routes_wallet.py — virtual paper-trading wallet, funds statement, order book."""
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
+from automate.api.auth import get_current_user
 from automate.utils.orders import get_order_book
 from automate.utils.wallet import get_ledger, get_wallet_summary, set_starting_capital
 from automate.utils.wallet_adjustments import add_adjustment
@@ -22,66 +23,80 @@ class CapitalRequest(BaseModel):
 
 
 @router.get("")
-def wallet_summary():
-    return get_wallet_summary()
+def wallet_summary(user: dict = Depends(get_current_user)):
+    return get_wallet_summary(int(user["sub"]))
 
 
 @router.get("/ledger")
-def wallet_ledger():
-    return get_ledger()
+def wallet_ledger(user: dict = Depends(get_current_user)):
+    return get_ledger(int(user["sub"]))
 
 
 @router.post("/adjust")
-def wallet_adjust(req: AdjustmentRequest):
+def wallet_adjust(req: AdjustmentRequest, user: dict = Depends(get_current_user)):
+    user_id = int(user["sub"])
     try:
-        add_adjustment(req.amount, req.note)
+        add_adjustment(user_id, req.amount, req.note)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
-    return get_wallet_summary()
+    return get_wallet_summary(user_id)
 
 
 @router.post("/capital")
-def wallet_set_capital(req: CapitalRequest):
+def wallet_set_capital(req: CapitalRequest, user: dict = Depends(get_current_user)):
+    user_id = int(user["sub"])
     try:
-        set_starting_capital(req.starting_capital)
+        set_starting_capital(user_id, req.starting_capital)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
-    return get_wallet_summary()
+    return get_wallet_summary(user_id)
 
 
 @router.post("/reset")
-def wallet_reset():
-    """Wipes the database clean regarding everything except bhavcopy data."""
+def wallet_reset(user: dict = Depends(get_current_user)):
+    """
+    Wipes THIS ACCOUNT's own paper-trading state (positions, equity
+    positions, custom-strategy legs, wallet balance/adjustments) — never
+    another user's data, and never shared reference data (BacktestRun
+    history, the Candle/bhavcopy market-data cache), which the reset used
+    to also delete globally regardless of who asked for it.
+    """
     from automate.db.engine import get_session
-    from automate.db.models import Position, BacktestRun, Candle, EquityPosition, WalletSettings
+    from automate.db.models import Position, EquityPosition, WalletSettings, CustomStrategy, CustomStrategyPosition
     from automate.utils.wallet_adjustments import clear_adjustments
 
-    # 1. Clear manual balance adjustments file
-    clear_adjustments()
+    user_id = int(user["sub"])
 
-    # 2. Truncate/delete all database tables except fno_bhavcopy
+    # 1. Clear this account's manual balance adjustments file
+    clear_adjustments(user_id)
+
+    # 2. Delete only this account's own rows
     with get_session() as session:
-        deleted_positions = session.query(Position).delete(synchronize_session=False)
-        deleted_equity = session.query(EquityPosition).delete(synchronize_session=False)
-        deleted_backtests = session.query(BacktestRun).delete(synchronize_session=False)
-        deleted_candles = session.query(Candle).delete(synchronize_session=False)
+        deleted_positions = session.query(Position).filter_by(user_id=user_id).delete(synchronize_session=False)
+        deleted_equity = session.query(EquityPosition).filter_by(user_id=user_id).delete(synchronize_session=False)
 
-        # Reset starting capital baseline to 0
-        row = session.get(WalletSettings, 1)  # _SETTINGS_ROW_ID = 1
+        own_strategy_ids = [s.id for s in session.query(CustomStrategy.id).filter_by(user_id=user_id).all()]
+        deleted_custom_legs = 0
+        if own_strategy_ids:
+            deleted_custom_legs = session.query(CustomStrategyPosition).filter(
+                CustomStrategyPosition.strategy_id.in_(own_strategy_ids)
+            ).delete(synchronize_session=False)
+
+        # Reset this account's own starting capital baseline to 0
+        row = session.query(WalletSettings).filter_by(user_id=user_id).first()
         if row:
             row.starting_capital = 0
         else:
-            session.add(WalletSettings(id=1, starting_capital=0))
+            session.add(WalletSettings(user_id=user_id, starting_capital=0))
 
     return {
         "deleted_positions": deleted_positions,
         "deleted_equity": deleted_equity,
-        "deleted_backtests": deleted_backtests,
-        "deleted_candles": deleted_candles,
-        **get_wallet_summary()
+        "deleted_custom_strategy_legs": deleted_custom_legs,
+        **get_wallet_summary(user_id)
     }
 
 
 @orders_router.get("")
-def order_book(mode: Optional[str] = None, limit: int = 200):
-    return get_order_book(mode=mode, limit=limit)
+def order_book(mode: Optional[str] = None, limit: int = 200, user: dict = Depends(get_current_user)):
+    return get_order_book(mode=mode, limit=limit, user_id=int(user["sub"]))

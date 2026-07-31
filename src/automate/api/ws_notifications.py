@@ -14,7 +14,9 @@ import asyncio
 import logging
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from sqlalchemy import or_
 
+from automate.api.auth import get_current_user_ws
 from automate.db.engine import SessionLocal
 from automate.db.models import Notification
 
@@ -25,11 +27,19 @@ _POLL_INTERVAL_SEC = 4.0
 _INITIAL_SNAPSHOT_LIMIT = 30
 
 
-def _fetch_snapshot() -> dict:
+def _visibility_filter(query, user: dict):
+    """Same rule as routes_notifications.py: admins also see system-wide (user_id IS NULL) alerts."""
+    user_id = int(user["sub"])
+    if user.get("role") == "admin":
+        return query.filter(or_(Notification.user_id == user_id, Notification.user_id.is_(None)))
+    return query.filter(Notification.user_id == user_id)
+
+
+def _fetch_snapshot(user: dict) -> dict:
     db = SessionLocal()
     try:
-        rows = db.query(Notification).order_by(Notification.id.desc()).limit(_INITIAL_SNAPSHOT_LIMIT).all()
-        unread_count = db.query(Notification).filter(Notification.read.is_(False)).count()
+        rows = _visibility_filter(db.query(Notification), user).order_by(Notification.id.desc()).limit(_INITIAL_SNAPSHOT_LIMIT).all()
+        unread_count = _visibility_filter(db.query(Notification), user).filter(Notification.read.is_(False)).count()
         return {
             "notifications": [r.to_dict() for r in rows],
             "unread_count": unread_count,
@@ -39,15 +49,15 @@ def _fetch_snapshot() -> dict:
         db.close()
 
 
-def _fetch_new_since(last_id: int) -> dict:
+def _fetch_new_since(last_id: int, user: dict) -> dict:
     db = SessionLocal()
     try:
-        rows = db.query(Notification).filter(Notification.id > last_id).order_by(Notification.id.asc()).all()
-        unread_count = db.query(Notification).filter(Notification.read.is_(False)).count()
+        rows = _visibility_filter(db.query(Notification), user).filter(Notification.id > last_id).order_by(Notification.id.asc()).all()
+        unread_count = _visibility_filter(db.query(Notification), user).filter(Notification.read.is_(False)).count()
         return {
             "notifications": [r.to_dict() for r in rows],
             "unread_count": unread_count,
-            "last_id": rows[-1].id if rows else last_id,
+            "last_id": max((r.id for r in rows), default=last_id),
         }
     finally:
         db.close()
@@ -56,14 +66,19 @@ def _fetch_new_since(last_id: int) -> dict:
 @router.websocket("/ws/notifications")
 async def notifications_ws(websocket: WebSocket):
     await websocket.accept()
+    user = get_current_user_ws(websocket)
+    if user is None:
+        await websocket.send_json({"type": "error", "detail": "Not authenticated"})
+        await websocket.close()
+        return
     try:
-        snapshot = await asyncio.to_thread(_fetch_snapshot)
+        snapshot = await asyncio.to_thread(_fetch_snapshot, user)
         await websocket.send_json({"type": "snapshot", **snapshot})
         last_id = snapshot["last_id"]
 
         while True:
             await asyncio.sleep(_POLL_INTERVAL_SEC)
-            delta = await asyncio.to_thread(_fetch_new_since, last_id)
+            delta = await asyncio.to_thread(_fetch_new_since, last_id, user)
             last_id = delta["last_id"]
             # Always push, even with an empty notifications list — keeps
             # unread_count in sync after the client marks something read

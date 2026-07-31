@@ -8,15 +8,21 @@ no string SQL, parameterized access).
 import logging
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 
+from automate.api.auth import get_current_user
 from automate.config import EquityMACrossoverConfig
 from automate.db.engine import get_session
 from automate.db.models import EquityPosition
 
 log = logging.getLogger("api.equity")
 router = APIRouter(prefix="/api/equity", tags=["equity"])
+
+
+def _scope_user_id(user: dict):
+    """Admins also see system-wide (no-owner) rows — see EquityPosition.user_id's docstring."""
+    return None if user.get("role") == "admin" else int(user["sub"])
 
 
 # ---------------------------------------------------------------------------
@@ -55,13 +61,14 @@ def _attach_display_symbols(positions: list[dict]) -> list[dict]:
 
 
 @router.get("/positions/open")
-def list_open_equity_positions():
-    """List all currently open equity positions."""
+def list_open_equity_positions(user: dict = Depends(get_current_user)):
+    """List all currently open equity positions owned by the caller."""
+    scoped_user_id = _scope_user_id(user)
     with get_session() as session:
-        rows = session.execute(
-            select(EquityPosition).where(EquityPosition.status == "OPEN")
-            .order_by(EquityPosition.entry_date.desc())
-        ).scalars().all()
+        stmt = select(EquityPosition).where(EquityPosition.status == "OPEN")
+        if scoped_user_id is not None:
+            stmt = stmt.where(EquityPosition.user_id == scoped_user_id)
+        rows = session.execute(stmt.order_by(EquityPosition.entry_date.desc())).scalars().all()
         positions = [r.to_dict() for r in rows]
 
     positions = _attach_display_symbols(positions)
@@ -78,14 +85,14 @@ def list_open_equity_positions():
 
 
 @router.get("/positions/closed")
-def list_closed_equity_positions(limit: int = 100):
-    """List the most recent closed equity positions (default last 100)."""
+def list_closed_equity_positions(limit: int = 100, user: dict = Depends(get_current_user)):
+    """List the most recent closed equity positions owned by the caller (default last 100)."""
+    scoped_user_id = _scope_user_id(user)
     with get_session() as session:
-        rows = session.execute(
-            select(EquityPosition).where(EquityPosition.status == "CLOSED")
-            .order_by(EquityPosition.exit_date.desc())
-            .limit(limit)
-        ).scalars().all()
+        stmt = select(EquityPosition).where(EquityPosition.status == "CLOSED")
+        if scoped_user_id is not None:
+            stmt = stmt.where(EquityPosition.user_id == scoped_user_id)
+        rows = session.execute(stmt.order_by(EquityPosition.exit_date.desc()).limit(limit)).scalars().all()
         return _attach_display_symbols([r.to_dict() for r in rows])
 
 
@@ -104,7 +111,7 @@ def equity_watchlist():
 
 
 @router.post("/positions/{position_id}/close")
-def close_equity_position(position_id: int):
+def close_equity_position(position_id: int, user: dict = Depends(get_current_user)):
     """
     Manually close an open equity position.
 
@@ -115,6 +122,10 @@ def close_equity_position(position_id: int):
     with get_session() as session:
         pos = session.get(EquityPosition, position_id)
         if pos is None:
+            raise HTTPException(status_code=404, detail=f"Equity position {position_id} not found")
+        # Same 404-not-403 non-enumerable-ownership pattern used elsewhere —
+        # admins may also close system-wide (no-owner) legacy rows.
+        if pos.user_id is not None and pos.user_id != int(user["sub"]) and user.get("role") != "admin":
             raise HTTPException(status_code=404, detail=f"Equity position {position_id} not found")
         if pos.status != "OPEN":
             raise HTTPException(status_code=409, detail="Position is already closed")

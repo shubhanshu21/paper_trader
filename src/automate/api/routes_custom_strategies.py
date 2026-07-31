@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 
 from automate.api.auth import get_current_user
 from automate.db.engine import get_db
-from automate.db.models import CustomStrategy
+from automate.db.models import CustomStrategy, CustomStrategyPosition
 from automate.strategies.custom.rule_schema import validate_rules, describe_rules
 
 router = APIRouter(prefix="/api/custom-strategies", tags=["custom-strategies"])
@@ -343,6 +343,8 @@ def backtest_strategy(strategy_id: int, request: BacktestRequest, db: Session = 
                    "real expiry cycles.",
         )
 
+    from automate.utils.backtest_stats import compute_backtest_stats
+
     avg_return_pct = sum(c["pnl_pct_of_premium"] for c in cycles) / len(cycles)
     win_rate = sum(1 for c in cycles if c["won"]) / len(cycles) * 100.0
     run_at = datetime.now()
@@ -356,6 +358,7 @@ def backtest_strategy(strategy_id: int, request: BacktestRequest, db: Session = 
         "to_date": request.to_date,
         "run_at": run_at.isoformat(),
         "cycles": cycles,
+        **compute_backtest_stats(cycles),
     }
 
     db_strategy.backtest_return_pct = round(avg_return_pct, 4)
@@ -501,7 +504,7 @@ def get_expiries(symbol: str):
 
 
 @router.get("/{strategy_id}/greeks")
-def get_live_greeks(strategy_id: int, db: Session = Depends(get_db)):
+def get_live_greeks(strategy_id: int, db: Session = Depends(get_db), user: dict = Depends(get_current_user)):
     """
     One-off Black-76 Greeks snapshot (see utils/black76.py) for manual/curl
     inspection — the Strategies page itself uses the live-updating
@@ -511,14 +514,14 @@ def get_live_greeks(strategy_id: int, db: Session = Depends(get_db)):
     """
     from automate.api.live_greeks import compute_live_greeks
 
-    payload = compute_live_greeks(strategy_id)
+    payload = compute_live_greeks(strategy_id, owner_user_id=_current_user_id(user))
     if payload is None:
         raise HTTPException(status_code=404, detail="Strategy not found")
     return payload
 
 
 @router.get("/{strategy_id}/payoff")
-def get_expected_payoff(strategy_id: int, db: Session = Depends(get_db)):
+def get_expected_payoff(strategy_id: int, db: Session = Depends(get_db), user: dict = Depends(get_current_user)):
     """
     Expected Max Profit / Max Loss / breakeven(s) in real rupees, computed
     from CURRENT live option premiums against the strategy's own rules
@@ -539,9 +542,7 @@ def get_expected_payoff(strategy_id: int, db: Session = Depends(get_db)):
     from automate.utils.margin import estimate_margin_blocked
     from automate.api.custom_strategy_scheduler import _get_brokers, _audit, _kill_switch, _rate_limiter
 
-    db_strategy = db.query(CustomStrategy).filter(CustomStrategy.id == strategy_id).first()
-    if not db_strategy:
-        raise HTTPException(status_code=404, detail="Strategy not found")
+    db_strategy = _get_owned_strategy(db, strategy_id, _current_user_id(user))
     if not db_strategy.rules_json:
         raise HTTPException(status_code=400, detail="This strategy has no rules configured.")
 
@@ -682,3 +683,39 @@ def get_expected_payoff(strategy_id: int, db: Session = Depends(get_db)):
         }
 
     return {"strategy_id": strategy_id, "symbols": results}
+
+
+@router.get("/{strategy_id}/positions")
+def get_strategy_positions(strategy_id: int, db: Session = Depends(get_db), user: dict = Depends(get_current_user)):
+    """
+    Real position/order history for this strategy — every leg the
+    scheduler (api/custom_strategy_scheduler.py) has actually entered,
+    OPEN or CLOSED, with real entry/exit fill prices and order ids. This
+    is the "what actually happened" surface — distinct from /greeks (live
+    mark-to-market on currently open legs only) and /payoff (a what-if
+    calculation from current option prices, works even pre-deployment).
+    """
+    strategy = _get_owned_strategy(db, strategy_id, _current_user_id(user))
+
+    legs = db.query(CustomStrategyPosition).filter(
+        CustomStrategyPosition.strategy_id == strategy.id
+    ).order_by(CustomStrategyPosition.opened_at.desc(), CustomStrategyPosition.leg_index.asc()).all()
+
+    return {
+        "strategy_id": strategy_id,
+        "open": [l.to_dict() for l in legs if l.status == "OPEN"],
+        "closed": [l.to_dict() for l in legs if l.status == "CLOSED"],
+    }
+
+
+@router.get("/positions/open")
+def get_all_open_positions(user: dict = Depends(get_current_user)):
+    """
+    One-off snapshot of open custom-strategy positions for manual/curl
+    inspection — the Positions page itself uses the live-updating
+    /ws/custom-strategy-positions WebSocket instead (see
+    ws_custom_strategy_positions.py). Both call the same shared
+    computation (api/live_positions.py) so there's one implementation.
+    """
+    from automate.api.live_positions import compute_open_positions
+    return {"rows": compute_open_positions(_current_user_id(user))}

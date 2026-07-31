@@ -1,7 +1,70 @@
-import { useState } from "react";
+import { useState, ReactNode } from "react";
 import { Search, Download, BarChart2, TrendingUp, ChevronDown, ChevronUp } from "lucide-react";
 import { OptionsPosition } from "../api";
 import { C, FONT, inr, withSign, sign, Banner, Td, Th } from "./Common";
+import { useCustomStrategyPositions as useLiveCustomPositions } from "../hooks/useCustomStrategyPositions";
+
+function ordinalSuffix(day: number): string {
+  if (day >= 11 && day <= 13) return "th";
+  switch (day % 10) {
+    case 1: return "st";
+    case 2: return "nd";
+    case 3: return "rd";
+    default: return "th";
+  }
+}
+
+// Kite's compact options-instrument label: expiry day-ordinal, a small
+// "W"/"M" weekly/monthly badge, then "DDMon strike TYPE" — e.g. "25th ᵂ
+// 25AUG 1430 CE". Built from real data (strike/expiry/expiry_mode), not
+// guessed — expiry_mode comes straight from the strategy's own rules.
+function kiteOptionLabel(strike: number, optionType: string, expiryIso: string, expiryMode: "WEEKLY" | "MONTHLY"): ReactNode {
+  const d = new Date(expiryIso);
+  const day = d.getDate();
+  const mon = d.toLocaleDateString("en-GB", { month: "short" }).toUpperCase();
+  return (
+    <span className="inline-flex items-baseline gap-1">
+      <span>
+        {day}<sup className="text-[9px]">{ordinalSuffix(day)}</sup>{" "}
+        <sup className="text-[9px] font-bold text-gray-400">{expiryMode === "WEEKLY" ? "W" : "M"}</sup>
+      </span>
+      <span>{day}{mon} {strike} {optionType}</span>
+    </span>
+  );
+}
+
+function useCustomStrategyPositions(): PositionListItem[] {
+  const rows = useLiveCustomPositions();
+
+  // Same PositionListItem shape the legacy table already renders, so
+  // custom-strategy legs sit as ordinary rows in ONE unified table
+  // (Product/Instrument/Qty/Avg/LTP/P&L/Chg) rather than a separate
+  // section — an arbitrary-leg custom strategy has no natural "one row
+  // per basket" shape anyway, so per-leg rows here is the honest fit.
+  return rows.map((r) => ({
+    id: r.id,
+    // Real margin product (matches how these are actually placed — see
+    // rule_strategy.py's default "NRML") — the strategy name itself is
+    // shown on the Strategies page's own Positions panel, not repeated here.
+    product: "NRML",
+    // Plain string kept for search/filter matching (Instrument search box)
+    // and the React list key — the fancy ordinal/weekly-badge rendering
+    // below is a separate displaySymbol override, JSX can't be searched.
+    symbol: r.strike != null
+      ? `${r.symbol} ${r.expiry ? new Date(r.expiry).toLocaleDateString("en-GB", { day: "2-digit", month: "short" }).toUpperCase() : ""} ${r.strike} ${r.option_type}`.trim()
+      : r.symbol,
+    displaySymbol: r.strike != null && r.expiry && r.option_type
+      ? kiteOptionLabel(r.strike, r.option_type, r.expiry, r.expiry_mode)
+      : undefined,
+    exch: r.instrument_type === "EQUITY" ? "NSE" : "NFO",
+    qty: r.transaction_type === "SELL" ? -r.quantity : r.quantity,
+    avg: r.entry_price,
+    ltp: r.ltp ?? r.entry_price,
+    pnl: r.pnl ?? 0,
+    chg: r.chg_pct ?? 0,
+    isApi: false,
+  }));
+}
 
 interface PositionsProps {
   openOptions: OptionsPosition[];
@@ -13,6 +76,7 @@ interface PositionListItem {
   id?: number;
   product: string;
   symbol: string;
+  displaySymbol?: ReactNode;
   exch: string;
   qty: number;
   avg: number;
@@ -49,9 +113,10 @@ export default function PositionsView({ openOptions, onClosePosition, closingId 
   const [searchQuery, setSearchQuery] = useState("");
   const [hoveredSymbol, setHoveredSymbol] = useState<string | null>(null);
   const [historyExpanded, setHistoryExpanded] = useState(false);
+  const customRows = useCustomStrategyPositions();
 
   // Map API options positions
-  const apiPositionsList: PositionListItem[] = openOptions.map(pos => ({
+  const legacyPositionsList: PositionListItem[] = openOptions.map(pos => ({
     id: pos.id,
     product: pos.product || "NRML",
     symbol: pos.symbol,
@@ -63,6 +128,11 @@ export default function PositionsView({ openOptions, onClosePosition, closingId 
     chg: 0.00,
     isApi: true,
   }));
+
+  // Custom Strategy Builder legs merged in as ordinary rows — one unified
+  // table rather than a separate section, since there's no natural
+  // "Positions" concept that excludes them.
+  const apiPositionsList: PositionListItem[] = [...legacyPositionsList, ...customRows];
 
   const filteredPositions = apiPositionsList.filter(p => 
     p.symbol.toLowerCase().includes(searchQuery.toLowerCase())
@@ -158,8 +228,12 @@ export default function PositionsView({ openOptions, onClosePosition, closingId 
                           </td>
                           <Td>
                             {o.product === "CNC" ? (
-                              <span className="px-2 py-0.5 text-[10px] rounded font-bold bg-[#fff9e9] text-[#b58900]">
+                              <span className="px-2 py-0.5 text-[10px] rounded font-bold bg-[#fff3e0] text-[#c17a3f]">
                                 CNC
+                              </span>
+                            ) : o.product === "NRML" ? (
+                              <span className="px-2 py-0.5 text-[10px] rounded font-bold bg-[#eef0fd] text-[#6b6fd1]">
+                                NRML
                               </span>
                             ) : (
                               <span className="px-2 py-0.5 text-[10px] rounded font-bold bg-gray-100 text-gray-500">
@@ -169,7 +243,7 @@ export default function PositionsView({ openOptions, onClosePosition, closingId 
                           </Td>
                           <Td className="font-semibold text-gray-700">
                             <div className="flex items-baseline gap-1.5 text-[13px]">
-                              <span>{o.symbol}</span>
+                              <span>{o.displaySymbol ?? o.symbol}</span>
                               <span className="text-[9px] text-gray-400 uppercase font-semibold">{o.exch}</span>
                             </div>
                           </Td>

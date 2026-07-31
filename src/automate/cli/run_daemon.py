@@ -69,7 +69,8 @@ from typing import Optional
 
 from automate.config import RunConfig, LogConfig, STRATEGY_CONFIGS, UpstoxConfig
 from automate.utils.logger import setup_logger
-from automate.utils.telegram_alert import alert_error, alert_heartbeat
+from automate.utils.telegram_alert import alert_heartbeat
+from automate.utils.notify import notify
 from automate.utils.position_tracker import get_open_positions
 from automate.broker.broker_factory import BrokerFactory
 from automate.compliance.sebi_rules import (
@@ -162,7 +163,7 @@ def _ensure_fresh_upstox_token_bounded(log: logging.Logger) -> Optional[str]:
             "(the login itself keeps running in the background and will clean up on its own).",
             _TOKEN_REFRESH_TIMEOUT_SEC,
         )
-        alert_error(
+        notify(
             "Upstox auto-login",
             f"Token refresh took longer than {_TOKEN_REFRESH_TIMEOUT_SEC}s — abandoned for this "
             f"cycle. If this keeps happening, check manually with `python3 -m automate.auth.upstox_auto_login`.",

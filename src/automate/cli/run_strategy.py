@@ -56,7 +56,8 @@ from automate.compliance.sebi_rules import (
 )
 from automate.strategies.registry import STRATEGIES
 from automate.utils.position_tracker import record_open_position, has_open_position
-from automate.utils.telegram_alert import alert_trade_opened, alert_error
+from automate.utils.telegram_alert import alert_trade_opened
+from automate.utils.notify import notify
 from automate.utils.strategy_overrides import get_effective_config
 
 
@@ -273,7 +274,7 @@ def run_entries(
 
             except Exception as exc:
                 log.error("Strategy configuration/execution error for %s/%s: %s", strategy_name, symbol, exc)
-                alert_error(f"{strategy_name}/{symbol}", f"Config/execution error before strategy could run: {exc}")
+                notify(f"{strategy_name}/{symbol}", f"Config/execution error before strategy could run: {exc}")
                 overall_success = False
 
     return overall_success

@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { X, ChevronRight, Check, Plus, Trash2, Search } from "lucide-react";
-import { C, FONT, TimePicker, Select, formatTime12h } from "./Common";
+import { C, FONT, TimePicker, Select, formatTime12h, fmtDate } from "./Common";
 
 
 type StrikeMode = "ATM" | "OTM_PERCENT" | "OTM_POINTS" | "FIXED";
@@ -422,7 +422,7 @@ export default function StrategyBuilderModal({ onClose, onSuccess, editStrategy 
                         className={`flex-1 p-3 rounded-lg border-2 text-sm text-left ${expiryMode === mode ? "border-orange-500 bg-orange-50" : "border-gray-200"}`}>
                         <div className="font-medium">{mode === "WEEKLY" ? "Nearest Weekly" : "Nearest Monthly"}</div>
                         <div className="text-xs text-gray-500 mt-1">
-                          {next ? `Next: ${next.date}` : selectedSymbols.length ? "Loading available expiries..." : "Pick a symbol in Step 1 to preview dates"}
+                          {next ? `Next: ${fmtDate(next.date)}` : selectedSymbols.length ? "Loading available expiries..." : "Pick a symbol in Step 1 to preview dates"}
                         </div>
                       </button>
                     );

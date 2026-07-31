@@ -33,11 +33,13 @@ import asyncio
 import json
 from datetime import date, datetime
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 from automate.compliance.sebi_rules import AuditTrail, KillSwitch, OrderRateLimiter, assert_market_is_open
 from automate.db.engine import SessionLocal
 from automate.db.models import CustomStrategy, CustomStrategyPosition
 from automate.strategies.custom.rule_strategy import RuleBasedStrategy
+from automate.utils.instrument_cache import InstrumentCache
 from automate.utils.logger import get_logger
 from automate.utils.notify import notify
 from automate.utils.option_utils import check_exit_trigger, is_within_pre_expiry_buffer
@@ -47,10 +49,22 @@ log = get_logger(__name__)
 _TICK_SEC_OPEN = 60
 _TICK_SEC_CLOSED = 300
 
+# entry/exit "time" rules (e.g. "10:00") are entered by the user as NSE
+# market-hours-of-day (IST) — the server itself runs on UTC, so comparing
+# them against a naive datetime.now() would silently compare against the
+# wrong clock (see _try_entry/_try_exit below, which is the whole reason
+# this exists — sebi_rules.assert_market_is_open already gets this right).
+_IST = ZoneInfo("Asia/Kolkata")
+
 _audit = AuditTrail(audit_log_path="logs/custom_strategy_audit.log")
 _kill_switch = KillSwitch()
 _rate_limiter = OrderRateLimiter(max_per_second=10)
 _brokers: Optional[dict] = None
+# Module-level singleton (not constructed fresh per call) so its in-memory
+# instrument-master DataFrame is loaded once and reused — see
+# _is_leg_for_symbol below, which looks up real instrument_key -> symbol
+# mappings from it on every tick.
+_instrument_cache = InstrumentCache()
 
 
 def _market_is_open_now() -> bool:
@@ -82,15 +96,51 @@ def _mode_for_status(status: str) -> str:
 import re
 from collections import defaultdict
 
+_SYMBOL_PREFIX_RE_CACHE: dict = {}
+
+
 def _is_leg_for_symbol(instrument_key: str, symbol: str) -> bool:
-    if "|" not in instrument_key:
+    """
+    Does this leg's instrument_key belong to `symbol`'s underlying?
+
+    A real Upstox instrument_key is an OPAQUE numeric token (e.g.
+    'NSE_FO|144247') — the symbol is NOT embedded in it at all, so no
+    amount of string-parsing the key itself can ever recover it (this was
+    the bug: the old version tried exactly that, and always returned
+    False for real broker keys — silently breaking exit-trigger grouping,
+    Greeks, and the positions/leaderboard endpoints for every real paper/
+    live position). The real symbol has to be looked up from the
+    instrument master by instrument_key, where it's stored in encoded
+    form (e.g. 'RELIANCE26AUG1430CE').
+
+    backtest/custom_engine.py's MockBroker uses a separate synthetic key
+    format instead ('BHAV|SYMBOL|expiry|strike|type', see
+    bhavcopy_data_feed.py) that also isn't in the instrument master —
+    handled as its own case below.
+    """
+    if not instrument_key or "|" not in instrument_key:
         return False
-    underlying_part = instrument_key.split("|", 1)[1]
-    if underlying_part == symbol:
+
+    prefix, rest = instrument_key.split("|", 1)
+    if prefix == "BHAV":
+        return rest.split("|", 1)[0] == symbol
+
+    try:
+        df = _instrument_cache.get_or_refresh()
+        matches = df.loc[df["instrument_key"] == instrument_key, "symbol"]
+    except Exception:
+        log.debug("_is_leg_for_symbol: instrument master lookup failed for %s", instrument_key)
+        return False
+    if matches.empty:
+        return False
+    encoded = str(matches.iloc[0])
+    if encoded == symbol:
         return True
-    # Option contract format: SYMBOL followed by 2-digit year (e.g. NIFTY26...)
-    pattern = re.compile(rf"^{re.escape(symbol)}\d{{2}}")
-    return bool(pattern.match(underlying_part))
+    pattern = _SYMBOL_PREFIX_RE_CACHE.get(symbol)
+    if pattern is None:
+        pattern = re.compile(rf"^{re.escape(symbol)}\d{{2}}")
+        _SYMBOL_PREFIX_RE_CACHE[symbol] = pattern
+    return bool(pattern.match(encoded))
 
 
 def _get_last_entered_expiry(strategy: CustomStrategy, symbol: str) -> Optional[str]:
@@ -161,7 +211,7 @@ def _try_entry(db, strategy: CustomStrategy, broker) -> None:
 
     if entry_rule.get("mode") == "AT_TIME":
         target = entry_rule.get("time")
-        now_hhmm = datetime.now().strftime("%H:%M")
+        now_hhmm = datetime.now(_IST).strftime("%H:%M")
         if now_hhmm < target:
             return
 
@@ -300,7 +350,7 @@ def _try_exit(db, strategy: CustomStrategy, broker) -> None:
         pnl_pct = _combined_pnl_pct(symbol_legs, now_prices)
 
         trigger = check_exit_trigger(pnl_pct, take_profit_pct, stop_loss_pct) if pnl_pct is not None else None
-        if trigger is None and exit_time and datetime.now().strftime("%H:%M") >= exit_time:
+        if trigger is None and exit_time and datetime.now(_IST).strftime("%H:%M") >= exit_time:
             trigger = "TIME_EXIT"
         if trigger is None and exit_days_before_expiry:
             expiries = [dtime_or_none(leg.expiry) for leg in symbol_legs if leg.expiry]
@@ -317,6 +367,7 @@ def _try_exit(db, strategy: CustomStrategy, broker) -> None:
                 exit_order_id = opposite(
                     instrument_token=leg.instrument_key, quantity=leg.quantity, order_type="MARKET",
                     tag=f"CUSTOM_EXIT_{strategy.id}_{leg.leg_index}"[:20],
+                    user_id=strategy.user_id,
                 )
             except Exception as exc:
                 log.critical(

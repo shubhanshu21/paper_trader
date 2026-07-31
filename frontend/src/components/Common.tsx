@@ -467,9 +467,22 @@ interface DatePickerProps {
 const WEEKDAY_LABELS = ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"];
 const MONTH_LABELS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
 
+/** "YYYY-MM-DD" (or a full ISO datetime, date part used) -> "25 AUG 2026" — the one date format used everywhere in the app. */
 export function fmtDate(iso: string): string {
-  const [y, m, d] = iso.split("-").map(Number);
-  return `${d} ${MONTH_LABELS[m - 1].slice(0, 3)} ${y}`;
+  const [y, m, d] = iso.slice(0, 10).split("-").map(Number);
+  return `${d} ${MONTH_LABELS[m - 1].slice(0, 3).toUpperCase()} ${y}`;
+}
+
+/** Full ISO datetime -> "25 AUG 2026, 10:00 AM" — fmtDate's date plus a 12h time, for timestamp fields (opened_at, run_at, created_at, ...). */
+export function fmtDateTime(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  const datePart = fmtDate(iso);
+  let h = d.getHours();
+  const m = d.getMinutes();
+  const period = h >= 12 ? "PM" : "AM";
+  h = h % 12 === 0 ? 12 : h % 12;
+  return `${datePart}, ${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")} ${period}`;
 }
 
 export function DatePicker({ value, onChange, placeholder = "Select date", allowClear = false, minDate, maxDate, className = "" }: DatePickerProps) {

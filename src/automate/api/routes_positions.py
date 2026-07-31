@@ -1,20 +1,26 @@
 """api/routes_positions.py — view open/closed positions, close one manually."""
 import logging
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 
+from automate.api.auth import get_current_user
 from automate.utils.pnl import compute_strangle_pnl
-from automate.utils.position_tracker import get_open_positions, get_closed_positions
+from automate.utils.position_tracker import get_open_positions, get_closed_positions, get_position
 from automate.api.deps import get_brokers, get_audit_trail, get_rate_limiter, compute_mtm_economics
 
 log = logging.getLogger("api.positions")
 router = APIRouter(prefix="/api/positions", tags=["positions"])
 
 
+def _scope_user_id(user: dict) -> int | None:
+    """Admins also see system-wide (no-owner) rows from the legacy CLI daemon — see Position.user_id's docstring."""
+    return None if user.get("role") == "admin" else int(user["sub"])
+
+
 @router.get("/open")
-def list_open_positions():
+def list_open_positions(user: dict = Depends(get_current_user)):
     brokers = get_brokers()
-    positions = get_open_positions()
+    positions = get_open_positions(user_id=_scope_user_id(user))
     for pos in positions:
         econ = compute_mtm_economics(pos, brokers)
         pos["mtm"] = None if econ is None else econ["gross_pnl"]
@@ -24,8 +30,8 @@ def list_open_positions():
 
 
 @router.get("/closed")
-def list_closed_positions(limit: int = 50):
-    positions = get_closed_positions(limit=limit)
+def list_closed_positions(limit: int = 50, user: dict = Depends(get_current_user)):
+    positions = get_closed_positions(limit=limit, user_id=_scope_user_id(user))
     for pos in positions:
         econ = compute_strangle_pnl(
             pos["call_entry_price"], pos["put_entry_price"],
@@ -39,8 +45,17 @@ def list_closed_positions(limit: int = 50):
 
 
 @router.post("/{position_id}/close")
-def close_position_now(position_id: int):
+def close_position_now(position_id: int, user: dict = Depends(get_current_user)):
     from automate.cli.run_position_monitor import close_position_manual
+
+    pos = get_position(position_id)
+    if pos is None:
+        raise HTTPException(status_code=404, detail="Position not found")
+    # Same 404-not-403 non-enumerable-ownership pattern used for custom
+    # strategies — admins may also close system-wide (no-owner) legacy rows.
+    owner_id = pos.get("user_id")
+    if owner_id is not None and owner_id != int(user["sub"]) and user.get("role") != "admin":
+        raise HTTPException(status_code=404, detail="Position not found")
 
     brokers = get_brokers()
     if brokers is None:

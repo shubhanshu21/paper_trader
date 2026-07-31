@@ -4,8 +4,9 @@ import {
   Layers, Clock, LogOut, Activity, FileText, Target, ArrowUpRight, ArrowDownRight, Calendar, IndianRupee, Info, X,
   type LucideIcon,
 } from "lucide-react";
-import { C, FONT, useToast, DatePicker, fmtDate, formatTime12h, inr } from "./Common";
+import { C, FONT, useToast, DatePicker, fmtDate, fmtDateTime, formatTime12h, inr } from "./Common";
 import { wsUrl } from "../api";
+import { useCustomStrategyPositions } from "../hooks/useCustomStrategyPositions";
 import StrategyBuilderModal from "./StrategyBuilderModal";
 
 interface StrategyLeg {
@@ -67,6 +68,16 @@ interface BacktestResult {
   from_date?: string | null;
   to_date?: string | null;
   run_at?: string;
+  total_net_pnl?: number;
+  max_drawdown_pct?: number;
+  profit_factor?: number | null;
+  max_consecutive_wins?: number;
+  max_consecutive_losses?: number;
+  best_cycle_pct?: number | null;
+  worst_cycle_pct?: number | null;
+  avg_win_pct?: number | null;
+  avg_loss_pct?: number | null;
+  equity_curve?: number[];
 }
 
 interface LegGreeks {
@@ -115,6 +126,27 @@ interface PayoffSymbolResult {
 interface PayoffResponse {
   strategy_id: number;
   symbols: Record<string, PayoffSymbolResult>;
+}
+
+interface PositionLeg {
+  id: number;
+  leg_index: number;
+  mode: "paper" | "live";
+  instrument_key: string;
+  instrument_type: string;
+  option_type: string | null;
+  strike: number | null;
+  expiry: string | null;
+  transaction_type: "BUY" | "SELL";
+  quantity: number;
+  entry_price: number;
+  exit_price: number | null;
+  order_id: string | null;
+  exit_order_id: string | null;
+  status: "OPEN" | "CLOSED";
+  exit_reason: string | null;
+  opened_at: string;
+  closed_at: string | null;
 }
 
 const strikeLabel = (sel: { mode: string; value: number | null }) => {
@@ -247,6 +279,64 @@ function BacktestRangeModal({
   );
 }
 
+function EquityCurveChart({ curve }: { curve: number[] }) {
+  if (curve.length < 2) return null;
+  const w = 640, h = 120, pad = 8;
+  const min = Math.min(0, ...curve);
+  const max = Math.max(0, ...curve);
+  const range = max - min || 1;
+  const x = (i: number) => pad + (i / (curve.length - 1)) * (w - pad * 2);
+  const y = (v: number) => h - pad - ((v - min) / range) * (h - pad * 2);
+  const zeroY = y(0);
+  const points = curve.map((v, i) => `${x(i)},${y(v)}`).join(" ");
+  const last = curve[curve.length - 1];
+  const isUp = last >= 0;
+  const areaPoints = `${x(0)},${zeroY} ${points} ${x(curve.length - 1)},${zeroY}`;
+
+  return (
+    <svg viewBox={`0 0 ${w} ${h}`} className="w-full" style={{ height: 120 }} preserveAspectRatio="none">
+      <line x1={pad} y1={zeroY} x2={w - pad} y2={zeroY} stroke={C.border2} strokeWidth={1} strokeDasharray="3,3" />
+      <polygon points={areaPoints} fill={isUp ? C.green : C.red} opacity={0.08} />
+      <polyline points={points} fill="none" stroke={isUp ? C.green : C.red} strokeWidth={2} strokeLinejoin="round" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function BacktestStatTile({ label, value, positive }: { label: string; value: string; positive?: boolean | null }) {
+  const color = positive == null ? C.text : positive ? C.green : C.red;
+  return (
+    <div className="px-3 py-2 rounded-lg border" style={{ borderColor: C.border2, background: C.hover }}>
+      <div className="text-[10px] uppercase tracking-wide text-gray-400 mb-0.5">{label}</div>
+      <div className="text-sm font-semibold" style={{ color }}>{value}</div>
+    </div>
+  );
+}
+
+function BacktestStatsPanel({ result }: { result: BacktestResult }) {
+  const hasStats = result.total_net_pnl !== undefined;
+  if (!hasStats) return null;
+  return (
+    <div className="px-6 py-4 border-b" style={{ borderColor: C.border2 }}>
+      {result.equity_curve && result.equity_curve.length >= 2 && (
+        <div className="mb-4">
+          <div className="text-[11px] uppercase tracking-wide text-gray-400 mb-1.5">Equity Curve (cumulative % of premium)</div>
+          <EquityCurveChart curve={result.equity_curve} />
+        </div>
+      )}
+      <div className="grid grid-cols-4 gap-2">
+        <BacktestStatTile label="Total Net P&L" value={`${(result.total_net_pnl ?? 0) < 0 ? "-" : ""}₹${Math.abs(result.total_net_pnl ?? 0).toFixed(2)}`} positive={(result.total_net_pnl ?? 0) >= 0} />
+        <BacktestStatTile label="Max Drawdown" value={`${(result.max_drawdown_pct ?? 0).toFixed(2)}%`} positive={false} />
+        <BacktestStatTile label="Profit Factor" value={result.profit_factor != null ? result.profit_factor.toFixed(2) : "No losses"} positive={result.profit_factor != null ? result.profit_factor >= 1 : true} />
+        <BacktestStatTile label="Best Cycle" value={result.best_cycle_pct != null ? `${result.best_cycle_pct.toFixed(2)}%` : "—"} positive />
+        <BacktestStatTile label="Worst Cycle" value={result.worst_cycle_pct != null ? `${result.worst_cycle_pct.toFixed(2)}%` : "—"} positive={false} />
+        <BacktestStatTile label="Avg Win" value={result.avg_win_pct != null ? `${result.avg_win_pct.toFixed(2)}%` : "—"} positive />
+        <BacktestStatTile label="Avg Loss" value={result.avg_loss_pct != null ? `${result.avg_loss_pct.toFixed(2)}%` : "—"} positive={false} />
+        <BacktestStatTile label="Max Streak (W / L)" value={`${result.max_consecutive_wins ?? 0} / ${result.max_consecutive_losses ?? 0}`} />
+      </div>
+    </div>
+  );
+}
+
 function BacktestResultsModal({
   strategyName, result, onClose,
 }: { strategyName: string; result: BacktestResult; onClose: () => void }) {
@@ -265,12 +355,13 @@ function BacktestResultsModal({
               <span className="text-xs font-semibold px-2 py-0.5 rounded-full" style={{ background: result.avg_return_pct_of_premium >= 0 ? "#e8f7ec" : C.sellBg, color: result.avg_return_pct_of_premium >= 0 ? C.green : C.red }}>
                 Avg {result.avg_return_pct_of_premium.toFixed(2)}% / cycle
               </span>
-              {result.run_at && <span className="text-[11px] text-gray-400">Run {new Date(result.run_at).toLocaleString()}</span>}
+              {result.run_at && <span className="text-[11px] text-gray-400">Run {fmtDateTime(result.run_at)}</span>}
             </div>
           </div>
           <button onClick={onClose} className="text-gray-400 hover:text-gray-600 focus:outline-none shrink-0"><X size={20} /></button>
         </div>
         <div className="overflow-y-auto flex-1">
+          <BacktestStatsPanel result={result} />
           <table className="w-full text-sm">
             <thead>
               <tr className="text-[11px] uppercase tracking-wide text-gray-400 border-b sticky top-0" style={{ borderColor: C.border2, background: C.tableHeaderBg }}>
@@ -285,12 +376,12 @@ function BacktestResultsModal({
             <tbody>
               {result.cycles.map((c, i) => (
                 <tr key={i} className="border-b last:border-0 text-xs" style={{ borderColor: C.border }}>
-                  <td className="px-4 py-2.5">{c.entry_date}</td>
-                  <td className="px-4 py-2.5">{c.exit_date}</td>
+                  <td className="px-4 py-2.5">{fmtDate(c.entry_date)}</td>
+                  <td className="px-4 py-2.5">{fmtDate(c.exit_date)}</td>
                   <td className="px-4 py-2.5">
                     <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold" style={{ background: C.hover, color: C.muted }}>{c.exit_reason}</span>
                   </td>
-                  <td className="px-4 py-2.5 text-right font-semibold" style={{ color: c.net_pnl >= 0 ? C.green : C.red }}>₹{c.net_pnl.toFixed(2)}</td>
+                  <td className="px-4 py-2.5 text-right font-semibold" style={{ color: c.net_pnl >= 0 ? C.green : C.red }}>{c.net_pnl < 0 ? "-" : ""}₹{Math.abs(c.net_pnl).toFixed(2)}</td>
                   <td className="px-4 py-2.5 text-right">{c.pnl_pct_of_premium.toFixed(2)}%</td>
                   <td className="px-4 py-2.5 text-center">{c.liquid ? <span style={{ color: C.green }}>✓</span> : <span style={{ color: C.faint }}>—</span>}</td>
                 </tr>
@@ -365,6 +456,42 @@ export default function StrategiesView() {
     setPayoff(null);
     if (selectedStrategy && selectedStrategy.rules) fetchPayoff(selectedStrategy);
   }, [selectedStrategy?.id]);
+
+  // Live (WebSocket-pushed) open legs across all strategies, filtered to
+  // the one currently selected — real-time LTP/P&L, no polling.
+  const liveRows = useCustomStrategyPositions();
+  const liveOpenLegs = selectedStrategy ? liveRows.filter((r) => r.strategy_id === selectedStrategy.id) : [];
+
+  const [closedLegs, setClosedLegs] = useState<PositionLeg[]>([]);
+  const [positionsLoading, setPositionsLoading] = useState(false);
+
+  const fetchClosedLegs = async (strategy: CustomStrategy) => {
+    setPositionsLoading(true);
+    try {
+      const response = await fetch(`/api/custom-strategies/${strategy.id}/positions`, { credentials: "include" });
+      setClosedLegs(response.ok ? (await response.json()).closed : []);
+    } catch {
+      setClosedLegs([]);
+    } finally {
+      setPositionsLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    setClosedLegs([]);
+    if (selectedStrategy) fetchClosedLegs(selectedStrategy);
+  }, [selectedStrategy?.id]);
+
+  // Event-driven refetch (not a poll): when the live open-leg count for
+  // this strategy drops, a leg just closed (SL/TP/expiry/manual) — pull
+  // the fresh closed-history row for it once, rather than guessing on a
+  // timer.
+  const prevOpenCountRef = useRef<number>(0);
+  useEffect(() => {
+    if (!selectedStrategy) return;
+    if (liveOpenLegs.length < prevOpenCountRef.current) fetchClosedLegs(selectedStrategy);
+    prevOpenCountRef.current = liveOpenLegs.length;
+  }, [liveOpenLegs.length, selectedStrategy?.id]);
 
   // Pull whatever backtest result is already stored for this strategy (if
   // any) as soon as it's selected — persists across page reloads/navigating
@@ -959,9 +1086,9 @@ export default function StrategiesView() {
                 )}
 
                 <div className="flex items-center gap-2 text-xs pt-1">
-                  <span className="px-2.5 py-1 rounded-lg" style={{ background: C.hover, color: C.muted }}>Created {new Date(selectedStrategy.created_at).toLocaleDateString()}</span>
+                  <span className="px-2.5 py-1 rounded-lg" style={{ background: C.hover, color: C.muted }}>Created {fmtDate(selectedStrategy.created_at)}</span>
                   {selectedStrategy.deployed_at && (
-                    <span className="px-2.5 py-1 rounded-lg" style={{ background: "#fff7ed", color: C.orange }}>Deployed {new Date(selectedStrategy.deployed_at).toLocaleDateString()}</span>
+                    <span className="px-2.5 py-1 rounded-lg" style={{ background: "#fff7ed", color: C.orange }}>Deployed {fmtDate(selectedStrategy.deployed_at)}</span>
                   )}
                 </div>
               </div>
@@ -1027,6 +1154,87 @@ export default function StrategiesView() {
                     </table>
                   </div>
                 )}
+              </div>
+            )}
+
+            {(liveOpenLegs.length > 0 || closedLegs.length > 0) && (
+              <div className="bg-white border rounded-xl overflow-hidden shadow-sm" style={{ borderColor: C.border2 }}>
+                <div className="px-6 py-4 border-b flex items-center gap-2" style={{ borderColor: C.border2 }}>
+                  <Layers size={14} style={{ color: C.muted }} />
+                  <h3 className="text-sm font-semibold text-gray-700">Positions</h3>
+                  {positionsLoading && <RefreshCw size={12} className="animate-spin" style={{ color: C.muted }} />}
+                  {liveOpenLegs.length > 0 && (
+                    <span className="ml-1 px-2 py-0.5 rounded-full text-[10px] font-semibold flex items-center gap-1" style={{ background: "#e6f4ea", color: C.green }}>
+                      <span className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse" /> {liveOpenLegs.length} open
+                    </span>
+                  )}
+                </div>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="text-[11px] uppercase tracking-wide text-gray-400 border-b" style={{ borderColor: C.border2, background: C.tableHeaderBg }}>
+                        <th className="px-4 py-2.5 text-left font-medium">Leg</th>
+                        <th className="px-4 py-2.5 text-left font-medium">Mode</th>
+                        <th className="px-4 py-2.5 text-right font-medium">Entry</th>
+                        <th className="px-4 py-2.5 text-right font-medium">LTP / Exit</th>
+                        <th className="px-4 py-2.5 text-right font-medium">P&amp;L</th>
+                        <th className="px-4 py-2.5 text-left font-medium">Status</th>
+                        <th className="px-4 py-2.5 text-left font-medium">Reason</th>
+                        <th className="px-4 py-2.5 text-left font-medium">Opened</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {liveOpenLegs.map((leg) => (
+                        <tr key={`open-${leg.id}`} className="border-b last:border-0 text-xs" style={{ borderColor: C.border }}>
+                          <td className="px-4 py-2.5">
+                            <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold mr-1.5"
+                              style={leg.transaction_type === "BUY" ? { background: C.buyBg, color: C.buyText } : { background: C.sellBg, color: C.sellText }}>
+                              {leg.transaction_type}
+                            </span>
+                            {leg.strike != null ? `${leg.strike} ${leg.option_type}` : leg.instrument_type} · qty {leg.quantity}
+                          </td>
+                          <td className="px-4 py-2.5 capitalize text-gray-500">{leg.mode}</td>
+                          <td className="px-4 py-2.5 text-right font-medium text-gray-700">₹{leg.entry_price.toFixed(2)}</td>
+                          <td className="px-4 py-2.5 text-right text-gray-700">{leg.ltp != null ? `₹${leg.ltp.toFixed(2)}` : "—"}</td>
+                          <td className="px-4 py-2.5 text-right font-semibold" style={{ color: leg.pnl == null ? C.muted : leg.pnl >= 0 ? C.green : C.red }}>
+                            {leg.pnl == null ? "—" : `${leg.pnl < 0 ? "-" : ""}₹${Math.abs(leg.pnl).toFixed(2)}`}
+                          </td>
+                          <td className="px-4 py-2.5">
+                            <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold" style={{ background: "#e6f4ea", color: C.green }}>OPEN</span>
+                          </td>
+                          <td className="px-4 py-2.5 text-gray-400">—</td>
+                          <td className="px-4 py-2.5 text-gray-400">{leg.opened_at ? fmtDateTime(leg.opened_at) : "—"}</td>
+                        </tr>
+                      ))}
+                      {closedLegs.map((leg) => {
+                        const sign = leg.transaction_type === "SELL" ? 1 : -1;
+                        const pnl = leg.exit_price != null ? (leg.entry_price - leg.exit_price) * leg.quantity * sign : null;
+                        return (
+                          <tr key={`closed-${leg.id}`} className="border-b last:border-0 text-xs" style={{ borderColor: C.border }}>
+                            <td className="px-4 py-2.5">
+                              <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold mr-1.5"
+                                style={leg.transaction_type === "BUY" ? { background: C.buyBg, color: C.buyText } : { background: C.sellBg, color: C.sellText }}>
+                                {leg.transaction_type}
+                              </span>
+                              {leg.strike != null ? `${leg.strike} ${leg.option_type}` : leg.instrument_type} · qty {leg.quantity}
+                            </td>
+                            <td className="px-4 py-2.5 capitalize text-gray-500">{leg.mode}</td>
+                            <td className="px-4 py-2.5 text-right font-medium text-gray-700">₹{leg.entry_price.toFixed(2)}</td>
+                            <td className="px-4 py-2.5 text-right text-gray-700">{leg.exit_price != null ? `₹${leg.exit_price.toFixed(2)}` : "—"}</td>
+                            <td className="px-4 py-2.5 text-right font-semibold" style={{ color: pnl == null ? C.muted : pnl >= 0 ? C.green : C.red }}>
+                              {pnl == null ? "—" : `${pnl < 0 ? "-" : ""}₹${Math.abs(pnl).toFixed(2)}`}
+                            </td>
+                            <td className="px-4 py-2.5">
+                              <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold" style={{ background: C.hover, color: C.muted }}>CLOSED</span>
+                            </td>
+                            <td className="px-4 py-2.5 text-gray-400">{leg.exit_reason || "—"}</td>
+                            <td className="px-4 py-2.5 text-gray-400">{fmtDateTime(leg.opened_at)}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
               </div>
             )}
 

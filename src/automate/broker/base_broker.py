@@ -126,6 +126,7 @@ class BaseBroker(ABC):
         product: str = "NRML",
         order_type: str = "MARKET",
         tag: str = "",
+        user_id: Optional[int] = None,
     ) -> Optional[str]:
         """
         Place a SELL order for an options leg.
@@ -136,6 +137,16 @@ class BaseBroker(ABC):
             product:          'NRML' for overnight, 'MIS' for intraday.
             order_type:       'MARKET' or 'LIMIT'.
             tag:              Order tag / correlation ID.
+            user_id:          Owning account — PaperBroker uses this to check
+                               THAT account's own virtual wallet balance/margin
+                               (each user has their own paper wallet, see
+                               utils/wallet.py). Ignored by UpstoxBroker (a
+                               live order checks the real broker's own real
+                               margin, not our simulated one). Left None from
+                               call sites with no real per-request user (the
+                               legacy CLI daemon, backtest) — PaperBroker
+                               skips its balance check in that case rather
+                               than guessing whose wallet to charge.
 
         Returns:
             Order ID string on success, None on dry-run.
@@ -150,6 +161,7 @@ class BaseBroker(ABC):
         product: str = "NRML",
         order_type: str = "MARKET",
         tag: str = "",
+        user_id: Optional[int] = None,
     ) -> Optional[str]:
         """
         Place a BUY order for an options leg.
@@ -165,6 +177,7 @@ class BaseBroker(ABC):
             product:          'NRML' for overnight, 'MIS' for intraday.
             order_type:       'MARKET' or 'LIMIT'.
             tag:              Order tag / correlation ID.
+            user_id:          Owning account — see place_sell_order's user_id.
 
         Returns:
             Order ID string on success, None on dry-run.

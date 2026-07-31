@@ -12,8 +12,9 @@ charges P&L leaderboard, by asset class (stocks, indices, commodities).
 import json
 from collections import defaultdict
 from datetime import date as date_cls
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 
+from automate.api.auth import get_current_user
 from automate.api.custom_strategy_scheduler import _is_leg_for_symbol
 from automate.db.engine import SessionLocal
 from automate.db.models import CustomStrategy, CustomStrategyPosition
@@ -45,23 +46,31 @@ def _classify(symbol: str) -> str:
 
 
 @router.get("")
-def leaderboard():
+def leaderboard(user: dict = Depends(get_current_user)):
     """
-    Returns a ranked list of (strategy, symbol) P&L entries grouped by
-    asset class, suitable for a leaderboard UI. Only CLOSED legs count —
-    an open basket has no realized P&L yet.
+    Returns a ranked list of (strategy, symbol) P&L entries, scoped to
+    strategies owned by the logged-in user, grouped by asset class.
+    Only CLOSED legs count — an open basket has no realized P&L yet.
     """
     db = SessionLocal()
     try:
+        own_strategy_ids = {
+            row[0] for row in db.query(CustomStrategy.id).filter(
+                CustomStrategy.user_id == int(user["sub"])
+            ).all()
+        }
+        if not own_strategy_ids:
+            return {"rows": []}
+
         closed_legs = db.query(CustomStrategyPosition).filter(
-            CustomStrategyPosition.status == "CLOSED"
+            CustomStrategyPosition.status == "CLOSED",
+            CustomStrategyPosition.strategy_id.in_(own_strategy_ids),
         ).all()
         if not closed_legs:
             return {"rows": []}
 
-        strategy_ids = {leg.strategy_id for leg in closed_legs}
         strategies = {
-            s.id: s for s in db.query(CustomStrategy).filter(CustomStrategy.id.in_(strategy_ids)).all()
+            s.id: s for s in db.query(CustomStrategy).filter(CustomStrategy.id.in_(own_strategy_ids)).all()
         }
 
         # Bucket legs into baskets: (strategy_id, symbol, mode, entry day).

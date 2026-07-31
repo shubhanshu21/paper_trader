@@ -148,8 +148,9 @@ class MockBroker(BaseBroker):
         product: str = "NRML",
         order_type: str = "MARKET",
         tag: str = "",
+        user_id: Optional[int] = None,
     ) -> Optional[str]:
-        """Place a SELL (write) order for one options leg. See BaseBroker."""
+        """Place a SELL (write) order for one options leg. See BaseBroker. user_id unused — backtest has no wallet-balance check."""
         return self._place_order("SELL", instrument_token, quantity, product, order_type, tag)
 
     def place_buy_order(
@@ -159,6 +160,7 @@ class MockBroker(BaseBroker):
         product: str = "NRML",
         order_type: str = "MARKET",
         tag: str = "",
+        user_id: Optional[int] = None,
     ) -> Optional[str]:
-        """Place a BUY order to square off an options leg. See BaseBroker."""
+        """Place a BUY order to square off an options leg. See BaseBroker. user_id unused — see place_sell_order."""
         return self._place_order("BUY", instrument_token, quantity, product, order_type, tag)

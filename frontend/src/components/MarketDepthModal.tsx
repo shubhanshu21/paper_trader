@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { X, AlignLeft, TrendingUp, Trash2, MoreHorizontal } from "lucide-react";
-import { api, MarketDepth } from "../api";
+import { MarketDepth, wsUrl } from "../api";
 import { C, FONT, inr } from "./Common";
 
 interface MarketDepthModalProps {
@@ -10,30 +10,32 @@ interface MarketDepthModalProps {
   onTrade: (side: "BUY" | "SELL") => void;
 }
 
-const REFRESH_INTERVAL_MS = 2000;
-
 export default function MarketDepthModal({ instrument, mode, onClose, onTrade }: MarketDepthModalProps) {
   const [depth, setDepth] = useState<MarketDepth | null>(null);
   const [error, setError] = useState("");
 
   useEffect(() => {
     let cancelled = false;
+    let reconnectTimer: ReturnType<typeof setTimeout>;
+    const key = encodeURIComponent(instrument.instrument_key.replace(/\|/g, ":"));
 
-    const load = async () => {
-      try {
-        const data = await api.getMarketDepth(instrument.instrument_key, mode);
-        if (!cancelled) setDepth(data);
-      } catch (err) {
-        if (!cancelled) setError(err instanceof Error ? err.message : "Failed to load market depth.");
-      }
+    const connect = () => {
+      const ws = new WebSocket(wsUrl(`/ws/market-depth/${key}?mode=${mode}`));
+      ws.onmessage = (event) => {
+        if (cancelled) return;
+        const msg = JSON.parse(event.data);
+        if (msg.type === "depth") { setDepth(msg); setError(""); }
+        else if (msg.type === "error") setError(msg.detail || "Failed to load market depth.");
+      };
+      ws.onclose = () => {
+        if (!cancelled) reconnectTimer = setTimeout(connect, 3000);
+      };
+      ws.onerror = () => ws.close();
+      return ws;
     };
 
-    load();
-    const interval = setInterval(load, REFRESH_INTERVAL_MS);
-    return () => {
-      cancelled = true;
-      clearInterval(interval);
-    };
+    const ws = connect();
+    return () => { cancelled = true; clearTimeout(reconnectTimer); ws.close(); };
   }, [instrument.instrument_key, mode]);
 
   const fmtTime = (raw: string | null) => {

@@ -15,9 +15,11 @@ from automate.utils import black76
 from automate.utils.instrument_cache import InstrumentCache
 
 
-def compute_live_greeks(strategy_id: int) -> Optional[dict]:
+def compute_live_greeks(strategy_id: int, owner_user_id: Optional[int] = None) -> Optional[dict]:
     """
-    Returns None if the strategy doesn't exist. Returns
+    Returns None if the strategy doesn't exist (or, when `owner_user_id` is
+    given, doesn't belong to that user — same None/404 either way, so a
+    caller can't tell "wrong id" from "someone else's strategy"). Returns
     {"legs": [], "net": None, "message": ...} if it exists but has no open
     legs right now — both are normal outcomes, not errors, since this is
     called on a timer regardless of what state the strategy happens to be in.
@@ -26,7 +28,10 @@ def compute_live_greeks(strategy_id: int) -> Optional[dict]:
 
     db = SessionLocal()
     try:
-        db_strategy = db.query(CustomStrategy).filter(CustomStrategy.id == strategy_id).first()
+        query = db.query(CustomStrategy).filter(CustomStrategy.id == strategy_id)
+        if owner_user_id is not None:
+            query = query.filter(CustomStrategy.user_id == owner_user_id)
+        db_strategy = query.first()
         if not db_strategy:
             return None
 

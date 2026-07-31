@@ -606,8 +606,9 @@ class UpstoxBroker(BaseBroker):
         product: str = "D",
         order_type: str = "MARKET",
         tag: str = "",
+        user_id: Optional[int] = None,
     ) -> Optional[str]:
-        """Place a SELL (write) order for one options leg. See BaseBroker."""
+        """Place a SELL (write) order for one options leg. See BaseBroker. user_id unused — a live order is checked against the real broker's own real margin, not a simulated wallet."""
         return self._place_order("SELL", instrument_token, quantity, product, order_type, tag)
 
     def place_buy_order(
@@ -617,8 +618,9 @@ class UpstoxBroker(BaseBroker):
         product: str = "D",
         order_type: str = "MARKET",
         tag: str = "",
+        user_id: Optional[int] = None,
     ) -> Optional[str]:
-        """Place a BUY order to square off an options leg. See BaseBroker."""
+        """Place a BUY order to square off an options leg. See BaseBroker. user_id unused — see place_sell_order."""
         return self._place_order("BUY", instrument_token, quantity, product, order_type, tag)
 
     # ------------------------------------------------------------------

@@ -32,6 +32,12 @@ class Position(Base):
 
     id = Column(BigInteger, primary_key=True, autoincrement=True)
 
+    # NULL = created outside any HTTP request (the legacy CLI daemon has no
+    # per-request user context at all — see cli/run_daemon.py) — treated as
+    # system-wide/admin-only, same convention as Notification.user_id.
+    # A manually-placed terminal trade DOES have a real owner (see
+    # routes_terminal.py's POST /trade) and gets a real user_id.
+    user_id          = Column(BigInteger, nullable=True)
     strategy_name    = Column(String(128), nullable=False)
     mode             = Column(String(8),   nullable=False, default="paper")   # 'paper' | 'live'
     symbol           = Column(String(32),  nullable=False)
@@ -67,6 +73,7 @@ class Position(Base):
         Index("ix_positions_status",               "status"),
         Index("ix_positions_strategy_symbol_status", "strategy_name", "symbol", "status"),
         Index("ix_positions_mode_status",           "mode", "status"),
+        Index("ix_positions_user_id",               "user_id"),
     )
 
     def to_dict(self):
@@ -175,9 +182,17 @@ class Candle(Base):
 # Runtime: paper-trading wallet settings (single row, id=1)
 # ---------------------------------------------------------------------------
 class WalletSettings(Base):
+    """
+    One row per user's virtual paper-trading wallet (used to be a single
+    global singleton row, id always 1 — see migration 0015, which added
+    user_id and backfilled the one pre-existing row to the sole admin
+    account at the time). get_or_create semantics now: a brand-new user
+    gets their own row lazily on first wallet access, not a shared one.
+    """
     __tablename__ = "wallet_settings"
 
-    id               = Column(SmallInteger, primary_key=True)  # always 1 — single-row settings table
+    id               = Column(SmallInteger, primary_key=True, autoincrement=True)
+    user_id          = Column(BigInteger, nullable=True, unique=True)
     starting_capital = Column(Numeric(16, 2), nullable=False, server_default="0")
 
 
@@ -236,6 +251,8 @@ class EquityPosition(Base):
     __tablename__ = "equity_positions"
 
     id             = Column(BigInteger,    primary_key=True, autoincrement=True)
+    # Same NULL = system-wide/no-request-owner convention as Position.user_id above.
+    user_id        = Column(BigInteger,    nullable=True)
     strategy_name  = Column(String(128),   nullable=False)
     mode           = Column(String(8),     nullable=False, default="paper")  # 'paper' | 'live'
     symbol         = Column(String(32),    nullable=False)
@@ -268,6 +285,7 @@ class EquityPosition(Base):
         Index("ix_equity_positions_status",          "status"),
         Index("ix_equity_positions_strategy_symbol", "strategy_name", "symbol", "status"),
         Index("ix_equity_positions_mode_status",     "mode", "status"),
+        Index("ix_equity_positions_user_id",         "user_id"),
     )
 
     def to_dict(self):
@@ -479,7 +497,13 @@ class CustomStrategy(Base):
     # 'YYYY-MM-DD' of the last day this strategy's entry logic actually ran
     # (paper/live) — prevents double-entry if the scheduler ticks twice in
     # one day.
-    last_entry_date = Column(String(10), nullable=True)
+    # NOT a plain 'YYYY-MM-DD' anymore despite the name (kept for backward
+    # compat) — custom_strategy_scheduler.py's cycle-aware entry tracking
+    # stores a per-symbol JSON blob here (see _get/_set_last_entered_expiry),
+    # which routinely exceeds 10 chars — must stay Text, not VARCHAR(10)
+    # (see migration 0014; a too-narrow column here silently rolled back
+    # the entire entry transaction, including new positions, every time).
+    last_entry_date = Column(Text, nullable=True)
 
     # Performance tracking
     backtest_return_pct = Column(Numeric(8, 4), nullable=True)

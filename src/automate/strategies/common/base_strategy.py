@@ -12,7 +12,7 @@ from abc import ABC, abstractmethod
 from automate.broker.base_broker import BaseBroker
 from automate.compliance.sebi_rules import AuditTrail, KillSwitch, OrderRateLimiter, ComplianceError
 from automate.utils.logger import get_logger
-from automate.utils.telegram_alert import alert_error
+from automate.utils.notify import notify
 
 log = get_logger(__name__)
 
@@ -89,7 +89,13 @@ class BaseStrategy(ABC):
                 "Strategy compliance check failed for '%s': %s",
                 self._name, exc
             )
-            alert_error(self._name, f"Trade skipped — compliance check failed: {exc}")
+            # notify() writes the in-app Notification row AND sends Telegram
+            # (was Telegram-only via alert_error() before — a real gap: the
+            # Bell icon never saw these, only Telegram did). user_id: only
+            # RuleBasedStrategy (custom strategies) carries one — legacy
+            # hand-written strategies have no owning user, so this stays
+            # None for them (system-wide/admin-only, same as before).
+            notify(self._name, f"Trade skipped — compliance check failed: {exc}", level="warning", user_id=getattr(self, "user_id", None))
             return {"status": "failed", "error": str(exc)}
         except Exception as exc:
             log.critical(
@@ -98,7 +104,7 @@ class BaseStrategy(ABC):
             )
             # Activate kill switch on any unhandled exception
             self.kill_switch.activate(reason=f"Unhandled exception: {exc}")
-            alert_error(self._name, f"FATAL — kill switch activated: {exc}")
+            notify(self._name, f"FATAL — kill switch activated: {exc}", level="error", user_id=getattr(self, "user_id", None))
             return {"status": "failed", "error": str(exc)}
 
         log.info("=" * 60)

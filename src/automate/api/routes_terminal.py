@@ -9,10 +9,11 @@ under strategy_name = 'manual_trade'.
 import logging
 from datetime import date
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy import select
 
+from automate.api.auth import get_current_user
 from automate.api.deps import get_brokers
 from automate.db.engine import get_session
 from automate.db.models import Instrument, EquityPosition
@@ -152,20 +153,23 @@ def get_market_depth(key: str, mode: str = "paper"):
 
 
 @router.get("/positions")
-def list_manual_positions():
-    """List manual open and closed positions (strategy_name = 'manual_trade')."""
+def list_manual_positions(user: dict = Depends(get_current_user)):
+    """List manual open and closed positions (strategy_name = 'manual_trade') owned by the caller."""
+    user_id = int(user["sub"])
     with get_session() as session:
         open_pos = session.execute(
             select(EquityPosition).where(
                 (EquityPosition.strategy_name == "manual_trade") &
-                (EquityPosition.status == "OPEN")
+                (EquityPosition.status == "OPEN") &
+                (EquityPosition.user_id == user_id)
             ).order_by(EquityPosition.entry_date.desc())
         ).scalars().all()
 
         closed_pos = session.execute(
             select(EquityPosition).where(
                 (EquityPosition.strategy_name == "manual_trade") &
-                (EquityPosition.status == "CLOSED")
+                (EquityPosition.status == "CLOSED") &
+                (EquityPosition.user_id == user_id)
             ).order_by(EquityPosition.exit_date.desc()).limit(100)
         ).scalars().all()
 
@@ -176,11 +180,12 @@ def list_manual_positions():
 
 
 @router.post("/trade")
-def execute_manual_trade(req: ManualTradeRequest):
+def execute_manual_trade(req: ManualTradeRequest, user: dict = Depends(get_current_user)):
     """
     Place a manual buy/sell order on equities/options/futures/commodities.
     Maintains a FIFO/averaging position logic inside the `equity_positions` table.
     """
+    user_id = int(user["sub"])
     # 1. Lookup instrument to get details (symbol name, tick size, lot size)
     with get_session() as session:
         inst = session.get(Instrument, req.instrument_key)
@@ -212,7 +217,8 @@ def execute_manual_trade(req: ManualTradeRequest):
                 (EquityPosition.strategy_name == "manual_trade") &
                 (EquityPosition.symbol == req.instrument_key) &
                 (EquityPosition.mode == req.mode) &
-                (EquityPosition.status == "OPEN")
+                (EquityPosition.status == "OPEN") &
+                (EquityPosition.user_id == user_id)
             )
         ).scalar_one_or_none()
 
@@ -234,6 +240,7 @@ def execute_manual_trade(req: ManualTradeRequest):
                     quantity=req.quantity,
                     product=req.product,
                     tag="MANUAL_BUY",
+                    user_id=user_id,
                 )
             else:
                 order_id = broker.place_sell_order(
@@ -241,6 +248,7 @@ def execute_manual_trade(req: ManualTradeRequest):
                     quantity=req.quantity,
                     product=req.product,
                     tag="MANUAL_SELL",
+                    user_id=user_id,
                 )
         except RuntimeError as exc:
             # Shortfall exceptions raised by PaperBroker
@@ -258,6 +266,7 @@ def execute_manual_trade(req: ManualTradeRequest):
         if action == "OPEN":
             # Create new open position
             new_pos = EquityPosition(
+                user_id=user_id,
                 strategy_name="manual_trade",
                 mode=req.mode,
                 symbol=req.instrument_key,  # Store full token as symbol
@@ -311,6 +320,7 @@ def execute_manual_trade(req: ManualTradeRequest):
 
             # Create a separate closed position row for the closed portion to log P&L correctly
             closed_portion = EquityPosition(
+                user_id=user_id,
                 strategy_name="manual_trade",
                 mode=req.mode,
                 symbol=req.instrument_key,
@@ -339,11 +349,13 @@ def execute_manual_trade(req: ManualTradeRequest):
 
 
 @router.post("/positions/{position_id}/close")
-def close_manual_position(position_id: int):
+def close_manual_position(position_id: int, user: dict = Depends(get_current_user)):
     """Directly exit / square off an active manual position by its database ID."""
     with get_session() as session:
         pos = session.get(EquityPosition, position_id)
         if pos is None:
+            raise HTTPException(status_code=404, detail="Manual position not found.")
+        if pos.user_id is not None and pos.user_id != int(user["sub"]) and user.get("role") != "admin":
             raise HTTPException(status_code=404, detail="Manual position not found.")
         if pos.status != "OPEN":
             raise HTTPException(status_code=400, detail="Position is already closed.")
@@ -360,4 +372,4 @@ def close_manual_position(position_id: int):
             mode=pos.mode
         )
 
-    return execute_manual_trade(req)
+    return execute_manual_trade(req, user)

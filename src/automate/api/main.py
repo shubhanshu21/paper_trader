@@ -31,6 +31,7 @@ from automate.api import (
     routes_advanced_orders, routes_multi_leg, routes_performance,
     routes_custom_strategies, routes_strategy_deployment, routes_health,
     ws_custom_strategy_greeks, routes_notifications, ws_notifications,
+    ws_custom_strategy_positions, ws_market_depth,
 )
 from automate.config import PanelAuthConfig
 
@@ -163,6 +164,8 @@ app.include_router(routes_strategy_deployment.router)
 app.include_router(routes_health.router)
 app.include_router(ws_positions.router)
 app.include_router(ws_custom_strategy_greeks.router)
+app.include_router(ws_custom_strategy_positions.router)
+app.include_router(ws_market_depth.router)
 app.include_router(routes_notifications.router)
 app.include_router(ws_notifications.router)
 

@@ -72,7 +72,12 @@ class CustomRuleBacktestEngine:
         self.equity_key = equity_key
 
         self.feed = BhavcopyDataFeed(self.session, self.symbol, equity_key, option_instrument, future_instrument)
-        self.broker = MockBroker(data_feed=self.feed, slippage_pct=0.0)
+        # Same 0.1% default PaperBroker uses for live paper trading (see
+        # broker/mock_broker.py's default) — a backtest with ZERO slippage
+        # (the old value here) is systematically more optimistic than what
+        # paper/live trading actually experiences on every fill, making
+        # backtest-vs-paper-vs-live numbers not truly comparable.
+        self.broker = MockBroker(data_feed=self.feed)
         self.audit = AuditTrail(audit_log_path=audit_log_path)
         self.rate_limiter = OrderRateLimiter(max_per_second=10)
 
