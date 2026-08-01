@@ -1,33 +1,32 @@
-import { useState, useEffect, useRef } from "react";
-import { X, ChevronRight, Check, Search, LayoutTemplate, AlertTriangle } from "lucide-react";
+import { useState, useEffect, useRef, lazy, Suspense } from "react";
+import { X, ChevronRight, Check, Search, LayoutTemplate, AlertTriangle, RefreshCw } from "lucide-react";
 import { C, FONT, formatTime12h, fmtDate, Select } from "./Common";
-import StrategyFlowCanvas, {
+import { type CustomStrategy, type CustomStrategyRules } from "../api";
+import {
   type LegForm, newLeg, type ConditionForm, newCondition, type EntryMode, type StrikeMode,
-} from "./StrategyFlowCanvas";
+} from "./strategyBuilderTypes";
 
+// @xyflow/react (the node canvas) is a sizeable dependency only needed
+// once a user actually reaches Step 2 of the builder — code-split so it's
+// not in the app's main bundle for every page load (dashboard, orders,
+// etc. never touch it). Types/constructors above come from
+// strategyBuilderTypes.ts, NOT this lazy import, so initial form state
+// doesn't have to wait on the chunk loading.
+const StrategyFlowCanvas = lazy(() => import("./StrategyFlowCanvas"));
 
-interface EditableStrategy {
-  id: number;
-  name: string;
-  instrument_type: string;
-  symbols: string[];
-  rules: {
-    legs: {
-      action: "BUY" | "SELL"; option_type: "CE" | "PE"; strike_selection: { mode: StrikeMode; value: number | null }; lots: number;
-      expiry_mode?: "WEEKLY" | "MONTHLY" | null;
-      sizing?: { mode: "LOTS" | "RISK_PCT"; risk_pct?: number } | null;
-      exit?: { take_profit_pct: number | null; stop_loss_pct: number | null; trailing?: { enabled: boolean; trail_amount: number; trail_type: "points" | "percent" } | null } | null;
-    }[];
-    entry: { mode: EntryMode; time: string | null; condition?: { type: "MA_CROSSOVER"; period_days: number; direction: "ABOVE" | "BELOW" } | { type: "IV_RANK"; operator: "ABOVE" | "BELOW"; threshold: number } | null };
-    expiry?: { mode: "WEEKLY" | "MONTHLY" };
-    exit: { take_profit_pct: number | null; stop_loss_pct: number | null; exit_time: string | null; exit_days_before_expiry: number };
-  } | null;
-}
+type EditableStrategy = Pick<CustomStrategy, "id" | "name" | "instrument_type" | "symbols" | "rules">;
 
 interface StrategyBuilderModalProps {
   onClose: () => void;
   onSuccess: () => void;
   editStrategy?: EditableStrategy | null;
+  // Dispatch the redux thunk (see router/index.tsx's StrategiesConnected) —
+  // this modal never touches fetch()/the store directly, same boundary
+  // Advanced Orders draws (AdvancedOrdersView's onCreateOco/etc. props).
+  // Rejects with the server's per-field validation messages (string[]) via
+  // ApiError.detail — see store/thunks/customStrategiesThunks.ts.
+  onCreate: (payload: { name: string; instrument_type: string; symbols: string[]; rules: CustomStrategyRules }) => Promise<CustomStrategy>;
+  onUpdate: (id: number, payload: { name: string; symbols: string[]; rules: CustomStrategyRules }) => Promise<CustomStrategy>;
 }
 
 function legFromEditable(l: NonNullable<EditableStrategy["rules"]>["legs"][number]): LegForm {
@@ -118,7 +117,7 @@ function conditionPhrase(condition: ConditionForm): string {
   return `IV rank is ${condition.iv_operator === "ABOVE" ? "above" : "below"} ${condition.iv_threshold}`;
 }
 
-export default function StrategyBuilderModal({ onClose, onSuccess, editStrategy }: StrategyBuilderModalProps) {
+export default function StrategyBuilderModal({ onClose, onSuccess, editStrategy, onCreate, onUpdate }: StrategyBuilderModalProps) {
   const isEditing = !!editStrategy;
   const [step, setStep] = useState(1);
   const [loading, setLoading] = useState(false);
@@ -184,16 +183,16 @@ export default function StrategyBuilderModal({ onClose, onSuccess, editStrategy 
     fetchSymbols();
   }, []);
 
+  const firstSelectedSymbol = selectedSymbols[0];
   useEffect(() => {
-    const symbol = selectedSymbols[0];
-    if (!symbol) {
+    if (!firstSelectedSymbol) {
       setExpiryPreview([]);
       return;
     }
     let cancelled = false;
     (async () => {
       try {
-        const response = await fetch(`/api/custom-strategies/templates/expiries?symbol=${encodeURIComponent(symbol)}`, { credentials: "include" });
+        const response = await fetch(`/api/custom-strategies/templates/expiries?symbol=${encodeURIComponent(firstSelectedSymbol)}`, { credentials: "include" });
         if (response.ok && !cancelled) {
           const data = await response.json();
           setExpiryPreview(data.expiries || []);
@@ -205,7 +204,7 @@ export default function StrategyBuilderModal({ onClose, onSuccess, editStrategy 
       }
     })();
     return () => { cancelled = true; };
-  }, [selectedSymbols.join(",")]);
+  }, [firstSelectedSymbol]);
 
   useEffect(() => {
     function handleClickOutside(event: MouseEvent) {
@@ -300,27 +299,20 @@ export default function StrategyBuilderModal({ onClose, onSuccess, editStrategy 
     setLoading(true);
     setError([]);
     try {
-      const response = await fetch(
-        isEditing ? `/api/custom-strategies/${editStrategy!.id}` : "/api/custom-strategies",
-        {
-          method: isEditing ? "PUT" : "POST",
-          credentials: "include",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(
-            isEditing
-              ? { name, symbols: selectedSymbols, rules: buildRules() }
-              : { name, instrument_type: instrumentType, symbols: selectedSymbols, rules: buildRules() }
-          ),
-        }
-      );
-      if (response.ok) {
-        onSuccess();
+      if (isEditing) {
+        await onUpdate(editStrategy!.id, { name, symbols: selectedSymbols, rules: buildRules() as CustomStrategyRules });
       } else {
-        const err = await response.json();
-        setError(Array.isArray(err.detail) ? err.detail : [err.detail || "Unknown error"]);
+        await onCreate({ name, instrument_type: instrumentType, symbols: selectedSymbols, rules: buildRules() as CustomStrategyRules });
       }
-    } catch {
-      setError(["Failed to create strategy. Please try again."]);
+      onSuccess();
+    } catch (err) {
+      // onCreate/onUpdate reject with either the server's per-field
+      // validation messages (string[] — see rule_schema.validate_rules())
+      // or a single message string, via ApiError.detail through
+      // rejectWithValue (see customStrategiesThunks.ts) — never a plain
+      // serialized RTK error here since these thunks always use
+      // rejectWithValue on failure.
+      setError(Array.isArray(err) ? err : [typeof err === "string" ? err : "Failed to save strategy. Please try again."]);
     } finally {
       setLoading(false);
     }
@@ -508,29 +500,35 @@ export default function StrategyBuilderModal({ onClose, onSuccess, editStrategy 
                 </div>
               </div>
 
-              <StrategyFlowCanvas
-                symbols={selectedSymbols}
-                legs={legs}
-                onUpdateLeg={updateLeg}
-                onRemoveLeg={removeLeg}
-                onAddLeg={addLeg}
-                entryMode={entryMode}
-                onEntryModeChange={setEntryMode}
-                entryTime={entryTime}
-                onEntryTimeChange={setEntryTime}
-                condition={condition}
-                onConditionChange={(patch) => setCondition((c) => ({ ...c, ...patch }))}
-                takeProfitPct={takeProfitPct}
-                stopLossPct={stopLossPct}
-                exitTime={exitTime}
-                exitDaysBeforeExpiry={exitDaysBeforeExpiry}
-                onExitChange={(patch) => {
-                  if (patch.takeProfitPct !== undefined) setTakeProfitPct(patch.takeProfitPct);
-                  if (patch.stopLossPct !== undefined) setStopLossPct(patch.stopLossPct);
-                  if (patch.exitTime !== undefined) setExitTime(patch.exitTime);
-                  if (patch.exitDaysBeforeExpiry !== undefined) setExitDaysBeforeExpiry(patch.exitDaysBeforeExpiry);
-                }}
-              />
+              <Suspense fallback={
+                <div className="flex items-center justify-center" style={{ height: 560, background: "#fafafa", borderRadius: 12, border: `1px solid ${C.border2}` }}>
+                  <RefreshCw size={20} className="animate-spin" style={{ color: C.orange }} />
+                </div>
+              }>
+                <StrategyFlowCanvas
+                  symbols={selectedSymbols}
+                  legs={legs}
+                  onUpdateLeg={updateLeg}
+                  onRemoveLeg={removeLeg}
+                  onAddLeg={addLeg}
+                  entryMode={entryMode}
+                  onEntryModeChange={setEntryMode}
+                  entryTime={entryTime}
+                  onEntryTimeChange={setEntryTime}
+                  condition={condition}
+                  onConditionChange={(patch) => setCondition((c) => ({ ...c, ...patch }))}
+                  takeProfitPct={takeProfitPct}
+                  stopLossPct={stopLossPct}
+                  exitTime={exitTime}
+                  exitDaysBeforeExpiry={exitDaysBeforeExpiry}
+                  onExitChange={(patch) => {
+                    if (patch.takeProfitPct !== undefined) setTakeProfitPct(patch.takeProfitPct);
+                    if (patch.stopLossPct !== undefined) setStopLossPct(patch.stopLossPct);
+                    if (patch.exitTime !== undefined) setExitTime(patch.exitTime);
+                    if (patch.exitDaysBeforeExpiry !== undefined) setExitDaysBeforeExpiry(patch.exitDaysBeforeExpiry);
+                  }}
+                />
+              </Suspense>
 
               {findDuplicateLegPairs(legs).map(([i, j]) => (
                 <div key={`${i}-${j}`} className="flex items-start gap-2 px-3 py-2 rounded-lg text-xs" style={{ background: "#fff9e6", color: "#a16a00" }}>

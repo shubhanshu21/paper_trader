@@ -6,39 +6,22 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { C, FONT, useToast, DatePicker, fmtDate, fmtDateTime, formatTime12h, inr } from "./Common";
-import { wsUrl } from "../api";
+import { wsUrl, type CustomStrategy, type CustomStrategyRules } from "../api";
 import { useCustomStrategyPositions } from "../hooks/useCustomStrategyPositions";
 import StrategyBuilderModal from "./StrategyBuilderModal";
 import BacktestEquityChart from "./BacktestEquityChart";
 import PayoffDiagramChart from "./PayoffDiagramChart";
 
-interface StrategyLeg {
-  action: string;
-  option_type: string;
-  strike_selection: { mode: string; value: number | null };
-  lots: number;
-}
-
-interface StrategyRules {
-  legs: StrategyLeg[];
-  entry: { mode: string; time: string | null };
-  expiry?: { mode: string };
-  exit: { take_profit_pct: number | null; stop_loss_pct: number | null; exit_time: string | null; exit_days_before_expiry: number };
-}
-
-interface CustomStrategy {
-  id: number;
-  name: string;
-  description: string;
-  instrument_type: string;
-  symbols: string[];
-  rules: StrategyRules | null;
-  status: string;
-  backtest_return_pct: number | null;
-  paper_return_pct: number | null;
-  live_return_pct: number | null;
-  created_at: string;
-  deployed_at: string | null;
+interface StrategiesViewProps {
+  strategies: CustomStrategy[];
+  loading: boolean;
+  statusUpdatingId: number | null;
+  deletingId: number | null;
+  onRefresh: () => void;
+  onCreate: (payload: { name: string; instrument_type: string; symbols: string[]; rules: CustomStrategyRules }) => Promise<CustomStrategy>;
+  onUpdate: (id: number, payload: { name: string; symbols: string[]; rules: CustomStrategyRules }) => Promise<CustomStrategy>;
+  onStatusChange: (id: number, status: string) => Promise<CustomStrategy>;
+  onDelete: (id: number) => Promise<number>;
 }
 
 export interface StrategyTemplate {
@@ -711,11 +694,12 @@ function BacktestCompareModal({
   );
 }
 
-export default function StrategiesView() {
+export default function StrategiesView({
+  strategies, loading, statusUpdatingId, deletingId,
+  onRefresh, onCreate, onUpdate, onStatusChange, onDelete,
+}: StrategiesViewProps) {
   const toast = useToast();
-  const [strategies, setStrategies] = useState<CustomStrategy[]>([]);
   const [selectedStrategy, setSelectedStrategy] = useState<CustomStrategy | null>(null);
-  const [loading, setLoading] = useState(false);
   const [modalMode, setModalMode] = useState<null | "create" | "edit">(null);
   const [backtesting, setBacktesting] = useState(false);
   const [backtestProgress, setBacktestProgress] = useState<{ current: number; total: number } | null>(null);
@@ -728,6 +712,14 @@ export default function StrategiesView() {
   const STRATEGIES_PER_PAGE = 5;
   const [liveGreeks, setLiveGreeks] = useState<LiveGreeksResponse | null>(null);
   const [expiryDatePreview, setExpiryDatePreview] = useState<string | null>(null);
+
+  // Keep the selection valid whenever the redux-backed `strategies` list
+  // changes (initial load, create, update, status change, delete) — same
+  // "keep it if it still exists, else fall back to the first one" logic
+  // the old local loadStrategies() used to run inline after every fetch.
+  useEffect(() => {
+    setSelectedStrategy((prev) => (strategies.find((s) => s.id === prev?.id) || strategies[0]) ?? null);
+  }, [strategies]);
 
   const strategiesTotalPages = Math.max(1, Math.ceil(strategies.length / STRATEGIES_PER_PAGE));
   useEffect(() => {
@@ -850,8 +842,8 @@ export default function StrategiesView() {
   const [backtestRangeTarget, setBacktestRangeTarget] = useState<CustomStrategy | null>(null);
 
   useEffect(() => {
-    loadStrategies();
-  }, []);
+    onRefresh();
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const greeksWsRef = useRef<WebSocket | null>(null);
 
@@ -887,41 +879,13 @@ export default function StrategiesView() {
     };
   }, [selectedStrategy?.id, selectedStrategy?.status]);
 
-  const loadStrategies = async () => {
-    setLoading(true);
-    try {
-      const response = await fetch("/api/custom-strategies", { credentials: "include" });
-      const data = await response.json();
-      setStrategies(data.strategies || []);
-      if (data.strategies && data.strategies.length > 0) {
-        setSelectedStrategy((prev) => data.strategies.find((s: CustomStrategy) => s.id === prev?.id) || data.strategies[0]);
-      }
-    } catch (error) {
-      console.error("Failed to load strategies:", error);
-    } finally {
-      setLoading(false);
-    }
-  };
-
   const handleStatusChange = async (strategy: CustomStrategy, newStatus: string) => {
     try {
-      const response = await fetch(`/api/custom-strategies/${strategy.id}/status`, {
-        method: "PATCH",
-        credentials: "include",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ status: newStatus }),
-      });
-      const updated = await response.json();
-      if (response.ok) {
-        setStrategies(strategies.map(s => s.id === strategy.id ? updated : s));
-        if (selectedStrategy?.id === strategy.id) setSelectedStrategy(updated);
-        toast.success(`Strategy "${strategy.name}" is now ${newStatus.replace("_", " ").toLowerCase()}`);
-      } else {
-        toast.error(updated.detail || "Failed to update status.");
-      }
-    } catch (error) {
-      console.error("Failed to update status:", error);
-      toast.error("Failed to update status.");
+      const updated = await onStatusChange(strategy.id, newStatus);
+      if (selectedStrategy?.id === strategy.id) setSelectedStrategy(updated);
+      toast.success(`Strategy "${strategy.name}" is now ${newStatus.replace("_", " ").toLowerCase()}`);
+    } catch (err) {
+      toast.error((Array.isArray(err) ? err.join(" ") : typeof err === "string" ? err : null) || "Failed to update status.");
     }
   };
 
@@ -956,7 +920,7 @@ export default function StrategiesView() {
         setShowBacktestModal(true);
         setBacktesting(false);
         setBacktestProgress(null);
-        loadStrategies();
+        onRefresh();
         loadBacktestRuns(strategy);
         toast.success("Backtest completed successfully!");
         return;
@@ -1004,26 +968,14 @@ export default function StrategiesView() {
 
   const handleDeleteStrategy = async (strategy: CustomStrategy) => {
     try {
-      const response = await fetch(`/api/custom-strategies/${strategy.id}`, {
-        method: "DELETE",
-        credentials: "include",
-      });
-      if (response.ok) {
-        const updatedStrategies = strategies.filter(s => s.id !== strategy.id);
-        setStrategies(updatedStrategies);
-        if (selectedStrategy?.id === strategy.id) {
-          setSelectedStrategy(updatedStrategies.length > 0 ? updatedStrategies[0] : null);
-          setBacktestResult(null);
-          setBacktestError("");
-        }
-        toast.success("Strategy deleted successfully!");
-      } else {
-        const data = await response.json();
-        toast.error(data.detail || "Failed to delete strategy.");
+      await onDelete(strategy.id);
+      if (selectedStrategy?.id === strategy.id) {
+        setBacktestResult(null);
+        setBacktestError("");
       }
-    } catch (error) {
-      console.error("Failed to delete strategy:", error);
-      toast.error("Failed to delete strategy.");
+      toast.success("Strategy deleted successfully!");
+    } catch (err) {
+      toast.error((Array.isArray(err) ? err.join(" ") : typeof err === "string" ? err : null) || "Failed to delete strategy.");
     }
   };
 
@@ -1124,9 +1076,10 @@ export default function StrategiesView() {
                                     onConfirm: () => handleStatusChange(strategy, "STOPPED")
                                   });
                                 }}
-                                className="flex items-center justify-center w-6 h-6 rounded-md transition-colors focus:outline-none hover:opacity-80"
+                                disabled={statusUpdatingId === strategy.id}
+                                className="flex items-center justify-center w-6 h-6 rounded-md transition-colors focus:outline-none hover:opacity-80 disabled:opacity-40 disabled:cursor-not-allowed"
                                 style={{ backgroundColor: C.sellBg, color: C.red }} title="Stop strategy">
-                                <AlertCircle size={12} />
+                                {statusUpdatingId === strategy.id ? <RefreshCw size={12} className="animate-spin" /> : <AlertCircle size={12} />}
                               </button>
                             )}
                             {["DRAFT", "STOPPED"].includes(strategy.status) && (
@@ -1141,9 +1094,10 @@ export default function StrategiesView() {
                                     onConfirm: () => handleDeleteStrategy(strategy)
                                   });
                                 }}
-                                className="flex items-center justify-center w-6 h-6 rounded-md transition-colors focus:outline-none hover:opacity-80"
+                                disabled={deletingId === strategy.id}
+                                className="flex items-center justify-center w-6 h-6 rounded-md transition-colors focus:outline-none hover:opacity-80 disabled:opacity-40 disabled:cursor-not-allowed"
                                 style={{ backgroundColor: C.sellBg, color: C.red }} title="Delete strategy">
-                                <Trash2 size={12} />
+                                {deletingId === strategy.id ? <RefreshCw size={12} className="animate-spin" /> : <Trash2 size={12} />}
                               </button>
                             )}
                           </div>
@@ -1700,14 +1654,15 @@ export default function StrategiesView() {
       {modalMode && (
         <StrategyBuilderModal
           onClose={() => setModalMode(null)}
-          onSuccess={() => { setModalMode(null); loadStrategies(); }}
+          onSuccess={() => setModalMode(null)}
+          onCreate={onCreate}
+          onUpdate={onUpdate}
           editStrategy={modalMode === "edit" && selectedStrategy ? {
             id: selectedStrategy.id,
             name: selectedStrategy.name,
             instrument_type: selectedStrategy.instrument_type,
             symbols: selectedStrategy.symbols,
-            // Server-validated (rule_schema.validate_rules) — literal unions are guaranteed at runtime.
-            rules: selectedStrategy.rules as unknown as { legs: { action: "BUY" | "SELL"; option_type: "CE" | "PE"; strike_selection: { mode: "ATM" | "OTM_PERCENT" | "OTM_POINTS" | "FIXED"; value: number | null }; lots: number }[]; entry: { mode: "IMMEDIATE" | "AT_TIME"; time: string | null }; expiry?: { mode: "WEEKLY" | "MONTHLY" }; exit: { take_profit_pct: number | null; stop_loss_pct: number | null; exit_time: string | null; exit_days_before_expiry: number } } | null,
+            rules: selectedStrategy.rules,
           } : null}
         />
       )}

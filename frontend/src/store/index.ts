@@ -3,6 +3,7 @@ import authReducer from './slices/authSlice';
 import uiReducer from './slices/uiSlice';
 import dataReducer from './slices/dataSlice';
 import advancedOrdersReducer from './slices/advancedOrdersSlice';
+import customStrategiesReducer from './slices/customStrategiesSlice';
 
 export const store = configureStore({
   reducer: {
@@ -10,6 +11,7 @@ export const store = configureStore({
     ui: uiReducer,
     data: dataReducer,
     advancedOrders: advancedOrdersReducer,
+    customStrategies: customStrategiesReducer,
   },
 });
 

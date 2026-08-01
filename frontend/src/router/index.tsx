@@ -16,6 +16,10 @@ import {
   fetchAdvancedOrders, createOcoOrder, cancelOcoOrder,
   createTrailingStop, cancelTrailingStop, createBracketOrder, cancelBracketOrder,
 } from '../store/thunks/advancedOrdersThunks';
+import {
+  fetchCustomStrategies, createCustomStrategy, updateCustomStrategy,
+  updateCustomStrategyStatus, deleteCustomStrategy,
+} from '../store/thunks/customStrategiesThunks';
 import { RootState, AppDispatch } from '../store';
 
 // Connected components that use Redux
@@ -76,6 +80,25 @@ const AdvancedOrdersConnected = () => {
       onCancelOco={(id) => dispatch(cancelOcoOrder(id))}
       onCancelTrailingStop={(id) => dispatch(cancelTrailingStop(id))}
       onCancelBracket={(id) => dispatch(cancelBracketOrder(id))}
+    />
+  );
+};
+
+const StrategiesConnected = () => {
+  const dispatch = useDispatch<AppDispatch>();
+  const { strategies, loading, statusUpdatingId, deletingId } = useSelector((state: RootState) => state.customStrategies);
+
+  return (
+    <StrategiesView
+      strategies={strategies}
+      loading={loading}
+      statusUpdatingId={statusUpdatingId}
+      deletingId={deletingId}
+      onRefresh={() => dispatch(fetchCustomStrategies())}
+      onCreate={(payload) => dispatch(createCustomStrategy(payload)).unwrap()}
+      onUpdate={(id, payload) => dispatch(updateCustomStrategy({ id, payload })).unwrap()}
+      onStatusChange={(id, status) => dispatch(updateCustomStrategyStatus({ id, status })).unwrap()}
+      onDelete={(id) => dispatch(deleteCustomStrategy(id)).unwrap()}
     />
   );
 };
@@ -183,7 +206,7 @@ export const router = createBrowserRouter([
       },
       {
         path: 'strategies',
-        element: <StrategiesView />,
+        element: <StrategiesConnected />,
       },
       {
         path: 'orders',

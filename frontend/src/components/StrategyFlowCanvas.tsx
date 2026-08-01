@@ -8,62 +8,10 @@ import "@xyflow/react/dist/style.css";
 import { Trash2, Plus, Zap, TrendingDown, Percent } from "lucide-react";
 import { C } from "./Common";
 import { PortalDropdown } from "./PortalDropdown";
-
-// ---------------------------------------------------------------------------
-// Types — the strategy builder's full per-leg/entry/exit shape (Phase 3:
-// per-leg exit/trailing, per-leg expiry_mode calendar spreads, risk-based
-// sizing, conditional MA-crossover/IV-rank entry). StrategyBuilderModal.tsx
-// owns all of this as flat React state and passes it down here — this
-// component is a pure controlled view over that state, never its own
-// source of truth, so there's exactly one place rules get assembled for
-// submission.
-// ---------------------------------------------------------------------------
-export type StrikeMode = "ATM" | "OTM_PERCENT" | "OTM_POINTS" | "FIXED";
-export type ExpiryModeOverride = "" | "WEEKLY" | "MONTHLY"; // "" = inherit the strategy default
-export type SizingMode = "LOTS" | "RISK_PCT";
-export type EntryMode = "IMMEDIATE" | "AT_TIME" | "CONDITIONAL";
-export type ConditionType = "MA_CROSSOVER" | "IV_RANK";
-
-export interface LegForm {
-  action: "BUY" | "SELL";
-  option_type: "CE" | "PE";
-  strike_mode: StrikeMode;
-  strike_value: string;
-  lots: number;
-  expiry_mode: ExpiryModeOverride;
-  sizing_mode: SizingMode;
-  risk_pct: string;
-  leg_take_profit_pct: string;
-  leg_stop_loss_pct: string;
-  trailing_enabled: boolean;
-  trail_amount: string;
-  trail_type: "points" | "percent";
-}
-
-export const newLeg = (): LegForm => ({
-  action: "SELL", option_type: "CE", strike_mode: "ATM", strike_value: "", lots: 1,
-  expiry_mode: "", sizing_mode: "LOTS", risk_pct: "",
-  leg_take_profit_pct: "", leg_stop_loss_pct: "", trailing_enabled: false, trail_amount: "", trail_type: "points",
-});
-
-export interface ConditionForm {
-  type: ConditionType;
-  ma_period_days: string;
-  ma_direction: "ABOVE" | "BELOW";
-  iv_operator: "ABOVE" | "BELOW";
-  iv_threshold: string;
-}
-
-export const newCondition = (): ConditionForm => ({
-  type: "MA_CROSSOVER", ma_period_days: "20", ma_direction: "ABOVE", iv_operator: "ABOVE", iv_threshold: "50",
-});
-
-const strikeLabel = (leg: LegForm): string => {
-  if (leg.strike_mode === "ATM") return "ATM";
-  if (leg.strike_mode === "OTM_PERCENT") return `${leg.strike_value || "?"}% OTM`;
-  if (leg.strike_mode === "OTM_POINTS") return `${leg.strike_value || "?"}pt OTM`;
-  return `@${leg.strike_value || "?"}`;
-};
+import {
+  type StrikeMode, type ExpiryModeOverride, type EntryMode, type ConditionType,
+  type LegForm, type ConditionForm, strikeLabel,
+} from "./strategyBuilderTypes";
 
 // ---------------------------------------------------------------------------
 // Node components
@@ -403,7 +351,11 @@ function StrategyFlowCanvasInner(props: StrategyFlowCanvasProps) {
       },
     ];
     return list;
-  }, [symbols, legs, entryMode, entryTime, condition, takeProfitPct, stopLossPct, exitTime, exitDaysBeforeExpiry, dragPositions, layout, hasCalendarSpread]);
+  }, [
+    symbols, legs, entryMode, entryTime, condition, takeProfitPct, stopLossPct, exitTime, exitDaysBeforeExpiry,
+    dragPositions, layout, hasCalendarSpread,
+    onAddLeg, onConditionChange, onEntryModeChange, onEntryTimeChange, onExitChange, onRemoveLeg, onUpdateLeg,
+  ]);
 
   const edges: Edge[] = useMemo(() => {
     const list: Edge[] = [{ id: "symbol-entry", source: "symbol", target: "entry" }];

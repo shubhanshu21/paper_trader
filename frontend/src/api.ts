@@ -255,6 +255,53 @@ export interface AdvancedOrdersList {
   bracket_orders: BracketOrder[];
 }
 
+// Custom strategies (strategy builder) — the full Phase 3 per-leg/entry/exit
+// rules shape (per-leg exit/trailing/expiry_mode/sizing, conditional entry).
+// Every field below the top level is optional/nullable so a pre-Phase-3
+// strategy (none of these set) round-trips unchanged — see rule_schema.py.
+export interface CustomStrategyLeg {
+  action: 'BUY' | 'SELL';
+  option_type: 'CE' | 'PE';
+  strike_selection: { mode: 'ATM' | 'OTM_PERCENT' | 'OTM_POINTS' | 'FIXED'; value: number | null };
+  lots: number;
+  expiry_mode?: 'WEEKLY' | 'MONTHLY' | null;
+  sizing?: { mode: 'LOTS' | 'RISK_PCT'; risk_pct?: number } | null;
+  exit?: {
+    take_profit_pct: number | null;
+    stop_loss_pct: number | null;
+    trailing?: { enabled: boolean; trail_amount: number; trail_type: 'points' | 'percent' } | null;
+  } | null;
+}
+
+export interface CustomStrategyRules {
+  legs: CustomStrategyLeg[];
+  entry: {
+    mode: 'IMMEDIATE' | 'AT_TIME' | 'CONDITIONAL';
+    time: string | null;
+    condition?:
+      | { type: 'MA_CROSSOVER'; period_days: number; direction: 'ABOVE' | 'BELOW' }
+      | { type: 'IV_RANK'; operator: 'ABOVE' | 'BELOW'; threshold: number }
+      | null;
+  };
+  expiry?: { mode: 'WEEKLY' | 'MONTHLY' };
+  exit: { take_profit_pct: number | null; stop_loss_pct: number | null; exit_time: string | null; exit_days_before_expiry: number };
+}
+
+export interface CustomStrategy {
+  id: number;
+  name: string;
+  description: string;
+  instrument_type: string;
+  symbols: string[];
+  rules: CustomStrategyRules | null;
+  status: string;
+  backtest_return_pct: number | null;
+  paper_return_pct: number | null;
+  live_return_pct: number | null;
+  created_at: string;
+  deployed_at: string | null;
+}
+
 export interface LeaderboardRow {
   strategy: string;
   symbol: string;
@@ -346,6 +393,20 @@ function getCookie(name: string): string {
   return '';
 }
 
+// Carries the raw (possibly per-field-list) `detail` from a FastAPI error
+// response alongside a flattened `.message`, so callers that want the
+// original list (e.g. StrategyBuilderModal's per-line validation errors —
+// rule_schema.validate_rules() returns List[str]) don't have to re-parse
+// a stringified error. Thrown by request() below on any non-2xx response.
+export class ApiError extends Error {
+  detail?: string | string[];
+  constructor(message: string, detail?: string | string[]) {
+    super(message);
+    this.name = 'ApiError';
+    this.detail = detail;
+  }
+}
+
 async function request<T>(url: string, options: RequestInit = {}): Promise<T> {
   const method = options.method || 'GET';
   const headers = new Headers(options.headers || {});
@@ -366,13 +427,15 @@ async function request<T>(url: string, options: RequestInit = {}): Promise<T> {
 
   if (!response.ok) {
     let errMsg = `Request failed: ${response.statusText}`;
+    let detail: string | string[] | undefined;
     try {
       const data = await response.json();
-      errMsg = data.detail || errMsg;
+      detail = data.detail;
+      errMsg = Array.isArray(detail) ? detail.join(' ') : detail || errMsg;
     } catch {
       // ignore
     }
-    throw new Error(errMsg);
+    throw new ApiError(errMsg, detail);
   }
 
   return response.json() as Promise<T>;
@@ -546,4 +609,31 @@ export const api = {
 
   // Leaderboard
   getLeaderboard: () => request<{ rows: LeaderboardRow[] }>('/api/leaderboard'),
+
+  // Custom strategies (the strategy builder) — list/create/update/delete/status
+  // only; everything per-selected-strategy and ephemeral (payoff, live greeks,
+  // positions, backtest run polling) stays a page-local fetch in
+  // StrategiesView.tsx, same boundary Advanced Orders already draws between
+  // shared/mutating list state (redux) and view-local queries.
+  listCustomStrategies: () => request<{ strategies: CustomStrategy[] }>('/api/custom-strategies'),
+  createCustomStrategy: (payload: { name: string; instrument_type: string; symbols: string[]; rules: CustomStrategyRules }) =>
+    request<CustomStrategy>('/api/custom-strategies', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    }),
+  updateCustomStrategy: (id: number, payload: { name: string; symbols: string[]; rules: CustomStrategyRules }) =>
+    request<CustomStrategy>(`/api/custom-strategies/${id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    }),
+  updateCustomStrategyStatus: (id: number, status: string) =>
+    request<CustomStrategy>(`/api/custom-strategies/${id}/status`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status }),
+    }),
+  deleteCustomStrategy: (id: number) =>
+    request<{ status: string }>(`/api/custom-strategies/${id}`, { method: 'DELETE' }),
 };
