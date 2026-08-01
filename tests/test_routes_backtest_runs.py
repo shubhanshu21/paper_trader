@@ -11,6 +11,7 @@ tests/test_routes_advanced_orders.py) against an in-memory SQLite DB.
 CustomRuleBacktestEngine and compute_nifty_benchmark_return are patched at
 their source module so no real bhavcopy data / MySQL is needed.
 """
+import asyncio
 import json
 from unittest.mock import patch
 
@@ -206,8 +207,13 @@ class TestRunBacktestSync:
 
 class TestBacktestStrategyEndpoint:
     def test_queues_run_and_returns_run_id(self, db, strategy, monkeypatch):
+        # backtest_strategy is `async def` (see routes_custom_strategies.py —
+        # must run ON the event loop for asyncio.create_task() inside it to
+        # find a running loop; a plain `def` route runs in FastAPI's
+        # threadpool instead, where create_task() raises "no running event
+        # loop" — the exact bug this test guards against regressing).
         monkeypatch.setattr(routes.asyncio, "create_task", lambda coro: coro.close())
-        resp = backtest_strategy(strategy.id, BacktestRequest(), db, USER)
+        resp = asyncio.run(backtest_strategy(strategy.id, BacktestRequest(), db, USER))
 
         assert resp["status"] == "QUEUED"
         row = db.query(CustomBacktestRun).filter(CustomBacktestRun.id == resp["run_id"]).first()
@@ -218,13 +224,13 @@ class TestBacktestStrategyEndpoint:
     def test_rejects_strategy_with_no_rules(self, db):
         s = _make_strategy(db, name="No rules", symbols=json.dumps(["RELIANCE"]), rules_json=None)
         with pytest.raises(HTTPException) as exc_info:
-            backtest_strategy(s.id, BacktestRequest(), db, USER)
+            asyncio.run(backtest_strategy(s.id, BacktestRequest(), db, USER))
         assert exc_info.value.status_code == 400
 
     def test_rejects_commodity_strategy(self, db):
         s = _make_strategy(db, name="Commodity", instrument_type="COMMODITY", symbols=json.dumps(["GOLD"]))
         with pytest.raises(HTTPException) as exc_info:
-            backtest_strategy(s.id, BacktestRequest(), db, USER)
+            asyncio.run(backtest_strategy(s.id, BacktestRequest(), db, USER))
         assert exc_info.value.status_code == 400
 
 

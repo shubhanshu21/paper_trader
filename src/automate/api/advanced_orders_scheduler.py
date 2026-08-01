@@ -38,6 +38,7 @@ from automate.db.engine import SessionLocal
 from automate.db.models import AdvancedOrder
 from automate.utils.logger import get_logger
 from automate.utils.notify import notify
+from automate.utils.trailing_stop import advance_trailing_stop, exit_transaction_type
 from automate.api.advanced_orders_common import leg_triggered, place_leg, simulate_paper_fill
 
 log = get_logger(__name__)
@@ -142,32 +143,14 @@ def _tick_trailing_stop(order: AdvancedOrder, brokers: dict) -> None:
             return
 
     side = state["side"]
-    advanced = False
-    if side == "BUY":
-        # Protecting a LONG position — stop trails upward under the price,
-        # exits via SELL when price falls back to the stop.
-        if state["highest_price"] is None or ltp > state["highest_price"]:
-            state["highest_price"] = ltp
-            state["current_stop_price"] = (
-                ltp - state["trail_amount"] if state["trail_type"] == "points"
-                else ltp * (1 - state["trail_amount"] / 100)
-            )
-            advanced = True
-    else:
-        # Protecting a SHORT position — stop trails downward above the
-        # price, exits via BUY when price rises back to the stop.
-        if state["lowest_price"] is None or ltp < state["lowest_price"]:
-            state["lowest_price"] = ltp
-            state["current_stop_price"] = (
-                ltp + state["trail_amount"] if state["trail_type"] == "points"
-                else ltp * (1 + state["trail_amount"] / 100)
-            )
-            advanced = True
+    state["highest_price"], state["lowest_price"], state["current_stop_price"], advanced = advance_trailing_stop(
+        side, ltp, state["trail_amount"], state["trail_type"],
+        state["highest_price"], state["lowest_price"], state["current_stop_price"],
+    )
 
-    exit_transaction_type = "SELL" if side == "BUY" else "BUY"
     exit_leg = {
         "instrument_token": state["instrument_token"],
-        "transaction_type": exit_transaction_type,
+        "transaction_type": exit_transaction_type(side),
         "quantity": state["quantity"],
         "order_type": "SL-M",
         "trigger_price": state["current_stop_price"],

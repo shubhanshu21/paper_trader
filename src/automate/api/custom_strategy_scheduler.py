@@ -43,6 +43,8 @@ from automate.utils.instrument_cache import InstrumentCache
 from automate.utils.logger import get_logger
 from automate.utils.notify import notify
 from automate.utils.option_utils import check_exit_trigger, is_within_pre_expiry_buffer
+from automate.utils.trailing_stop import advance_trailing_stop, stop_triggered
+from sqlalchemy import text
 
 log = get_logger(__name__)
 
@@ -159,18 +161,41 @@ def _is_leg_for_symbol(instrument_key: str, symbol: str) -> bool:
     return bool(pattern.match(encoded))
 
 
-def _get_last_entered_expiry(strategy: CustomStrategy, symbol: str) -> Optional[str]:
+def _leg_groups(rules: dict) -> dict:
     """
-    The expiry date this symbol's basket was last entered for, or None.
-    Stored in the same last_entry_date JSON column (name kept for
-    backward compatibility — no migration needed) but the value per
-    symbol is now {"expiry": "YYYY-MM-DD"} rather than a bare calendar
-    date string, since re-entry must be gated on the expiry CYCLE, not
-    the day of the week (see module docstring). A legacy plain date
-    string (pre-existing rows, or the old bare-string-per-symbol shape)
-    is treated as "no expiry recorded yet" — worst case one extra entry
-    attempt gets made once, which correctly checks has_open_position
-    first anyway.
+    Group leg indices by their EFFECTIVE expiry_mode (a leg's own
+    rule_schema.py `expiry_mode` override, or the strategy's default
+    `expiry.mode`) — legs sharing a mode enter/exit their basket TOGETHER
+    as one unit (today's only behavior: every leg shares the strategy
+    default, so this returns exactly one group containing every leg
+    index). A leg with a DIFFERENT mode from the rest (a calendar spread
+    — e.g. a near-week short + a far-week long at the same strike) gets
+    its own independent group, re-entered/rolled on its own cycle instead
+    of being forced to wait for the other group's expiry to roll too.
+    Returns {mode: [leg_index, ...]}.
+    """
+    default_mode = (rules.get("expiry") or {}).get("mode", "WEEKLY")
+    groups: dict = defaultdict(list)
+    for i, leg in enumerate(rules["legs"]):
+        groups[leg.get("expiry_mode") or default_mode].append(i)
+    return dict(groups)
+
+
+def _get_last_entered_expiry(strategy: CustomStrategy, symbol: str, mode: str) -> Optional[str]:
+    """
+    The expiry date this symbol's `mode`-cycle basket (see _leg_groups)
+    was last entered for, or None. Stored in the same last_entry_date
+    JSON column (name kept for backward compatibility — no migration
+    needed); the shape is now {symbol: {mode: {"expiry": ..., "date": ...}}}
+    — nested one level deeper than before, by expiry mode, so a calendar
+    spread's two (or more) independently-cycling leg groups don't
+    clobber each other's cycle-tracking under the same symbol key. A
+    pre-existing row in the OLD flat {symbol: {"expiry": ...}} shape (or
+    an even older bare date string) is treated as "no expiry recorded
+    yet for this mode" — worst case one extra entry attempt gets made
+    once, which correctly checks has_open_position first anyway; this is
+    the exact same graceful-degradation the old flat shape already
+    documented for ITS predecessor.
     """
     if not strategy.last_entry_date:
         return None
@@ -180,30 +205,38 @@ def _get_last_entered_expiry(strategy: CustomStrategy, symbol: str) -> Optional[
         return None
     if not isinstance(data, dict):
         return None
-    entry = data.get(symbol)
-    return entry.get("expiry") if isinstance(entry, dict) else None
+    symbol_entry = data.get(symbol)
+    if not isinstance(symbol_entry, dict):
+        return None
+    mode_entry = symbol_entry.get(mode)
+    return mode_entry.get("expiry") if isinstance(mode_entry, dict) else None
 
 
-def _set_last_entered_expiry(strategy: CustomStrategy, symbol: str, expiry: str) -> None:
+def _set_last_entered_expiry(strategy: CustomStrategy, symbol: str, mode: str, expiry: str) -> None:
     try:
         data = json.loads(strategy.last_entry_date) if strategy.last_entry_date else {}
         if not isinstance(data, dict):
             data = {}
     except json.JSONDecodeError:
         data = {}
-    data[symbol] = {"expiry": expiry, "date": date.today().isoformat()}
+    symbol_entry = data.get(symbol)
+    if not isinstance(symbol_entry, dict):
+        symbol_entry = {}
+    symbol_entry[mode] = {"expiry": expiry, "date": date.today().isoformat()}
+    data[symbol] = symbol_entry
     strategy.last_entry_date = json.dumps(data)
 
 
-def _resolve_current_expiry(broker, symbol: str, rules: dict) -> Optional[str]:
+def _resolve_current_expiry(broker, symbol: str, mode: str) -> Optional[str]:
     """
-    Lightweight pre-flight expiry resolution — used ONLY to decide
-    whether this symbol's cycle has already been traded, before doing
-    the full (order-placing) RuleBasedStrategy run. Deliberately
-    duplicates the couple of calls RuleBasedStrategy._get_nearest_expiry()
-    also makes internally, rather than sharing code, since this must run
-    BEFORE any order can be placed (can't ask "did we already trade this
-    cycle" by first running the very thing that would trade it).
+    Lightweight pre-flight expiry resolution for ONE expiry mode — used
+    ONLY to decide whether this symbol's `mode`-cycle has already been
+    traded, before doing the full (order-placing) RuleBasedStrategy run.
+    Deliberately duplicates the couple of calls
+    RuleBasedStrategy._resolve_expiries_and_chains() also makes
+    internally, rather than sharing code, since this must run BEFORE any
+    order can be placed (can't ask "did we already trade this cycle" by
+    first running the very thing that would trade it).
     """
     from automate.utils.option_utils import find_nearest_expiry_by_type
 
@@ -212,20 +245,94 @@ def _resolve_current_expiry(broker, symbol: str, rules: dict) -> Optional[str]:
         expiries = broker.get_option_contracts(instrument_key)
         if not expiries:
             return None
-        expiry_mode = (rules.get("expiry") or {}).get("mode", "WEEKLY")
         now = broker.get_current_time()
-        return find_nearest_expiry_by_type(expiries, expiry_mode, reference_date=now.date() if now else None)
+        return find_nearest_expiry_by_type(expiries, mode, reference_date=now.date() if now else None)
     except Exception as exc:
-        log.warning("custom_strategy_scheduler: could not pre-resolve expiry for %s: %s", symbol, exc)
+        log.warning("custom_strategy_scheduler: could not pre-resolve %s expiry for %s: %s", mode, symbol, exc)
         return None
+
+
+def _ma_crossover_met(broker, symbol: str, instrument_type: str, condition: dict) -> bool:
+    """
+    entry.condition {"type": "MA_CROSSOVER", "period_days", "direction"}
+    — reuses the EXISTING fno_bhavcopy historical daily-close data (the
+    same table backtest/custom_engine.py already reads — no new data
+    pipeline needed) for the trailing N closes, plus a live LTP for
+    "today," rather than a real intraday moving average. Returns False
+    (never triggers) if there isn't yet `period_days` of history, or on
+    any lookup failure — an entry condition that can't be evaluated
+    safely defaults to "not met," never a guess.
+    """
+    period = condition.get("period_days")
+    direction = condition.get("direction")
+    if not isinstance(period, int) or period < 2 or direction not in ("ABOVE", "BELOW"):
+        return False
+
+    future_instrument = "FUTIDX" if instrument_type == "INDEX" else "FUTSTK"
+    db = SessionLocal()
+    try:
+        rows = db.execute(
+            text(
+                "SELECT close FROM fno_bhavcopy WHERE symbol=:symbol AND instrument=:instrument "
+                "AND expiry_dt >= trade_date ORDER BY trade_date DESC LIMIT :n"
+            ),
+            {"symbol": symbol, "instrument": future_instrument, "n": period},
+        ).fetchall()
+    except Exception as exc:
+        log.warning("custom_strategy_scheduler: MA crossover history lookup failed for %s: %s", symbol, exc)
+        return False
+    finally:
+        db.close()
+
+    closes = [float(r[0]) for r in rows if r[0] is not None]
+    if len(closes) < period:
+        return False  # not enough history yet — safe default, no entry
+
+    moving_average = sum(closes) / len(closes)
+    try:
+        ltp = broker.get_ltp(broker.resolve_instrument_key(symbol))
+    except Exception:
+        ltp = None
+    if ltp is None:
+        return False
+
+    return ltp > moving_average if direction == "ABOVE" else ltp < moving_average
+
+
+def _iv_rank_condition_met(symbol: str, condition: dict) -> bool:
+    """entry.condition {"type": "IV_RANK", "operator", "threshold"} — see utils/iv_rank.py. None (insufficient history) always means "not met," never a fabricated trigger."""
+    operator = condition.get("operator")
+    threshold = condition.get("threshold")
+    if operator not in ("ABOVE", "BELOW") or not isinstance(threshold, (int, float)):
+        return False
+
+    from automate.utils.iv_rank import compute_iv_rank
+    rank = compute_iv_rank(symbol)
+    if rank is None:
+        return False
+    return rank > threshold if operator == "ABOVE" else rank < threshold
+
+
+def _entry_condition_met(broker, symbol: str, condition: dict, instrument_type: str) -> bool:
+    """CONDITIONAL entry gate (see rule_schema.py's entry.condition). Never raises — any evaluation failure is treated as "not met," a safe default over guessing."""
+    condition_type = condition.get("type")
+    try:
+        if condition_type == "MA_CROSSOVER":
+            return _ma_crossover_met(broker, symbol, instrument_type, condition)
+        if condition_type == "IV_RANK":
+            return _iv_rank_condition_met(symbol, condition)
+    except Exception as exc:
+        log.warning("custom_strategy_scheduler: entry condition check failed for %s (%s): %s", symbol, condition_type, exc)
+    return False
 
 
 def _try_entry(db, strategy: CustomStrategy, broker) -> None:
     symbols = json.loads(strategy.symbols)
     rules = json.loads(strategy.rules_json)
     entry_rule = rules.get("entry") or {}
+    entry_mode = entry_rule.get("mode")
 
-    if entry_rule.get("mode") == "AT_TIME":
+    if entry_mode == "AT_TIME":
         target = entry_rule.get("time")
         now_hhmm = datetime.now(_IST).strftime("%H:%M")
         if now_hhmm < target:
@@ -237,58 +344,83 @@ def _try_entry(db, strategy: CustomStrategy, broker) -> None:
         CustomStrategyPosition.status == "OPEN",
     ).all()
 
+    # {expiry_mode: [leg_index, ...]} — one group for a normal (single-
+    # expiry) strategy, 2+ for a calendar spread. See _leg_groups().
+    groups = _leg_groups(rules)
+
     for symbol in symbols:
-        # Check if we already hold an open position for this symbol
-        has_open = any(_is_leg_for_symbol(p.instrument_key, symbol) for p in open_positions)
-        if has_open:
+        # CONDITIONAL entry is per-SYMBOL (an MA crossover or IV rank is
+        # computed against one underlying at a time), unlike AT_TIME
+        # above which is strategy-wide — so this check lives inside the
+        # per-symbol loop instead of gating the whole function.
+        if entry_mode == "CONDITIONAL" and not _entry_condition_met(broker, symbol, entry_rule.get("condition") or {}, strategy.instrument_type):
             continue
 
-        # Gate on the CURRENT expiry cycle, not the calendar day — an
-        # early exit (TP/SL hit) must not trigger a same-cycle
-        # re-entry on the same soon-to-expire contract; wait for the
-        # resolved nearest expiry to actually roll over to the next one.
-        current_expiry = _resolve_current_expiry(broker, symbol, rules)
-        if current_expiry is None:
-            continue  # Couldn't resolve (broker hiccup) — retry next tick, don't mark anything.
-        if _get_last_entered_expiry(strategy, symbol) == current_expiry:
-            continue  # Already traded this cycle.
-
-        try:
-            rule_strategy = RuleBasedStrategy(
-                broker=broker, audit=_audit, kill_switch=_kill_switch, rate_limiter=_rate_limiter,
-                symbol=symbol, rules=rules, user_id=strategy.user_id,
+        for mode, leg_indices in groups.items():
+            # Does THIS group already hold an open position for this
+            # symbol? Only that group's own legs count — a calendar
+            # spread's near-week group can need re-entry while its
+            # far-week group is still legitimately open.
+            group_has_open = any(
+                _is_leg_for_symbol(p.instrument_key, symbol) and p.leg_index in leg_indices
+                for p in open_positions
             )
-            result = rule_strategy.run()
-        except Exception as exc:
-            log.error("custom_strategy_scheduler: entry failed for strategy %s (%s) symbol %s: %s",
-                      strategy.id, strategy.name, symbol, exc)
-            notify(
-                "custom_strategy",
-                f"Entry failed for strategy \"{strategy.name}\" ({symbol}, {_mode_for_status(strategy.status)} mode): {exc}. "
-                f"Will keep retrying every tick until the current expiry cycle rolls over.",
-                level="warning",
-                user_id=strategy.user_id,
-            )
-            # No _set_last_entered_expiry() here — nothing was placed, so
-            # retry next tick rather than silently giving up on this cycle.
-            continue
+            if group_has_open:
+                continue
 
-        if result.get("status") not in ("success", "dry_run"):
-            continue
-        _set_last_entered_expiry(strategy, symbol, result.get("expiry") or current_expiry)
+            # Gate on the CURRENT expiry cycle, not the calendar day — an
+            # early exit (TP/SL hit) must not trigger a same-cycle
+            # re-entry on the same soon-to-expire contract; wait for the
+            # resolved nearest expiry to actually roll over to the next one.
+            current_expiry = _resolve_current_expiry(broker, symbol, mode)
+            if current_expiry is None:
+                continue  # Couldn't resolve (broker hiccup) — retry next tick, don't mark anything.
+            if _get_last_entered_expiry(strategy, symbol, mode) == current_expiry:
+                continue  # Already traded this cycle.
 
-        mode = _mode_for_status(strategy.status)
-        for idx, leg in enumerate(result["legs"]):
-            db.add(CustomStrategyPosition(
-                strategy_id=strategy.id, leg_index=idx, mode=mode,
-                instrument_key=leg["instrument_token"], instrument_type=leg["instrument_type"],
-                option_type=leg["option_type"], strike=leg["strike"], expiry=leg["expiry"],
-                transaction_type=leg["transaction_type"], quantity=leg["quantity"],
-                entry_price=leg["entry_price"] or 0, order_id=leg.get("order_id"), status="OPEN",
-            ))
-        db.commit()
-        log.info("custom_strategy_scheduler: entered strategy %s (%s) symbol %s — %d legs.",
-                 strategy.id, strategy.name, symbol, len(result["legs"]))
+            try:
+                rule_strategy = RuleBasedStrategy(
+                    broker=broker, audit=_audit, kill_switch=_kill_switch, rate_limiter=_rate_limiter,
+                    symbol=symbol, rules=rules, user_id=strategy.user_id,
+                )
+                result = rule_strategy.run(leg_indices=leg_indices)
+            except Exception as exc:
+                log.error("custom_strategy_scheduler: entry failed for strategy %s (%s) symbol %s [%s cycle]: %s",
+                          strategy.id, strategy.name, symbol, mode, exc)
+                notify(
+                    "custom_strategy",
+                    f"Entry failed for strategy \"{strategy.name}\" ({symbol}, {_mode_for_status(strategy.status)} mode): {exc}. "
+                    f"Will keep retrying every tick until the current expiry cycle rolls over.",
+                    level="warning",
+                    user_id=strategy.user_id,
+                )
+                # No _set_last_entered_expiry() here — nothing was placed, so
+                # retry next tick rather than silently giving up on this cycle.
+                continue
+
+            if result.get("status") not in ("success", "dry_run"):
+                continue
+            entered_expiry = (result.get("expiries") or {}).get(mode) or current_expiry
+            _set_last_entered_expiry(strategy, symbol, mode, entered_expiry)
+
+            db_mode = _mode_for_status(strategy.status)
+            for original_idx, leg in zip(result["leg_indices"], result["legs"]):
+                leg_exit_config = rules["legs"][original_idx].get("exit")
+                trail_state = None
+                if leg_exit_config and (leg_exit_config.get("trailing") or {}).get("enabled"):
+                    trail_state = json.dumps({"highest_price": None, "lowest_price": None, "current_stop_price": None})
+                db.add(CustomStrategyPosition(
+                    strategy_id=strategy.id, leg_index=original_idx, mode=db_mode,
+                    instrument_key=leg["instrument_token"], instrument_type=leg["instrument_type"],
+                    option_type=leg["option_type"], strike=leg["strike"], expiry=leg["expiry"],
+                    transaction_type=leg["transaction_type"], quantity=leg["quantity"],
+                    entry_price=leg["entry_price"] or 0, order_id=leg.get("order_id"), status="OPEN",
+                    leg_config_json=json.dumps(leg_exit_config) if leg_exit_config else None,
+                    trail_state_json=trail_state,
+                ))
+            db.commit()
+            log.info("custom_strategy_scheduler: entered strategy %s (%s) symbol %s [%s cycle] — %d legs.",
+                     strategy.id, strategy.name, symbol, mode, len(result["legs"]))
 
 
 def _combined_pnl_pct(legs: list[CustomStrategyPosition], now_prices: dict) -> Optional[float]:
@@ -328,6 +460,77 @@ def _combined_pnl_pct(legs: list[CustomStrategyPosition], now_prices: dict) -> O
     return (pnl_amount / denom * 100.0) if denom > 0 else 0.0
 
 
+def _close_leg(db, strategy: CustomStrategy, broker, leg: CustomStrategyPosition, trigger: str, now_prices: dict) -> bool:
+    """Square off ONE leg via a MARKET order opposite its entry side. Returns True iff closed — on failure, alerts (a real position may still be open) and leaves the leg OPEN for the next tick to retry."""
+    opposite = broker.place_buy_order if leg.transaction_type == "SELL" else broker.place_sell_order
+    try:
+        _rate_limiter.acquire()
+        exit_order_id = opposite(
+            instrument_token=leg.instrument_key, quantity=leg.quantity, order_type="MARKET",
+            tag=f"CUSTOM_EXIT_{strategy.id}_{leg.leg_index}"[:20],
+            user_id=strategy.user_id,
+        )
+    except Exception as exc:
+        log.critical(
+            "custom_strategy_scheduler: FAILED to square off leg %s for strategy %s: %s — MANUAL INTERVENTION REQUIRED.",
+            leg.instrument_key, strategy.id, exc,
+        )
+        notify(
+            "custom_strategy",
+            f"MANUAL INTERVENTION REQUIRED — failed to exit \"{strategy.name}\" leg {leg.instrument_key} "
+            f"({trigger} triggered): {exc}. A position may still be open on your real account.",
+            user_id=strategy.user_id,
+        )
+        return False
+    leg.status = "CLOSED"
+    leg.exit_price = now_prices.get(leg.instrument_key)
+    leg.exit_order_id = exit_order_id
+    leg.exit_reason = trigger
+    leg.closed_at = datetime.now()
+    return True
+
+
+def _try_exit_individual_leg(db, strategy: CustomStrategy, broker, leg: CustomStrategyPosition, now_prices: dict) -> bool:
+    """
+    Check (and, if triggered, close) ONE leg that has its OWN exit config
+    (rule_schema.py's leg.exit, snapshotted into leg_config_json at entry
+    — see _try_entry) — independent of the strategy-level combined check
+    in _try_exit below. Returns True iff closed. Always leaves
+    leg.trail_state_json updated with the latest ratchet position even
+    when not triggered — the caller commits it either way.
+    """
+    config = json.loads(leg.leg_config_json)
+    take_profit_pct = config.get("take_profit_pct")
+    stop_loss_pct = config.get("stop_loss_pct")
+    trailing = config.get("trailing") or {}
+
+    trigger = None
+    pnl_pct = _combined_pnl_pct([leg], now_prices)
+    if pnl_pct is not None:
+        trigger = check_exit_trigger(pnl_pct, take_profit_pct, stop_loss_pct)
+
+    if trigger is None and trailing.get("enabled"):
+        ltp = now_prices.get(leg.instrument_key)
+        if ltp is not None:
+            state = json.loads(leg.trail_state_json) if leg.trail_state_json else {
+                "highest_price": None, "lowest_price": None, "current_stop_price": None,
+            }
+            side = leg.transaction_type  # this leg's own entry side IS "the position being protected" — matches advance_trailing_stop's convention directly, no translation needed
+            highest, lowest, stop, _advanced = advance_trailing_stop(
+                side, ltp, trailing["trail_amount"], trailing["trail_type"],
+                state["highest_price"], state["lowest_price"], state["current_stop_price"],
+            )
+            state["highest_price"], state["lowest_price"], state["current_stop_price"] = highest, lowest, stop
+            leg.trail_state_json = json.dumps(state)
+            if stop_triggered(side, ltp, stop):
+                trigger = "TRAILING_STOP"
+
+    if trigger is None:
+        return False
+
+    return _close_leg(db, strategy, broker, leg, trigger, now_prices)
+
+
 def _try_exit(db, strategy: CustomStrategy, broker) -> None:
     legs = db.query(CustomStrategyPosition).filter(
         CustomStrategyPosition.strategy_id == strategy.id,
@@ -363,54 +566,62 @@ def _try_exit(db, strategy: CustomStrategy, broker) -> None:
 
         tokens = [leg.instrument_key for leg in symbol_legs]
         now_prices = broker.get_ltp_batch(tokens)
-        pnl_pct = _combined_pnl_pct(symbol_legs, now_prices)
 
-        trigger = check_exit_trigger(pnl_pct, take_profit_pct, stop_loss_pct) if pnl_pct is not None else None
-        if trigger is None and exit_time and datetime.now(_IST).strftime("%H:%M") >= exit_time:
-            trigger = "TIME_EXIT"
-        if trigger is None and exit_days_before_expiry:
-            expiries = [dtime_or_none(leg.expiry) for leg in symbol_legs if leg.expiry]
-            if expiries and any(is_within_pre_expiry_buffer(date.today(), exp, exit_days_before_expiry) for exp in expiries):
-                trigger = "EXPIRY"
-        
-        if trigger is None:
+        # 1. Legs with their OWN exit config (per-leg TP/SL/trailing) are
+        #    checked/closed independently, BEFORE the strategy-level
+        #    combined/time/expiry checks below get a look at whatever's
+        #    still open. Legs without one are untouched here — same as
+        #    today, managed only by the combined check in step 2.
+        still_open = []
+        for leg in symbol_legs:
+            if leg.leg_config_json and _try_exit_individual_leg(db, strategy, broker, leg, now_prices):
+                continue  # closed independently
+            still_open.append(leg)
+        db.commit()  # persist independent closes + any trail_state_json ratchet advances before the group check below
+        if not still_open:
             continue
 
-        closed_legs = []
-        for leg in symbol_legs:
-            opposite = broker.place_buy_order if leg.transaction_type == "SELL" else broker.place_sell_order
-            try:
-                _rate_limiter.acquire()
-                exit_order_id = opposite(
-                    instrument_token=leg.instrument_key, quantity=leg.quantity, order_type="MARKET",
-                    tag=f"CUSTOM_EXIT_{strategy.id}_{leg.leg_index}"[:20],
-                    user_id=strategy.user_id,
-                )
-            except Exception as exc:
-                log.critical(
-                    "custom_strategy_scheduler: FAILED to square off leg %s for strategy %s: %s — MANUAL INTERVENTION REQUIRED.",
-                    leg.instrument_key, strategy.id, exc,
-                )
-                notify(
-                    "custom_strategy",
-                    f"MANUAL INTERVENTION REQUIRED — failed to exit \"{strategy.name}\" leg {leg.instrument_key} "
-                    f"({trigger} triggered): {exc}. A position may still be open on your real account.",
-                    user_id=strategy.user_id,
-                )
-                continue
-            leg.status = "CLOSED"
-            leg.exit_price = now_prices.get(leg.instrument_key)
-            leg.exit_order_id = exit_order_id
-            leg.exit_reason = trigger
-            leg.closed_at = datetime.now()
-            closed_legs.append(leg)
+        # 2. Strategy-level combined TP/SL — only over legs WITHOUT their
+        #    own exit config (today's exact behavior when no leg has a
+        #    per-leg config: combined_managed == still_open == symbol_legs).
+        combined_managed = [l for l in still_open if not l.leg_config_json]
+        pnl_pct = _combined_pnl_pct(combined_managed, now_prices) if combined_managed else None
+        trigger = check_exit_trigger(pnl_pct, take_profit_pct, stop_loss_pct) if pnl_pct is not None else None
 
-        # Only record a return_pct when every leg actually closed — with
-        # one leg left OPEN (failed exit above), the basket isn't fully
-        # realized yet and an aggregate number here would misrepresent a
-        # still partially-open position as a completed, priced outcome.
-        if len(closed_legs) == len(symbol_legs):
-            final_pct = _combined_pnl_pct(symbol_legs, now_prices) or 0.0
+        # 3. Strategy-level time/expiry — a calendar "hard stop" that
+        #    still applies to EVERY still-open leg of this symbol,
+        #    including individually-managed ones that survived step 1
+        #    (a leg with its own trailing stop shouldn't stay open past
+        #    the strategy's own expiry cutoff).
+        hard_stop = None
+        if exit_time and datetime.now(_IST).strftime("%H:%M") >= exit_time:
+            hard_stop = "TIME_EXIT"
+        if hard_stop is None and exit_days_before_expiry:
+            expiries = [dtime_or_none(leg.expiry) for leg in still_open if leg.expiry]
+            if expiries and any(is_within_pre_expiry_buffer(date.today(), exp, exit_days_before_expiry) for exp in expiries):
+                hard_stop = "EXPIRY"
+
+        if hard_stop is not None:
+            legs_to_close, trigger = still_open, hard_stop
+        elif trigger is not None:
+            legs_to_close = combined_managed
+        else:
+            continue
+
+        closed_legs = [leg for leg in legs_to_close if _close_leg(db, strategy, broker, leg, trigger, now_prices)]
+        combined_closed = [l for l in closed_legs if l in combined_managed]
+
+        # Only record a return_pct when every COMBINED-managed leg
+        # actually closed — with one leg left OPEN (a failed exit above),
+        # that subset isn't fully realized yet and an aggregate number
+        # here would misrepresent a still partially-open position as a
+        # completed, priced outcome. Independently-managed legs already
+        # booked their own P&L via their own trailing/TP-SL close (see
+        # _try_exit_individual_leg) — not folded into this aggregate,
+        # same as any other per-leg detail; still fully visible on each
+        # leg's own CustomStrategyPosition row.
+        if combined_managed and len(combined_closed) == len(combined_managed):
+            final_pct = _combined_pnl_pct(combined_managed, now_prices) or 0.0
             if strategy.status == "LIVE":
                 strategy.live_return_pct = round(final_pct, 4)
             else:
@@ -419,11 +630,11 @@ def _try_exit(db, strategy: CustomStrategy, broker) -> None:
                 "custom_strategy_scheduler: exited strategy %s (%s) symbol %s | trigger=%s | pnl_pct=%.2f",
                 strategy.id, strategy.name, symbol, trigger, final_pct,
             )
-        else:
+        elif combined_managed:
             log.warning(
-                "custom_strategy_scheduler: only %d/%d legs closed for strategy %s (%s) symbol %s | trigger=%s — "
+                "custom_strategy_scheduler: only %d/%d combined-managed legs closed for strategy %s (%s) symbol %s | trigger=%s — "
                 "leaving return_pct unchanged, basket still partially open.",
-                len(closed_legs), len(symbol_legs), strategy.id, strategy.name, symbol, trigger,
+                len(combined_closed), len(combined_managed), strategy.id, strategy.name, symbol, trigger,
             )
         db.commit()
 

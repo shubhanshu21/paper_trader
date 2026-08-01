@@ -19,7 +19,7 @@ failing after at least one other leg filled triggers an immediate
 square-off of everything that did fill, generalized to N legs of mixed
 direction.
 """
-from typing import Optional
+from typing import List, Optional, Tuple
 
 from automate.strategies.common.base_strategy import BaseStrategy
 from automate.broker.base_broker import BaseBroker
@@ -110,10 +110,23 @@ class RuleBasedStrategy(BaseStrategy):
 
         self.instrument_key: str = broker.resolve_instrument_key(self.symbol)
 
+        # Which legs to (re)enter this call — None (default) means "all of
+        # them," today's only behavior. Set via run(leg_indices=[...]) by
+        # custom_strategy_scheduler.py when a calendar spread's legs need
+        # to roll over on independent cycles (see _get_last_entered_expiry
+        # there) — one leg's expiry rolling doesn't mean the other leg's
+        # basket needs re-entering too.
+        self._leg_indices: Optional[List[int]] = None
+
         log.info(
             "RuleBasedStrategy | symbol=%s | legs=%d | strike_step=%s | product=%s",
             self.symbol, len(rules["legs"]), self.strike_step, self.product,
         )
+
+    def run(self, leg_indices: Optional[List[int]] = None) -> dict:
+        """Same lifecycle wrapper as BaseStrategy.run() — leg_indices restricts execute()/preview() to a subset of legs (see __init__ docstring above)."""
+        self._leg_indices = leg_indices
+        return super().run()
 
     # ------------------------------------------------------------------
 
@@ -123,26 +136,105 @@ class RuleBasedStrategy(BaseStrategy):
             raise RuntimeError(f"Invalid/missing LTP for '{self.symbol}'.")
         return ltp
 
-    def _get_nearest_expiry(self) -> str:
+    def _active_legs(self) -> List[Tuple[int, dict]]:
+        """(original_index, leg) pairs for the legs this call should act on — see run()'s leg_indices."""
+        legs = self.rules["legs"]
+        if self._leg_indices is None:
+            return list(enumerate(legs))
+        return [(i, legs[i]) for i in self._leg_indices]
+
+    def _leg_expiry_mode(self, leg: dict) -> str:
+        """A leg's own expiry_mode overrides the strategy default — this is what makes a calendar spread (legs at different expiries) possible. See rule_schema.py."""
+        return leg.get("expiry_mode") or (self.rules.get("expiry") or {}).get("mode", "WEEKLY")
+
+    def _resolve_expiries_and_chains(self, legs: List[dict]) -> Tuple[dict, dict]:
+        """
+        Resolve the nearest expiry for each DISTINCT expiry_mode these legs
+        need (usually just one — the strategy default — unless this is a
+        calendar spread), and fetch each resulting expiry's option chain
+        once, even if several legs share it.
+
+        Returns (mode -> resolved expiry date string, expiry date -> chain_data).
+        """
+        modes_needed = {self._leg_expiry_mode(leg) for leg in legs}
         expiries = self.broker.get_option_contracts(self.instrument_key)
         if not expiries:
             raise RuntimeError(f"No option expiries returned for '{self.symbol}'.")
         now = self.broker.get_current_time()
-        expiry_mode = (self.rules.get("expiry") or {}).get("mode", "WEEKLY")
-        nearest = find_nearest_expiry_by_type(expiries, expiry_mode, reference_date=now.date() if now else None)
-        if not nearest:
-            raise RuntimeError(f"Could not determine nearest {expiry_mode.lower()} expiry for '{self.symbol}'.")
-        return nearest
+
+        mode_to_expiry: dict = {}
+        for mode in modes_needed:
+            nearest = find_nearest_expiry_by_type(expiries, mode, reference_date=now.date() if now else None)
+            if not nearest:
+                raise RuntimeError(f"Could not determine nearest {mode.lower()} expiry for '{self.symbol}'.")
+            mode_to_expiry[mode] = nearest
+
+        expiry_to_chain: dict = {}
+        for expiry in set(mode_to_expiry.values()):
+            chain = self.broker.get_option_chain(self.instrument_key, expiry)
+            if not chain:
+                raise RuntimeError(f"Empty option chain for {self.symbol} expiry {expiry}.")
+            expiry_to_chain[expiry] = chain
+
+        return mode_to_expiry, expiry_to_chain
+
+    def _resolve_quantity(self, leg: dict, spot_price: float, token: str, transaction_type: str) -> int:
+        """
+        Today's default: `leg["lots"] * real_lot_size`, fixed. If the leg
+        opts into RISK_PCT sizing (rule_schema.py), size it instead so its
+        capital cost is <= risk_pct% of the account's CURRENT available
+        balance — SELL legs use the same margin estimate
+        utils/margin.py/utils/wallet.py already share elsewhere in this
+        codebase, BUY legs use the actual premium (a debit leg's real
+        capital cost, not a margin figure). Refuses (raises) rather than
+        silently under/oversizing if even 1 lot exceeds the budget — same
+        "wrong quantity is a real-money risk, don't guess" discipline
+        __init__ already applies to lot_size/strike_step above.
+        """
+        sizing = leg.get("sizing")
+        if not sizing or sizing.get("mode") != "RISK_PCT":
+            return leg["lots"] * self.real_lot_size
+
+        if self.user_id is None:
+            raise RuntimeError(
+                f"{self.symbol}: RISK_PCT sizing requires a real owning user_id (for the capital lookup) — "
+                f"not available in this call context."
+            )
+
+        from automate.utils.wallet import get_wallet_summary
+        from automate.utils.margin import estimate_margin_blocked, INDEX_SYMBOLS
+
+        available = get_wallet_summary(self.user_id)["available_balance"]
+        budget = available * (sizing["risk_pct"] / 100.0)
+
+        if transaction_type == "SELL":
+            per_lot_cost = estimate_margin_blocked(spot_price, self.real_lot_size, self.symbol in INDEX_SYMBOLS)
+        else:
+            premium = self.broker.get_ltp(token)
+            if premium is None:
+                raise RuntimeError(f"{self.symbol}: could not fetch a current price for {token} to size this leg by risk %.")
+            per_lot_cost = premium * self.real_lot_size
+
+        if per_lot_cost <= 0:
+            raise RuntimeError(f"{self.symbol}: computed a non-positive per-lot cost ({per_lot_cost}) — refusing to size this leg.")
+
+        max_lots = int(budget // per_lot_cost)
+        if max_lots < 1:
+            raise ComplianceError(
+                f"{self.symbol}: risking {sizing['risk_pct']}% of available capital (₹{budget:,.2f}) isn't enough "
+                f"for even 1 lot (₹{per_lot_cost:,.2f}/lot) — entry refused rather than sized to 0 or oversized."
+            )
+        return max_lots * self.real_lot_size
 
     def _resolve_leg(self, leg: dict, spot_price: float, expiry: str, chain_data: list) -> dict:
         """Return {instrument_token, strike, quantity, transaction_type, tag, ...leg metadata}."""
-        quantity = leg["lots"] * self.real_lot_size
         strike = resolve_leg_strike(leg, spot_price, self.strike_step)
         token = find_instrument_token(chain_data, strike, leg["option_type"])
         if not token:
             raise ComplianceError(
                 f"No listed contract for {self.symbol} {strike} {leg['option_type']} expiry {expiry}."
             )
+        quantity = self._resolve_quantity(leg, spot_price, token, leg["action"])
         return {
             "instrument_token": token,
             "instrument_type": "OPTION",
@@ -312,20 +404,28 @@ class RuleBasedStrategy(BaseStrategy):
         instead of "entry_price"/"order_id" (nothing was actually bought
         or sold).
         """
-        result: dict = {"status": "failed", "symbol": self.symbol, "spot_price": None, "expiry": None, "legs": []}
+        result: dict = {"status": "failed", "symbol": self.symbol, "spot_price": None, "expiry": None, "expiries": {}, "legs": []}
 
         spot_price = self._fetch_spot_price()
         result["spot_price"] = spot_price
 
-        expiry = self._get_nearest_expiry()
-        result["expiry"] = expiry
-        chain_data = self.broker.get_option_chain(self.instrument_key, expiry)
-        if not chain_data:
-            raise RuntimeError(f"Empty option chain for {self.symbol} expiry {expiry}.")
+        active = self._active_legs()
+        mode_to_expiry, expiry_to_chain = self._resolve_expiries_and_chains([leg for _, leg in active])
+        result["expiries"] = mode_to_expiry
+        # Kept for backward compat with callers reading a single "expiry"
+        # (routes_custom_strategies.py's payoff/greeks preview, backtest
+        # engine) — the strategy-DEFAULT mode's resolved date. Meaningless
+        # as "the" expiry for a true calendar spread; those callers should
+        # move to per-leg `expiry` (already on each resolved leg below).
+        default_mode = (self.rules.get("expiry") or {}).get("mode", "WEEKLY")
+        result["expiry"] = mode_to_expiry.get(default_mode)
 
-        resolved_legs = [self._resolve_leg(leg, spot_price, expiry, chain_data) for leg in self.rules["legs"]]
-        for resolved in resolved_legs:
+        resolved_legs = []
+        for _, leg in active:
+            expiry = mode_to_expiry[self._leg_expiry_mode(leg)]
+            resolved = self._resolve_leg(leg, spot_price, expiry, expiry_to_chain[expiry])
             resolved["current_price"] = self.broker.get_ltp(resolved["instrument_token"])
+            resolved_legs.append(resolved)
 
         result["legs"] = resolved_legs
         result["status"] = "success"
@@ -337,6 +437,7 @@ class RuleBasedStrategy(BaseStrategy):
             "symbol": self.symbol,
             "spot_price": None,
             "expiry": None,
+            "expiries": {},
             "legs": [],
             "dry_run": self.broker.dry_run,
         }
@@ -344,27 +445,36 @@ class RuleBasedStrategy(BaseStrategy):
         spot_price = self._fetch_spot_price()
         result["spot_price"] = spot_price
 
-        expiry = self._get_nearest_expiry()
-        result["expiry"] = expiry
-        chain_data = self.broker.get_option_chain(self.instrument_key, expiry)
-        if not chain_data:
-            raise RuntimeError(f"Empty option chain for {self.symbol} expiry {expiry}.")
+        active = self._active_legs()  # [(original_leg_index, leg), ...] — see run(leg_indices=...)
+        mode_to_expiry, expiry_to_chain = self._resolve_expiries_and_chains([leg for _, leg in active])
+        result["expiries"] = mode_to_expiry
+        default_mode = (self.rules.get("expiry") or {}).get("mode", "WEEKLY")
+        result["expiry"] = mode_to_expiry.get(default_mode)  # see preview()'s comment on this field's limits for calendar spreads
 
-        resolved_legs = [self._resolve_leg(leg, spot_price, expiry, chain_data) for leg in self.rules["legs"]]
+        # (original_leg_index, resolved_leg_dict) pairs, in ACTIVE order —
+        # original_leg_index is what gets used for order tags/audit/unwind
+        # so it stays stable and traceable even when only a SUBSET of legs
+        # is being (re)entered this call.
+        resolved_pairs: list[tuple[int, dict]] = []
+        for original_idx, leg in active:
+            expiry = mode_to_expiry[self._leg_expiry_mode(leg)]
+            resolved = self._resolve_leg(leg, spot_price, expiry, expiry_to_chain[expiry])
+            resolved_pairs.append((original_idx, resolved))
+
         # SELL legs first — collected premium is available as margin before any BUY legs need it.
-        order = sorted(range(len(resolved_legs)), key=lambda i: 0 if resolved_legs[i]["transaction_type"] == "SELL" else 1)
+        order = sorted(range(len(resolved_pairs)), key=lambda pos: 0 if resolved_pairs[pos][1]["transaction_type"] == "SELL" else 1)
 
         filled: list[tuple[int, dict, str]] = []
         failed_idx: Optional[int] = None
-        for i in order:
-            resolved = resolved_legs[i]
-            order_id = self._place_leg(resolved, i)
+        for pos in order:
+            original_idx, resolved = resolved_pairs[pos]
+            order_id = self._place_leg(resolved, original_idx)
             if self.broker.dry_run or order_id:
                 resolved["order_id"] = order_id
                 resolved["entry_price"] = self.broker.get_ltp(resolved["instrument_token"])
-                filled.append((i, resolved, order_id or "DRY_RUN"))
+                filled.append((original_idx, resolved, order_id or "DRY_RUN"))
             else:
-                failed_idx = i
+                failed_idx = original_idx
                 break
 
         if failed_idx is not None and not self.broker.dry_run:
@@ -376,6 +486,7 @@ class RuleBasedStrategy(BaseStrategy):
             )
 
         result["legs"] = [resolved for _, resolved, _ in sorted(filled, key=lambda t: t[0])]
+        result["leg_indices"] = [idx for idx, _, _ in sorted(filled, key=lambda t: t[0])]
         result["status"] = "dry_run" if self.broker.dry_run else "success"
         log.info("Custom strategy complete | %s | legs=%d | status=%s", self.symbol, len(result["legs"]), result["status"])
         return result

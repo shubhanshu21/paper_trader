@@ -1,9 +1,10 @@
 import { useState, useEffect, useRef } from "react";
-import { X, ChevronRight, Check, Plus, Trash2, Search, LayoutTemplate, AlertTriangle } from "lucide-react";
-import { C, FONT, TimePicker, Select, formatTime12h, fmtDate } from "./Common";
+import { X, ChevronRight, Check, Search, LayoutTemplate, AlertTriangle } from "lucide-react";
+import { C, FONT, formatTime12h, fmtDate, Select } from "./Common";
+import StrategyFlowCanvas, {
+  type LegForm, newLeg, type ConditionForm, newCondition, type EntryMode, type StrikeMode,
+} from "./StrategyFlowCanvas";
 
-
-type StrikeMode = "ATM" | "OTM_PERCENT" | "OTM_POINTS" | "FIXED";
 
 interface EditableStrategy {
   id: number;
@@ -11,8 +12,13 @@ interface EditableStrategy {
   instrument_type: string;
   symbols: string[];
   rules: {
-    legs: { action: "BUY" | "SELL"; option_type: "CE" | "PE"; strike_selection: { mode: StrikeMode; value: number | null }; lots: number }[];
-    entry: { mode: "IMMEDIATE" | "AT_TIME"; time: string | null };
+    legs: {
+      action: "BUY" | "SELL"; option_type: "CE" | "PE"; strike_selection: { mode: StrikeMode; value: number | null }; lots: number;
+      expiry_mode?: "WEEKLY" | "MONTHLY" | null;
+      sizing?: { mode: "LOTS" | "RISK_PCT"; risk_pct?: number } | null;
+      exit?: { take_profit_pct: number | null; stop_loss_pct: number | null; trailing?: { enabled: boolean; trail_amount: number; trail_type: "points" | "percent" } | null } | null;
+    }[];
+    entry: { mode: EntryMode; time: string | null; condition?: { type: "MA_CROSSOVER"; period_days: number; direction: "ABOVE" | "BELOW" } | { type: "IV_RANK"; operator: "ABOVE" | "BELOW"; threshold: number } | null };
     expiry?: { mode: "WEEKLY" | "MONTHLY" };
     exit: { take_profit_pct: number | null; stop_loss_pct: number | null; exit_time: string | null; exit_days_before_expiry: number };
   } | null;
@@ -24,15 +30,33 @@ interface StrategyBuilderModalProps {
   editStrategy?: EditableStrategy | null;
 }
 
-interface LegForm {
-  action: "BUY" | "SELL";
-  option_type: "CE" | "PE";
-  strike_mode: StrikeMode;
-  strike_value: string;
-  lots: number;
+function legFromEditable(l: NonNullable<EditableStrategy["rules"]>["legs"][number]): LegForm {
+  const exit = l.exit;
+  const trailing = exit?.trailing;
+  return {
+    action: l.action, option_type: l.option_type, strike_mode: l.strike_selection.mode,
+    strike_value: l.strike_selection.value != null ? String(l.strike_selection.value) : "",
+    lots: l.lots,
+    expiry_mode: l.expiry_mode ?? "",
+    sizing_mode: l.sizing?.mode === "RISK_PCT" ? "RISK_PCT" : "LOTS",
+    risk_pct: l.sizing?.risk_pct != null ? String(l.sizing.risk_pct) : "",
+    leg_take_profit_pct: exit?.take_profit_pct != null ? String(exit.take_profit_pct) : "",
+    leg_stop_loss_pct: exit?.stop_loss_pct != null ? String(exit.stop_loss_pct) : "",
+    trailing_enabled: !!trailing?.enabled,
+    trail_amount: trailing?.trail_amount != null ? String(trailing.trail_amount) : "",
+    trail_type: trailing?.trail_type ?? "points",
+  };
 }
 
-const newLeg = (): LegForm => ({ action: "SELL", option_type: "CE", strike_mode: "ATM", strike_value: "", lots: 1 });
+function conditionFromEditable(entry: EditableStrategy["rules"] extends null ? never : NonNullable<EditableStrategy["rules"]>["entry"] | undefined): ConditionForm {
+  const c = newCondition();
+  const condition = entry?.condition;
+  if (!condition) return c;
+  if (condition.type === "MA_CROSSOVER") {
+    return { ...c, type: "MA_CROSSOVER", ma_period_days: String(condition.period_days), ma_direction: condition.direction };
+  }
+  return { ...c, type: "IV_RANK", iv_operator: condition.operator, iv_threshold: String(condition.threshold) };
+}
 
 interface StrategyTemplate {
   type: string;
@@ -47,6 +71,7 @@ const TEMPLATE_LABELS: Record<string, string> = {
 
 function templateLegsToForm(legs: StrategyTemplate["legs"]): LegForm[] {
   return legs.map((l) => ({
+    ...newLeg(),
     action: l.action,
     option_type: l.option_type,
     strike_mode: l.strike_selection.mode,
@@ -71,12 +96,26 @@ function findDuplicateLegPairs(legs: LegForm[]): [number, number][] {
 }
 
 function legPhrase(leg: LegForm): string {
-  const lotWord = leg.lots === 1 ? "lot" : "lots";
   let strike = "ATM (at-the-money)";
   if (leg.strike_mode === "OTM_PERCENT") strike = `${leg.strike_value || "?"}% OTM`;
   else if (leg.strike_mode === "OTM_POINTS") strike = `${leg.strike_value || "?"} points OTM`;
   else if (leg.strike_mode === "FIXED") strike = `strike ${leg.strike_value || "?"}`;
-  return `${leg.action} ${leg.lots} ${lotWord} ${strike} ${leg.option_type}`;
+  const size = leg.sizing_mode === "RISK_PCT" ? `sized to risk ${leg.risk_pct || "?"}% of capital` : `${leg.lots} ${leg.lots === 1 ? "lot" : "lots"}`;
+  let phrase = `${leg.action} ${size} ${strike} ${leg.option_type}`;
+  if (leg.expiry_mode) phrase += ` (${leg.expiry_mode.toLowerCase()} expiry, own cycle)`;
+  const exitBits: string[] = [];
+  if (leg.leg_take_profit_pct) exitBits.push(`+${leg.leg_take_profit_pct}%`);
+  if (leg.leg_stop_loss_pct) exitBits.push(`-${leg.leg_stop_loss_pct}%`);
+  if (leg.trailing_enabled) exitBits.push(`trailing ${leg.trail_amount || "?"}${leg.trail_type === "percent" ? "%" : "pt"}`);
+  if (exitBits.length) phrase += `, own exit: ${exitBits.join("/")}`;
+  return phrase;
+}
+
+function conditionPhrase(condition: ConditionForm): string {
+  if (condition.type === "MA_CROSSOVER") {
+    return `price is ${condition.ma_direction === "ABOVE" ? "above" : "below"} its ${condition.ma_period_days}-day moving average`;
+  }
+  return `IV rank is ${condition.iv_operator === "ABOVE" ? "above" : "below"} ${condition.iv_threshold}`;
 }
 
 export default function StrategyBuilderModal({ onClose, onSuccess, editStrategy }: StrategyBuilderModalProps) {
@@ -108,17 +147,10 @@ export default function StrategyBuilderModal({ onClose, onSuccess, editStrategy 
   const [showDropdown, setShowDropdown] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
 
-  const [legs, setLegs] = useState<LegForm[]>(
-    editStrategy?.rules?.legs.map((l) => ({
-      action: l.action,
-      option_type: l.option_type,
-      strike_mode: l.strike_selection.mode,
-      strike_value: l.strike_selection.value != null ? String(l.strike_selection.value) : "",
-      lots: l.lots,
-    })) ?? [newLeg()]
-  );
-  const [entryMode, setEntryMode] = useState<"IMMEDIATE" | "AT_TIME">(editStrategy?.rules?.entry.mode ?? "IMMEDIATE");
+  const [legs, setLegs] = useState<LegForm[]>(editStrategy?.rules?.legs.map(legFromEditable) ?? [newLeg()]);
+  const [entryMode, setEntryMode] = useState<EntryMode>(editStrategy?.rules?.entry.mode ?? "IMMEDIATE");
   const [entryTime, setEntryTime] = useState(editStrategy?.rules?.entry.time ?? "09:20");
+  const [condition, setCondition] = useState<ConditionForm>(conditionFromEditable(editStrategy?.rules?.entry));
   const [expiryMode, setExpiryMode] = useState<"WEEKLY" | "MONTHLY">(editStrategy?.rules?.expiry?.mode ?? "WEEKLY");
   const [expiryPreview, setExpiryPreview] = useState<{ date: string; label: string }[]>([]);
   const [takeProfitPct, setTakeProfitPct] = useState(editStrategy?.rules?.exit.take_profit_pct != null ? String(editStrategy.rules.exit.take_profit_pct) : "");
@@ -200,8 +232,32 @@ export default function StrategyBuilderModal({ onClose, onSuccess, editStrategy 
         value: l.strike_mode === "ATM" ? null : parseFloat(l.strike_value) || 0,
       },
       lots: l.lots,
+      ...(l.expiry_mode ? { expiry_mode: l.expiry_mode } : {}),
+      ...(l.sizing_mode === "RISK_PCT" && l.risk_pct
+        ? { sizing: { mode: "RISK_PCT", risk_pct: parseFloat(l.risk_pct) || 0 } }
+        : {}),
+      ...(l.leg_take_profit_pct || l.leg_stop_loss_pct || l.trailing_enabled
+        ? {
+            exit: {
+              take_profit_pct: l.leg_take_profit_pct ? parseFloat(l.leg_take_profit_pct) : null,
+              stop_loss_pct: l.leg_stop_loss_pct ? parseFloat(l.leg_stop_loss_pct) : null,
+              trailing: l.trailing_enabled
+                ? { enabled: true, trail_amount: parseFloat(l.trail_amount) || 0, trail_type: l.trail_type }
+                : null,
+            },
+          }
+        : {}),
     })),
-    entry: { mode: entryMode, time: entryMode === "AT_TIME" ? entryTime : null },
+    entry:
+      entryMode === "CONDITIONAL"
+        ? {
+            mode: "CONDITIONAL", time: null,
+            condition:
+              condition.type === "MA_CROSSOVER"
+                ? { type: "MA_CROSSOVER", period_days: parseInt(condition.ma_period_days) || 20, direction: condition.ma_direction }
+                : { type: "IV_RANK", operator: condition.iv_operator, threshold: parseFloat(condition.iv_threshold) || 50 },
+          }
+        : { mode: entryMode, time: entryMode === "AT_TIME" ? entryTime : null },
     expiry: { mode: expiryMode },
     exit: {
       take_profit_pct: takeProfitPct ? parseFloat(takeProfitPct) : null,
@@ -213,21 +269,28 @@ export default function StrategyBuilderModal({ onClose, onSuccess, editStrategy 
 
   const reviewSentence = (): string => {
     const legsTxt = legs.map(legPhrase).join(" + ");
-    let s = `${legsTxt} on ${selectedSymbols.join(", ") || "..."} (${expiryMode.toLowerCase()} expiry)`;
-    s += entryMode === "AT_TIME" && entryTime ? `, enter at ${formatTime12h(entryTime)}` : ", enter immediately when the strategy goes live";
+    let s = `${legsTxt} on ${selectedSymbols.join(", ") || "..."} (${expiryMode.toLowerCase()} expiry by default)`;
+    if (entryMode === "AT_TIME" && entryTime) s += `, enter at ${formatTime12h(entryTime)}`;
+    else if (entryMode === "CONDITIONAL") s += `, enter when ${conditionPhrase(condition)}`;
+    else s += ", enter immediately when the strategy goes live";
     const bits: string[] = [];
     if (takeProfitPct) bits.push(`+${takeProfitPct}% profit`);
     if (stopLossPct) bits.push(`-${stopLossPct}% loss`);
     if (exitTime) bits.push(`${formatTime12h(exitTime)} time exit`);
     if (exitDaysBeforeExpiry) bits.push(`${exitDaysBeforeExpiry} day${exitDaysBeforeExpiry !== 1 ? "s" : ""} before expiry`);
-    s += ", exit on " + (bits.length ? bits.join(" or ") : "expiry only");
+    s += ", exit (legs without their own exit) on " + (bits.length ? bits.join(" or ") : "expiry only");
     return s + ".";
   };
 
   const canProceed = () => {
     switch (step) {
       case 1: return name.trim() && instrumentType && selectedSymbols.length > 0;
-      case 2: return legs.length > 0 && legs.every((l) => l.strike_mode === "ATM" || l.strike_value !== "");
+      case 2:
+        return legs.length > 0 && legs.every((l) =>
+          (l.strike_mode === "ATM" || l.strike_value !== "") &&
+          (l.sizing_mode === "LOTS" || l.risk_pct !== "") &&
+          (!l.trailing_enabled || l.trail_amount !== "")
+        );
       case 3: return true;
       default: return true;
     }
@@ -272,13 +335,13 @@ export default function StrategyBuilderModal({ onClose, onSuccess, editStrategy 
 
   return (
     <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-      <div className="bg-white rounded-lg w-full max-w-2xl max-h-[90vh] overflow-hidden flex flex-col" style={FONT}>
+      <div className={`bg-white rounded-lg w-full ${step === 2 ? "max-w-5xl" : "max-w-2xl"} max-h-[90vh] overflow-hidden flex flex-col transition-[max-width]`} style={FONT}>
         <div className="px-6 py-4 border-b flex items-center justify-between shrink-0" style={{ borderColor: C.border2 }}>
           <div>
             <h2 className="text-lg font-semibold text-gray-800">{showTemplatePicker ? "Choose a Starting Point" : isEditing ? "Edit Strategy" : "Build an Options Strategy"}</h2>
             {!showTemplatePicker && (
               <div className="flex items-center gap-2 mt-1">
-                {[1, 2, 3, 4].map((s) => (
+                {[1, 2, 3].map((s) => (
                   <div key={s} className={`w-6 h-6 rounded-full flex items-center justify-center text-xs ${s <= step ? "bg-orange-500 text-white" : "bg-gray-200 text-gray-600"}`}>
                     {s < step ? <Check size={12} /> : s}
                   </div>
@@ -425,75 +488,50 @@ export default function StrategyBuilderModal({ onClose, onSuccess, editStrategy 
           )}
 
           {step === 2 && (
-            <div className="space-y-4">
-              <h3 className="text-sm font-semibold text-gray-700">Step 2 — What do you want to Buy/Sell?</h3>
-              <p className="text-xs text-gray-500">Add as many legs as your strategy needs — a straddle, strangle, iron condor, or anything else is just a combination of legs like these.</p>
-              <div className="space-y-3">
-                {legs.map((leg, idx) => (
-                  <div key={idx} className="border rounded-lg p-4 space-y-3 bg-gray-50" style={{ borderColor: C.border2 }}>
-                    <div className="flex items-center justify-between">
-                      <span className="text-xs font-semibold text-gray-500">Leg {idx + 1}</span>
-                      {legs.length > 1 && (
-                        <button onClick={() => removeLeg(idx)} className="text-red-400 hover:text-red-600"><Trash2 size={14} /></button>
-                      )}
-                    </div>
-                    <div className="grid grid-cols-4 gap-2">
-                      <div>
-                        <label className="block text-[11px] text-gray-500 mb-1">Action</label>
-                        <div className="flex rounded overflow-hidden border" style={{ borderColor: C.border2 }}>
-                          {(["BUY", "SELL"] as const).map((a) => (
-                            <button key={a} onClick={() => updateLeg(idx, { action: a })}
-                              className={`flex-1 py-1.5 text-xs font-semibold ${leg.action === a ? (a === "BUY" ? "bg-green-500 text-white" : "bg-red-500 text-white") : "bg-white text-gray-600"}`}>
-                              {a}
-                            </button>
-                          ))}
-                        </div>
-                      </div>
-                      <div>
-                        <label className="block text-[11px] text-gray-500 mb-1">Option</label>
-                        <div className="flex rounded overflow-hidden border" style={{ borderColor: C.border2 }}>
-                          {(["CE", "PE"] as const).map((o) => (
-                            <button key={o} onClick={() => updateLeg(idx, { option_type: o })}
-                              className={`flex-1 py-1.5 text-xs font-semibold ${leg.option_type === o ? "bg-orange-500 text-white" : "bg-white text-gray-600"}`}>
-                              {o}
-                            </button>
-                          ))}
-                        </div>
-                      </div>
-                      <div>
-                        <label className="block text-[11px] text-gray-500 mb-1">Strike</label>
-                        <Select value={leg.strike_mode} onChange={(v) => updateLeg(idx, { strike_mode: v as StrikeMode })}
-                          options={[
-                            { value: "ATM", label: "ATM" },
-                            { value: "OTM_PERCENT", label: "% OTM" },
-                            { value: "OTM_POINTS", label: "Points OTM" },
-                            { value: "FIXED", label: "Exact strike" },
-                          ]} />
-                      </div>
-                      <div>
-                        <label className="block text-[11px] text-gray-500 mb-1">Lots</label>
-                        <input type="number" min={1} value={leg.lots} onChange={(e) => updateLeg(idx, { lots: parseInt(e.target.value) || 1 })}
-                          className="w-full px-2 py-1.5 border rounded text-xs" style={{ borderColor: C.border2 }} />
-                      </div>
-                    </div>
-                    {leg.strike_mode !== "ATM" && (
-                      <div className="w-1/4">
-                        <label className="block text-[11px] text-gray-500 mb-1">
-                          {leg.strike_mode === "OTM_PERCENT" ? "% away from spot" : leg.strike_mode === "OTM_POINTS" ? "Points away from spot" : "Strike price"}
-                        </label>
-                        <input type="number" value={leg.strike_value} onChange={(e) => updateLeg(idx, { strike_value: e.target.value })}
-                          className="w-full px-2 py-1.5 border rounded text-xs" style={{ borderColor: C.border2 }} placeholder={leg.strike_mode === "FIXED" ? "24000" : "5"} />
-                      </div>
-                    )}
-                    <div className="text-xs text-gray-500 italic">{legPhrase(leg)}</div>
+            <div className="space-y-3">
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <h3 className="text-sm font-semibold text-gray-700">Step 2 — Design your strategy</h3>
+                  <p className="text-xs text-gray-500 mt-0.5">Drag nodes around, add legs, and edit any field inline. Symbol → Entry → each Leg → Combined exit. A leg's own exit/trailing overrides the combined exit for that leg only.</p>
+                </div>
+                <div className="shrink-0">
+                  <div className="text-[11px] text-gray-500 mb-1 text-right">Default expiry</div>
+                  <div className="flex rounded overflow-hidden border" style={{ borderColor: C.border2 }}>
+                    {(["WEEKLY", "MONTHLY"] as const).map((mode) => (
+                      <button key={mode} onClick={() => setExpiryMode(mode)}
+                        className={`px-3 py-1.5 text-xs font-semibold ${expiryMode === mode ? "bg-orange-500 text-white" : "bg-white text-gray-600"}`}>
+                        {mode === "WEEKLY" ? "Weekly" : "Monthly"}
+                      </button>
+                    ))}
                   </div>
-                ))}
+                  {expiryPreview[0] && <div className="text-[10px] text-gray-400 mt-1 text-right">Next: {fmtDate((expiryMode === "WEEKLY" ? expiryPreview[0] : expiryPreview.find((e) => e.label === "Monthly")) ?.date ?? expiryPreview[0].date)}</div>}
+                </div>
               </div>
-              {legs.length < 8 && (
-                <button onClick={addLeg} className="flex items-center gap-2 text-sm font-medium text-orange-600 hover:text-orange-700">
-                  <Plus size={16} /> Add another leg
-                </button>
-              )}
+
+              <StrategyFlowCanvas
+                symbols={selectedSymbols}
+                legs={legs}
+                onUpdateLeg={updateLeg}
+                onRemoveLeg={removeLeg}
+                onAddLeg={addLeg}
+                entryMode={entryMode}
+                onEntryModeChange={setEntryMode}
+                entryTime={entryTime}
+                onEntryTimeChange={setEntryTime}
+                condition={condition}
+                onConditionChange={(patch) => setCondition((c) => ({ ...c, ...patch }))}
+                takeProfitPct={takeProfitPct}
+                stopLossPct={stopLossPct}
+                exitTime={exitTime}
+                exitDaysBeforeExpiry={exitDaysBeforeExpiry}
+                onExitChange={(patch) => {
+                  if (patch.takeProfitPct !== undefined) setTakeProfitPct(patch.takeProfitPct);
+                  if (patch.stopLossPct !== undefined) setStopLossPct(patch.stopLossPct);
+                  if (patch.exitTime !== undefined) setExitTime(patch.exitTime);
+                  if (patch.exitDaysBeforeExpiry !== undefined) setExitDaysBeforeExpiry(patch.exitDaysBeforeExpiry);
+                }}
+              />
+
               {findDuplicateLegPairs(legs).map(([i, j]) => (
                 <div key={`${i}-${j}`} className="flex items-start gap-2 px-3 py-2 rounded-lg text-xs" style={{ background: "#fff9e6", color: "#a16a00" }}>
                   <AlertTriangle size={13} className="shrink-0 mt-0.5" />
@@ -504,76 +542,8 @@ export default function StrategyBuilderModal({ onClose, onSuccess, editStrategy 
           )}
 
           {step === 3 && (
-            <div className="space-y-6">
-              <div>
-                <h3 className="text-sm font-semibold text-gray-700 mb-3">Step 3 — Which expiry?</h3>
-                <div className="flex gap-3">
-                  {(["WEEKLY", "MONTHLY"] as const).map((mode) => {
-                    const next = mode === "WEEKLY"
-                      ? expiryPreview[0]
-                      : expiryPreview.find((e) => e.label === "Monthly");
-                    return (
-                      <button key={mode} onClick={() => setExpiryMode(mode)}
-                        className={`flex-1 p-3 rounded-lg border-2 text-sm text-left ${expiryMode === mode ? "border-orange-500 bg-orange-50" : "border-gray-200"}`}>
-                        <div className="font-medium">{mode === "WEEKLY" ? "Nearest Weekly" : "Nearest Monthly"}</div>
-                        <div className="text-xs text-gray-500 mt-1">
-                          {next ? `Next: ${fmtDate(next.date)}` : selectedSymbols.length ? "Loading available expiries..." : "Pick a symbol in Step 1 to preview dates"}
-                        </div>
-                      </button>
-                    );
-                  })}
-                </div>
-                <p className="text-xs text-gray-500 mt-2">Always re-resolved to the current nearest date at entry time — never a fixed date, so this works correctly for years.</p>
-              </div>
-              <div>
-                <h3 className="text-sm font-semibold text-gray-700 mb-3">Step 3 — When to enter</h3>
-                <div className="flex gap-3">
-                  <button onClick={() => setEntryMode("IMMEDIATE")}
-                    className={`flex-1 p-3 rounded-lg border-2 text-sm text-left ${entryMode === "IMMEDIATE" ? "border-orange-500 bg-orange-50" : "border-gray-200"}`}>
-                    <div className="font-medium">Enter immediately</div>
-                    <div className="text-xs text-gray-500 mt-1">As soon as the strategy goes live each trading day</div>
-                  </button>
-                  <div onClick={() => setEntryMode("AT_TIME")} role="button" tabIndex={0}
-                    className={`flex-1 p-3 rounded-lg border-2 text-sm text-left cursor-pointer ${entryMode === "AT_TIME" ? "border-orange-500 bg-orange-50" : "border-gray-200"}`}>
-                    <div className="font-medium">Enter at a specific time</div>
-                    {entryMode === "AT_TIME" && (
-                      <div className="mt-2" onClick={(e) => e.stopPropagation()}>
-                        <TimePicker value={entryTime} onChange={setEntryTime} />
-                      </div>
-                    )}
-                  </div>
-                </div>
-              </div>
-              <div>
-                <h3 className="text-sm font-semibold text-gray-700 mb-3">Step 3 — When to exit</h3>
-                <div className="grid grid-cols-2 gap-4">
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-2">Take Profit (%)</label>
-                    <input type="number" value={takeProfitPct} onChange={(e) => setTakeProfitPct(e.target.value)}
-                      className="w-full px-3 py-2 border rounded-lg text-sm" style={{ borderColor: C.border2 }} placeholder="e.g. 40 (leave blank to disable)" />
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-2">Stop Loss (%)</label>
-                    <input type="number" value={stopLossPct} onChange={(e) => setStopLossPct(e.target.value)}
-                      className="w-full px-3 py-2 border rounded-lg text-sm" style={{ borderColor: C.border2 }} placeholder="e.g. 20 (leave blank to disable)" />
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-2">Exit at time (optional)</label>
-                    <TimePicker value={exitTime} onChange={setExitTime} allowClear placeholder="No time exit" />
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-2">Exit days before expiry</label>
-                    <input type="number" min={0} value={exitDaysBeforeExpiry} onChange={(e) => setExitDaysBeforeExpiry(parseInt(e.target.value) || 0)}
-                      className="w-full px-3 py-2 border rounded-lg text-sm" style={{ borderColor: C.border2 }} />
-                  </div>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {step === 4 && (
             <div className="space-y-4">
-              <h3 className="text-sm font-semibold text-gray-700">Step 4 — Review</h3>
+              <h3 className="text-sm font-semibold text-gray-700">Step 3 — Review</h3>
               <div className="bg-gray-50 rounded-lg p-6 border" style={{ borderColor: C.border2 }}>
                 <div className="text-sm text-gray-800 leading-relaxed">{reviewSentence()}</div>
               </div>
@@ -592,7 +562,7 @@ export default function StrategyBuilderModal({ onClose, onSuccess, editStrategy 
           {step > 1 ? (
             <button onClick={() => setStep(step - 1)} className="px-4 py-2 rounded-lg text-sm font-medium bg-gray-100 text-gray-700 hover:bg-gray-200">Back</button>
           ) : <div />}
-          {step < 4 ? (
+          {step < 3 ? (
             <button onClick={() => setStep(step + 1)} disabled={!canProceed()}
               className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium bg-orange-500 text-white hover:bg-orange-600 disabled:opacity-50">
               Next <ChevronRight size={16} />

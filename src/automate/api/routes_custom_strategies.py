@@ -479,7 +479,7 @@ async def _execute_backtest_run(run_id: int) -> None:
 
 
 @router.post("/{strategy_id}/backtest", status_code=202)
-def backtest_strategy(strategy_id: int, request: BacktestRequest, db: Session = Depends(get_db), user: dict = Depends(get_current_user)):
+async def backtest_strategy(strategy_id: int, request: BacktestRequest, db: Session = Depends(get_db), user: dict = Depends(get_current_user)):
     """
     Queue a backtest of this strategy's rules against real historical NSE
     F&O bhavcopy data (one simulated trade per historical expiry cycle in

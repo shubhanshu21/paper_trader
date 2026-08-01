@@ -36,6 +36,7 @@ from automate.utils.costs import calculate_options_transaction_cost_breakdown, s
 from automate.utils.instrument_cache import InstrumentCache
 from automate.utils.logger import get_logger
 from automate.utils.option_utils import check_exit_trigger, is_within_pre_expiry_buffer
+from automate.utils.trailing_stop import advance_trailing_stop, stop_triggered
 from automate.utils import black76
 
 log = get_logger(__name__)
@@ -122,7 +123,63 @@ class CustomRuleBacktestEngine:
         self.audit = AuditTrail(audit_log_path=audit_log_path)
         self.rate_limiter = OrderRateLimiter(max_per_second=10)
 
+    def _driving_expiry_mode(self) -> str:
+        """
+        For a calendar spread (legs on different expiry_mode streams — see
+        rule_schema.py's leg.expiry_mode), cycles are discovered off
+        whichever mode expires MORE OFTEN — WEEKLY if any leg needs it,
+        else MONTHLY. Each leg still resolves its OWN expiry independently
+        at every cycle's entry_date (RuleBasedStrategy._resolve_expiries_and_chains),
+        this only decides how often a new cycle's entry_date is tried. A
+        single-expiry strategy has exactly one mode here — identical to
+        today's behavior.
+        """
+        modes = {
+            leg.get("expiry_mode") or (self.rules.get("expiry") or {}).get("mode", "WEEKLY")
+            for leg in self.rules["legs"]
+        }
+        return "WEEKLY" if "WEEKLY" in modes else "MONTHLY"
+
+    def _natural_exit_date(self, expiry: str, cache: Dict[str, Optional[str]]) -> Optional[str]:
+        """The last real trading day for a given expiry_dt — a leg's own contract lifetime end, memoized per cycle."""
+        if expiry in cache:
+            return cache[expiry]
+        row = self.session.execute(
+            text(
+                "SELECT MAX(trade_date) FROM fno_bhavcopy WHERE symbol=:symbol AND instrument=:instrument "
+                "AND expiry_dt=:expiry"
+            ),
+            {"symbol": self.symbol, "instrument": self.option_instrument, "expiry": expiry},
+        ).fetchone()
+        result = row[0] if row else None
+        cache[expiry] = result
+        return result
+
+    def _trading_days(self, expiry: str, entry_date: str, exit_date: str) -> List[str]:
+        return [
+            r[0] for r in self.session.execute(
+                text(
+                    "SELECT DISTINCT trade_date FROM fno_bhavcopy WHERE symbol=:symbol AND instrument=:instrument AND "
+                    "expiry_dt=:expiry AND trade_date > :entry_date AND trade_date <= :exit_date ORDER BY trade_date"
+                ),
+                {"symbol": self.symbol, "instrument": self.option_instrument, "expiry": expiry,
+                 "entry_date": entry_date, "exit_date": exit_date},
+            ).fetchall()
+        ]
+
+    def _leg_pnl_pct(self, leg: dict, now_price: Optional[float]) -> Optional[float]:
+        """Single-leg version of _combined_pnl_pct, for an individually-managed leg's own TP/SL (see rule_schema.py's leg.exit)."""
+        if now_price is None:
+            return None
+        sign = -1 if leg["transaction_type"] == "SELL" else 1
+        pnl_amount = (leg["entry_price"] - now_price) * leg["quantity"] * (-sign)
+        denom = leg["entry_price"] * leg["quantity"]
+        if denom <= 0:
+            return 0.0
+        return pnl_amount / denom * 100.0
+
     def discover_cycles(self, from_date: Optional[str], to_date: Optional[str]) -> List[dict]:
+        driving_mode = self._driving_expiry_mode()
         expiries = [
             r[0] for r in self.session.execute(
                 text(
@@ -132,7 +189,7 @@ class CustomRuleBacktestEngine:
                 {"symbol": self.symbol, "instrument": self.option_instrument},
             ).fetchall()
         ]
-        if (self.rules.get("expiry") or {}).get("mode") == "MONTHLY":
+        if driving_mode == "MONTHLY":
             # Keep only the LAST listed expiry in each calendar month —
             # same "monthly" convention as
             # utils.option_utils.find_nearest_expiry_by_type(), which the
@@ -224,7 +281,7 @@ class CustomRuleBacktestEngine:
             return 0.0
         return pnl_amount / denom * 100.0
 
-    def _attach_entry_greeks(self, legs: List[dict], futures_price_at_entry: float, entry_date: str, expiry: str) -> None:
+    def _attach_entry_greeks(self, legs: List[dict], futures_price_at_entry: float, entry_date: str) -> None:
         """
         Mutates each leg dict in place, adding a "greeks_at_entry" key —
         IV/Delta/Gamma/Theta/Vega/Rho solved from the leg's real entry
@@ -236,14 +293,21 @@ class CustomRuleBacktestEngine:
         instrument_key instead, see api/routes_custom_strategies.py's
         greeks endpoint).
 
+        Uses each leg's OWN resolved `expiry` (not a shared cycle expiry)
+        for days-to-expiry — required for a calendar spread, where legs
+        can be on different expiry cycles; harmless no-op difference for
+        a single-expiry strategy since every leg's `expiry` is then
+        identical anyway.
+
         None (not a raised error) on a leg whose IV can't be solved (e.g.
         a stale/zero-volume entry print) — Greeks are supplementary
         analysis on top of the real P&L walk, never something that should
         abort a backtest cycle.
         """
-        days_to_expiry = (date.fromisoformat(expiry) - date.fromisoformat(entry_date)).days
-        T = max(days_to_expiry, 1) / 365.0
+        entry_dt = date.fromisoformat(entry_date)
         for leg in legs:
+            days_to_expiry = (date.fromisoformat(leg["expiry"]) - entry_dt).days
+            T = max(days_to_expiry, 1) / 365.0
             leg["greeks_at_entry"] = black76.compute_greeks_from_market_price(
                 F=futures_price_at_entry, K=leg["strike"], T=T,
                 r=black76.DEFAULT_RISK_FREE_RATE, market_price=leg["entry_price"],
@@ -251,7 +315,7 @@ class CustomRuleBacktestEngine:
             )
 
     def _run_one_cycle(self, cycle: dict) -> Optional[dict]:
-        entry_date, expiry, exit_date = cycle["entry_date"], cycle["expiry"], cycle["exit_date"]
+        entry_date = cycle["entry_date"]
         self.feed.set_time(datetime.combine(date.fromisoformat(entry_date), _MARKET_OPEN))
 
         strategy = RuleBasedStrategy(
@@ -266,7 +330,7 @@ class CustomRuleBacktestEngine:
         )
         result = strategy.run()
         if result.get("status") != "success":
-            log.info("Cycle entry=%s expiry=%s skipped: %s", entry_date, expiry, result.get("error", result.get("status")))
+            log.info("Cycle entry=%s skipped: %s", entry_date, result.get("error", result.get("status")))
             return None
 
         legs = result["legs"]
@@ -286,55 +350,154 @@ class CustomRuleBacktestEngine:
             order = orders_by_id.get(leg.get("order_id"))
             if order is not None:
                 leg["entry_price"] = order["execution_price"]
-        self._attach_entry_greeks(legs, result["spot_price"], entry_date, expiry)
+        self._attach_entry_greeks(legs, result["spot_price"], entry_date)
 
-        exit_reason = "EXPIRY"
+        # Each leg's own contract lifetime end (its own `expiry`, resolved
+        # independently per rule_strategy.py — identical across all legs
+        # for a single-expiry strategy, genuinely different for a calendar
+        # spread). Nothing can be held past this regardless of any TP/SL.
+        # When every leg shares the same expiry (a single-expiry strategy —
+        # today's only case), reuse cycle["exit_date"] (computed identically
+        # by discover_cycles' own query) for all of them rather than
+        # re-querying. Only a genuine calendar spread (legs whose resolved
+        # `expiry` actually differ from each other) needs its own per-leg
+        # DB lookup here.
+        natural_exit_cache: Dict[str, Optional[str]] = {}
+        cycle_exit_date = cycle.get("exit_date")
+        leg_expiries = {leg.get("expiry") for leg in legs if leg.get("expiry")}
+        uniform_expiry = len(leg_expiries) <= 1
+        for leg in legs:
+            leg_expiry = leg.get("expiry")
+            if uniform_expiry or not leg_expiry:
+                natural = cycle_exit_date
+            else:
+                natural = self._natural_exit_date(leg_expiry, natural_exit_cache)
+            if not natural or natural <= entry_date:
+                log.warning(
+                    "Cycle entry=%s: no exit data for leg %s expiry=%s — skipping cycle.",
+                    entry_date, leg["instrument_token"], leg.get("expiry"),
+                )
+                return None
+            leg["_natural_exit_date"] = natural
+
+        # Split legs into individually-managed (own exit/trailing config —
+        # rule_schema.py's leg.exit) vs combined-managed (participate in
+        # the strategy-level TP/SL/exit_days_before_expiry check, today's
+        # only behavior). idx == index into self.rules["legs"] since this
+        # method always runs the FULL strategy (no leg_indices subset).
         exit_ = self.rules.get("exit") or {}
-        take_profit_pct = exit_.get("take_profit_pct")
-        stop_loss_pct = exit_.get("stop_loss_pct")
-        exit_days_before_expiry = exit_.get("exit_days_before_expiry", 0)
+        strategy_take_profit_pct = exit_.get("take_profit_pct")
+        strategy_stop_loss_pct = exit_.get("stop_loss_pct")
+        strategy_exit_days_before_expiry = exit_.get("exit_days_before_expiry", 0)
 
-        option_tokens = [leg["instrument_token"] for leg in legs]
-        if option_tokens and (take_profit_pct is not None or stop_loss_pct is not None or exit_days_before_expiry):
-            expiry_date = date.fromisoformat(expiry)
-            trading_days = [
-                r[0] for r in self.session.execute(
-                    text(
-                        "SELECT DISTINCT trade_date FROM fno_bhavcopy WHERE symbol=:symbol AND instrument=:instrument AND "
-                        "expiry_dt=:expiry AND trade_date > :entry_date AND trade_date <= :exit_date ORDER BY trade_date"
-                    ),
-                    {"symbol": self.symbol, "instrument": self.option_instrument, "expiry": expiry,
-                     "entry_date": entry_date, "exit_date": exit_date},
-                ).fetchall()
-            ]
-            for day in trading_days:
-                self.feed.set_time(datetime.combine(date.fromisoformat(day), _MARKET_OPEN))
-                now_prices = {tok: self.feed.get_ltp(tok) for tok in option_tokens}
-                pnl_pct = self._combined_pnl_pct(legs, now_prices)
-                if pnl_pct is None:
-                    continue
-                trigger = check_exit_trigger(pnl_pct, take_profit_pct, stop_loss_pct)
-                if trigger is None and exit_days_before_expiry and is_within_pre_expiry_buffer(
-                    date.fromisoformat(day), expiry_date, exit_days_before_expiry
-                ):
-                    trigger = "EXPIRY"
-                if trigger:
-                    exit_date = day
-                    exit_reason = trigger
-                    break
+        individually_managed = []
+        combined_managed = []
+        for idx, leg in enumerate(legs):
+            rules_leg = self.rules["legs"][idx] if idx < len(self.rules["legs"]) else {}
+            if rules_leg.get("exit"):
+                individually_managed.append(idx)
+            else:
+                combined_managed.append(idx)
 
-        self.feed.set_time(datetime.combine(date.fromisoformat(exit_date), _MARKET_OPEN))
+        leg_exit_date: Dict[int, str] = {}
+        leg_exit_reason: Dict[int, str] = {}
+
+        # --- Individually-managed legs: each walked independently against
+        # its OWN exit config and OWN contract's trading days. ---
+        for idx in individually_managed:
+            leg = legs[idx]
+            own_exit = self.rules["legs"][idx].get("exit") or {}
+            take_profit_pct = own_exit.get("take_profit_pct")
+            stop_loss_pct = own_exit.get("stop_loss_pct")
+            trailing = own_exit.get("trailing") or {}
+            trailing_enabled = bool(trailing.get("enabled"))
+            natural = leg["_natural_exit_date"]
+
+            exit_day, reason = natural, "EXPIRY"
+            if take_profit_pct is not None or stop_loss_pct is not None or trailing_enabled:
+                highest_price = lowest_price = current_stop_price = None
+                if trailing_enabled:
+                    highest_price, lowest_price, current_stop_price, _ = advance_trailing_stop(
+                        leg["transaction_type"], leg["entry_price"], trailing["trail_amount"],
+                        trailing["trail_type"], None, None, None,
+                    )
+                for day in self._trading_days(leg["expiry"], entry_date, natural):
+                    self.feed.set_time(datetime.combine(date.fromisoformat(day), _MARKET_OPEN))
+                    now = self.feed.get_ltp(leg["instrument_token"])
+                    if now is None:
+                        continue
+                    triggered = False
+                    if trailing_enabled:
+                        highest_price, lowest_price, current_stop_price, _ = advance_trailing_stop(
+                            leg["transaction_type"], now, trailing["trail_amount"], trailing["trail_type"],
+                            highest_price, lowest_price, current_stop_price,
+                        )
+                        if stop_triggered(leg["transaction_type"], now, current_stop_price):
+                            exit_day, reason, triggered = day, "TRAILING_STOP", True
+                    if not triggered and (take_profit_pct is not None or stop_loss_pct is not None):
+                        pnl_pct = self._leg_pnl_pct(leg, now)
+                        if pnl_pct is not None:
+                            trigger = check_exit_trigger(pnl_pct, take_profit_pct, stop_loss_pct)
+                            if trigger:
+                                exit_day, reason, triggered = day, trigger, True
+                    if triggered:
+                        break
+            leg_exit_date[idx] = exit_day
+            leg_exit_reason[idx] = reason
+
+        # --- Combined-managed legs: today's single strategy-level TP/SL/
+        # exit_days_before_expiry check, walked over the EARLIEST-expiring
+        # combined leg's own contract days (can't hold any leg past its
+        # own expiry) — for a single-expiry strategy this is every leg,
+        # one shared expiry, byte-identical to the old behavior. ---
+        if combined_managed:
+            combined_legs = [legs[i] for i in combined_managed]
+            earliest_leg = min(combined_legs, key=lambda l: l["_natural_exit_date"])
+            min_natural = earliest_leg["_natural_exit_date"]
+            combined_exit_day, combined_exit_reason = min_natural, "EXPIRY"
+
+            if strategy_take_profit_pct is not None or strategy_stop_loss_pct is not None or strategy_exit_days_before_expiry:
+                combined_tokens = [l["instrument_token"] for l in combined_legs]
+                expiry_date_obj = date.fromisoformat(earliest_leg["expiry"])
+                for day in self._trading_days(earliest_leg["expiry"], entry_date, min_natural):
+                    self.feed.set_time(datetime.combine(date.fromisoformat(day), _MARKET_OPEN))
+                    now_prices = {tok: self.feed.get_ltp(tok) for tok in combined_tokens}
+                    pnl_pct = self._combined_pnl_pct(combined_legs, now_prices)
+                    if pnl_pct is None:
+                        continue
+                    trigger = check_exit_trigger(pnl_pct, strategy_take_profit_pct, strategy_stop_loss_pct)
+                    if trigger is None and strategy_exit_days_before_expiry and is_within_pre_expiry_buffer(
+                        date.fromisoformat(day), expiry_date_obj, strategy_exit_days_before_expiry
+                    ):
+                        trigger = "EXPIRY"
+                    if trigger:
+                        combined_exit_day, combined_exit_reason = day, trigger
+                        break
+
+            for idx in combined_managed:
+                leg = legs[idx]
+                # A later-expiring combined leg can't be held past ITS OWN
+                # natural expiry even if the group trigger hasn't fired yet.
+                if combined_exit_day <= leg["_natural_exit_date"]:
+                    leg_exit_date[idx] = combined_exit_day
+                    leg_exit_reason[idx] = combined_exit_reason
+                else:
+                    leg_exit_date[idx] = leg["_natural_exit_date"]
+                    leg_exit_reason[idx] = "EXPIRY"
+
         gross_pnl = 0.0
         net_pnl = 0.0
         leg_charges = []
         liquid = True
         for idx, leg in enumerate(legs):
+            exit_day = leg_exit_date[idx]
+            self.feed.set_time(datetime.combine(date.fromisoformat(exit_day), _MARKET_OPEN))
             token = leg["instrument_token"]
             exit_transaction_type = "BUY" if leg["transaction_type"] == "SELL" else "SELL"
             if leg["instrument_type"] == "OPTION":
                 raw_ltp = self.feed.get_ltp(token)
                 if raw_ltp is None:
-                    log.warning("Cycle entry=%s expiry=%s: no exit price for %s — skipping cycle.", entry_date, expiry, token)
+                    log.warning("Cycle entry=%s: no exit price for %s on %s — skipping cycle.", entry_date, token, exit_day)
                     return None
                 if self.feed.get_volume(token) == 0:
                     liquid = False
@@ -369,20 +532,28 @@ class CustomRuleBacktestEngine:
                 leg_gross = (exit_price - leg["entry_price"]) * leg["quantity"] * sign
                 gross_pnl += leg_gross
                 net_pnl += leg_gross
+            leg["exit_date"] = exit_day
+            leg["exit_reason"] = leg_exit_reason[idx]
 
         entry_premium_total = sum(leg["entry_price"] * leg["quantity"] for leg in legs)
         pnl_pct_of_premium = (net_pnl / entry_premium_total * 100.0) if entry_premium_total > 0 else 0.0
         charges_total = sum_breakdowns(*leg_charges).get("total", 0) if leg_charges else 0.0
 
+        all_exit_dates = [leg_exit_date[idx] for idx in range(len(legs))]
+        all_reasons = {leg_exit_reason[idx] for idx in range(len(legs))}
+        overall_exit_date = max(all_exit_dates)
+        overall_exit_reason = next(iter(all_reasons)) if len(all_reasons) == 1 else "MIXED"
+
         return {
             "entry_date": entry_date,
-            "expiry": expiry,
-            "exit_date": exit_date,
-            "exit_reason": exit_reason,
+            "expiry": legs[0].get("expiry") if legs else None,
+            "exit_date": overall_exit_date,
+            "exit_reason": overall_exit_reason,
             "spot_at_entry": result["spot_price"],
             "legs": [
                 {"instrument_type": l["instrument_type"], "option_type": l["option_type"], "strike": l["strike"],
                  "transaction_type": l["transaction_type"], "quantity": l["quantity"], "entry_price": l["entry_price"],
+                 "expiry": l.get("expiry"), "exit_date": l.get("exit_date"), "exit_reason": l.get("exit_reason"),
                  "exit_price": l.get("exit_price"), "exit_order_id": l.get("exit_order_id"),
                  "greeks_at_entry": l.get("greeks_at_entry")}
                 for l in legs

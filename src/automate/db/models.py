@@ -597,6 +597,20 @@ class CustomStrategyPosition(Base):
     opened_at = Column(DateTime, nullable=False, server_default=func.now())
     closed_at = Column(DateTime, nullable=True)
 
+    # This leg's resolved per-leg config (exit/trailing/sizing/expiry_mode
+    # — see rule_schema.py), snapshotted from the strategy's rules_json AT
+    # ENTRY TIME so a later rules edit never silently changes how an
+    # already-open leg is managed. NULL for legs with no per-leg config
+    # (managed by the strategy-level combined exit only, today's only
+    # behavior) — see custom_strategy_scheduler.py::_try_exit.
+    leg_config_json = Column(Text, nullable=True)
+    # Live trailing-stop ratchet state for this leg (highest_price/
+    # lowest_price/current_stop_price) — same shape
+    # advanced_orders_scheduler.py already persists for standalone
+    # trailing stops, see utils/trailing_stop.py. NULL unless
+    # leg_config_json.exit.trailing.enabled is true.
+    trail_state_json = Column(Text, nullable=True)
+
     __table_args__ = (
         Index("ix_custom_strategy_positions_strategy_id", "strategy_id"),
         Index("ix_custom_strategy_positions_status", "status"),
@@ -770,3 +784,30 @@ class CustomBacktestRun(Base):
         if include_result:
             d["result"] = json.loads(self.result_json) if self.result_json else None
         return d
+
+
+class SymbolIvHistory(Base):
+    """
+    One daily ATM-IV snapshot per symbol, written once/day by
+    api/iv_history_scheduler.py after market close. The only source of
+    IV-over-time data in this codebase — utils/black76.py computes IV
+    live, on demand, per open leg, but nothing persisted it historically
+    before this table, so an "IV rank" entry condition (rule_schema.py's
+    entry.condition IV_RANK) had nothing to rank against. A symbol's rank
+    is only meaningful once enough rows have accumulated (see
+    utils/iv_rank.py — returns None, never a fabricated number, below
+    that floor) — this table starts empty for every symbol and fills in
+    day by day from whenever this feature first shipped, not backfilled
+    from history that doesn't exist.
+    """
+    __tablename__ = "symbol_iv_history"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    symbol = Column(String(32), nullable=False)
+    trade_date = Column(String(10), nullable=False)  # 'YYYY-MM-DD'
+    atm_iv = Column(Numeric(8, 4), nullable=False)
+    created_at = Column(DateTime, nullable=False, server_default=func.now())
+
+    __table_args__ = (
+        Index("ix_symbol_iv_history_symbol_date", "symbol", "trade_date"),
+    )

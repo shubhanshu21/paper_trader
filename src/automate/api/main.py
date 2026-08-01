@@ -190,6 +190,7 @@ async def _start_background_tasks():
     from automate.api.custom_strategy_scheduler import custom_strategy_scheduler
     from automate.api.token_refresh_scheduler import token_refresh_scheduler
     from automate.api.advanced_orders_scheduler import advanced_orders_scheduler
+    from automate.api.iv_history_scheduler import iv_history_scheduler
 
     # run_daemon.py (the old cron/systemd-style CLI daemon) is retired —
     # it only ever ran hand-written strategies (strategies/registry.py,
@@ -203,6 +204,7 @@ async def _start_background_tasks():
     asyncio.create_task(custom_strategy_scheduler())
     asyncio.create_task(token_refresh_scheduler())
     asyncio.create_task(advanced_orders_scheduler())
+    asyncio.create_task(iv_history_scheduler())
 
 
 @app.get("/api/health")
