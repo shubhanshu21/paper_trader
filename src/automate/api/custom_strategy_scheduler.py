@@ -89,6 +89,22 @@ def _get_brokers() -> Optional[dict]:
     return _brokers
 
 
+def reset_brokers_cache() -> None:
+    """
+    Drop the cached paper/live broker pair so the next _get_brokers() call
+    rebuilds them from scratch — in particular so UpstoxBroker's underlying
+    SDK client picks up a freshly-refreshed access_token. Without this, a
+    successful ensure_fresh_upstox_token() only updates the DB-stored
+    token; every UpstoxBroker instance built before that point keeps using
+    the (now stale) token baked into its SDK Configuration object forever,
+    since nothing else ever mutates it in place. Called from
+    auth/upstox_auto_login.py right after a successful refresh — see
+    _invalidate_broker_caches() there.
+    """
+    global _brokers
+    _brokers = None
+
+
 def _mode_for_status(status: str) -> str:
     return "paper" if status == "PAPER_TRADING" else "live"
 
@@ -360,6 +376,7 @@ def _try_exit(db, strategy: CustomStrategy, broker) -> None:
         if trigger is None:
             continue
 
+        closed_legs = []
         for leg in symbol_legs:
             opposite = broker.place_buy_order if leg.transaction_type == "SELL" else broker.place_sell_order
             try:
@@ -386,17 +403,29 @@ def _try_exit(db, strategy: CustomStrategy, broker) -> None:
             leg.exit_order_id = exit_order_id
             leg.exit_reason = trigger
             leg.closed_at = datetime.now()
+            closed_legs.append(leg)
 
-        final_pct = _combined_pnl_pct(symbol_legs, now_prices) or 0.0
-        if strategy.status == "LIVE":
-            strategy.live_return_pct = round(final_pct, 4)
+        # Only record a return_pct when every leg actually closed — with
+        # one leg left OPEN (failed exit above), the basket isn't fully
+        # realized yet and an aggregate number here would misrepresent a
+        # still partially-open position as a completed, priced outcome.
+        if len(closed_legs) == len(symbol_legs):
+            final_pct = _combined_pnl_pct(symbol_legs, now_prices) or 0.0
+            if strategy.status == "LIVE":
+                strategy.live_return_pct = round(final_pct, 4)
+            else:
+                strategy.paper_return_pct = round(final_pct, 4)
+            log.info(
+                "custom_strategy_scheduler: exited strategy %s (%s) symbol %s | trigger=%s | pnl_pct=%.2f",
+                strategy.id, strategy.name, symbol, trigger, final_pct,
+            )
         else:
-            strategy.paper_return_pct = round(final_pct, 4)
+            log.warning(
+                "custom_strategy_scheduler: only %d/%d legs closed for strategy %s (%s) symbol %s | trigger=%s — "
+                "leaving return_pct unchanged, basket still partially open.",
+                len(closed_legs), len(symbol_legs), strategy.id, strategy.name, symbol, trigger,
+            )
         db.commit()
-        log.info(
-            "custom_strategy_scheduler: exited strategy %s (%s) symbol %s | trigger=%s | pnl_pct=%.2f",
-            strategy.id, strategy.name, symbol, trigger, final_pct,
-        )
 
 
 def dtime_or_none(expiry_str: Optional[str]):

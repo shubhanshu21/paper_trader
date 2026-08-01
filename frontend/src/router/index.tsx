@@ -9,8 +9,13 @@ import HoldingsView from '../components/HoldingsView';
 import PositionsView from '../components/PositionsView';
 import ProfileView from '../components/ProfileView';
 import LeaderboardView from '../components/LeaderboardView';
+import AdvancedOrdersView from '../components/AdvancedOrdersView';
 import { api } from '../api';
 import { fetchWalletSummary, fetchOrders, fetchOpenOptions, fetchOpenEquity, fetchWalletLedger, closeOptionPosition, closeEquityPosition } from '../store/thunks/dataThunks';
+import {
+  fetchAdvancedOrders, createOcoOrder, cancelOcoOrder,
+  createTrailingStop, cancelTrailingStop, createBracketOrder, cancelBracketOrder,
+} from '../store/thunks/advancedOrdersThunks';
 import { RootState, AppDispatch } from '../store';
 
 // Connected components that use Redux
@@ -50,6 +55,29 @@ const PositionsConnected = () => {
   };
   
   return <PositionsView openOptions={openOptions} onClosePosition={handleClosePosition} closingId={closingId} />;
+};
+
+const AdvancedOrdersConnected = () => {
+  const dispatch = useDispatch<AppDispatch>();
+  const { ocoOrders, trailingStops, bracketOrders, loading, creating, cancellingId } = useSelector((state: RootState) => state.advancedOrders);
+
+  return (
+    <AdvancedOrdersView
+      ocoOrders={ocoOrders}
+      trailingStops={trailingStops}
+      bracketOrders={bracketOrders}
+      loading={loading}
+      creating={creating}
+      cancellingId={cancellingId}
+      onRefresh={() => dispatch(fetchAdvancedOrders())}
+      onCreateOco={(req) => dispatch(createOcoOrder(req)).unwrap()}
+      onCreateTrailingStop={(req) => dispatch(createTrailingStop(req)).unwrap()}
+      onCreateBracket={(req) => dispatch(createBracketOrder(req)).unwrap()}
+      onCancelOco={(id) => dispatch(cancelOcoOrder(id))}
+      onCancelTrailingStop={(id) => dispatch(cancelTrailingStop(id))}
+      onCancelBracket={(id) => dispatch(cancelBracketOrder(id))}
+    />
+  );
 };
 
 const ProfileConnected = () => {
@@ -196,6 +224,10 @@ export const router = createBrowserRouter([
       {
         path: 'leaderboard',
         element: <LeaderboardView />,
+      },
+      {
+        path: 'advanced-orders',
+        element: <AdvancedOrdersConnected />,
       },
     ],
   },

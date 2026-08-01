@@ -487,6 +487,13 @@ class CustomStrategy(Base):
     
     # Deployment status
     status = Column(String(16), nullable=False, default="DRAFT")  # 'DRAFT' | 'BACKTESTING' | 'PAPER_TRADING' | 'LIVE' | 'PAUSED' | 'STOPPED'
+    # 'PAPER_TRADING' | 'LIVE' snapshot of status right before the most
+    # recent pause, so resume/{id} can restore the mode it was actually
+    # running in instead of always dropping back to paper trading (a LIVE
+    # strategy silently downgraded to paper on resume would look like a
+    # success while real trading had actually stopped). Set on pause,
+    # consumed and cleared on resume.
+    pre_pause_status = Column(String(16), nullable=True)
 
     # Composable rule definition (legs / entry / exit) — see
     # strategies/custom/rule_schema.py for the JSON contract. This is what
@@ -648,3 +655,118 @@ class Notification(Base):
             "read": bool(self.read),
             "created_at": self.created_at.isoformat() if self.created_at else None,
         }
+
+
+class AdvancedOrder(Base):
+    """
+    OCO / trailing-stop / bracket orders (api/routes_advanced_orders.py),
+    driven each tick by api/advanced_orders_scheduler.py. One row per
+    OCO pair / trailing stop / bracket — kind-specific mutable state
+    (broker order_ids, current trailing stop level, per-leg status) lives
+    in state_json rather than as separate columns, since the three kinds
+    don't share a shape and this table would otherwise need three sets of
+    mostly-null columns.
+
+    mode='live' rows place real orders at the broker immediately and are
+    driven by polling get_order_status()/modify_order()/cancel_order().
+    mode='paper' rows never touch the broker until their trigger
+    condition is actually met against live LTP (PaperBroker has no
+    resting-order concept of its own) — see advanced_orders_scheduler.py
+    for the per-mode branching.
+    """
+    __tablename__ = "advanced_orders"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    # Caller-facing id, e.g. 'oco_20260801120000ab12' — kept distinct from
+    # the numeric PK so the API's existing {oco,ts,bracket}_id URL shape
+    # doesn't change for callers.
+    public_id = Column(String(40), nullable=False, unique=True)
+    kind = Column(String(16), nullable=False)  # 'OCO' | 'TRAILING_STOP' | 'BRACKET'
+    user_id = Column(BigInteger, nullable=False)
+    mode = Column(String(8), nullable=False)  # 'paper' | 'live'
+    strategy_name = Column(String(64), nullable=True)
+    status = Column(String(16), nullable=False, default="ACTIVE")  # 'ACTIVE' | 'COMPLETED' | 'CANCELLED'
+    state_json = Column(Text, nullable=False)
+    created_at = Column(DateTime, nullable=False, server_default=func.now())
+    updated_at = Column(DateTime, nullable=True, onupdate=func.now())
+
+    __table_args__ = (
+        Index("ix_advanced_orders_public_id", "public_id"),
+        Index("ix_advanced_orders_user_id", "user_id"),
+        Index("ix_advanced_orders_status", "status"),
+    )
+
+    def to_dict(self):
+        import json
+        state = json.loads(self.state_json) if self.state_json else {}
+        return {
+            "id": self.public_id,
+            "kind": self.kind,
+            "mode": self.mode,
+            "strategy_name": self.strategy_name,
+            "status": self.status,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "updated_at": self.updated_at.isoformat() if self.updated_at else None,
+            **state,
+        }
+
+
+class CustomBacktestRun(Base):
+    """
+    One asynchronous CUSTOM STRATEGY backtest execution
+    (api/routes_custom_strategies.py's POST /{id}/backtest kicks this off
+    and returns immediately; the frontend polls GET
+    /{id}/backtest/runs/{run_id} for progress/result). Gives backtests
+    actual run history — CustomStrategy.backtest_result_json only ever
+    held the single most recent run, with no way to compare two rule
+    tweaks against each other. rules_snapshot_json freezes what the
+    strategy's rules were AT RUN TIME, since a user can edit rules after a
+    run completes and the stored result would otherwise silently drift out
+    of sync with what's shown as "current rules" on the Strategies page.
+
+    NOT the same table as the legacy BacktestRun above (backtest_runs) —
+    that one is utils/backtest_history.py's flat single-cycle-count row
+    for the old hand-written strategies (run_daemon.py-era); this is a
+    richer JSON-result row scoped to the custom-strategy-builder's async
+    backtest engine — hence the different name/table despite both being
+    "a backtest run".
+    """
+    __tablename__ = "custom_backtest_runs"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    strategy_id = Column(BigInteger, nullable=False)
+    user_id = Column(BigInteger, nullable=False)
+    status = Column(String(16), nullable=False, default="QUEUED")  # 'QUEUED' | 'RUNNING' | 'COMPLETED' | 'FAILED'
+    from_date = Column(String(10), nullable=True)
+    to_date = Column(String(10), nullable=True)
+    rules_snapshot_json = Column(Text, nullable=False)
+    result_json = Column(Text, nullable=True)
+    error_message = Column(Text, nullable=True)
+    progress_current = Column(Integer, nullable=False, default=0)
+    progress_total = Column(Integer, nullable=True)
+    created_at = Column(DateTime, nullable=False, server_default=func.now())
+    completed_at = Column(DateTime, nullable=True)
+
+    __table_args__ = (
+        Index("ix_custom_backtest_runs_strategy_id", "strategy_id"),
+        Index("ix_custom_backtest_runs_user_id", "user_id"),
+        Index("ix_custom_backtest_runs_created_at", "created_at"),
+    )
+
+    def to_dict(self, include_result: bool = True):
+        import json
+        d = {
+            "run_id": self.id,
+            "strategy_id": self.strategy_id,
+            "status": self.status,
+            "from_date": self.from_date,
+            "to_date": self.to_date,
+            "progress_current": self.progress_current,
+            "progress_total": self.progress_total,
+            "error_message": self.error_message,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "completed_at": self.completed_at.isoformat() if self.completed_at else None,
+        }
+        if include_result:
+            d["result"] = json.loads(self.result_json) if self.result_json else None
+        return d

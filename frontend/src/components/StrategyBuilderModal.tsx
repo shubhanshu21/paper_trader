@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { X, ChevronRight, Check, Plus, Trash2, Search } from "lucide-react";
+import { X, ChevronRight, Check, Plus, Trash2, Search, LayoutTemplate, AlertTriangle } from "lucide-react";
 import { C, FONT, TimePicker, Select, formatTime12h, fmtDate } from "./Common";
 
 
@@ -34,6 +34,42 @@ interface LegForm {
 
 const newLeg = (): LegForm => ({ action: "SELL", option_type: "CE", strike_mode: "ATM", strike_value: "", lots: 1 });
 
+interface StrategyTemplate {
+  type: string;
+  description: string;
+  risk_level: string;
+  legs: { action: "BUY" | "SELL"; option_type: "CE" | "PE"; strike_selection: { mode: StrikeMode; value: number | null }; lots: number }[];
+}
+
+const TEMPLATE_LABELS: Record<string, string> = {
+  STRADDLE: "Straddle", STRANGLE: "Strangle", IRON_CONDOR: "Iron Condor", BUTTERFLY: "Butterfly", CUSTOM: "Custom",
+};
+
+function templateLegsToForm(legs: StrategyTemplate["legs"]): LegForm[] {
+  return legs.map((l) => ({
+    action: l.action,
+    option_type: l.option_type,
+    strike_mode: l.strike_selection.mode,
+    strike_value: l.strike_selection.value != null ? String(l.strike_selection.value) : "",
+    lots: l.lots,
+  }));
+}
+
+/** Two legs are duplicates if action/option_type/strike mode+value all match — mirrors rule_schema.py's validate_rules() check, surfaced early instead of only after a submit round-trip. */
+function findDuplicateLegPairs(legs: LegForm[]): [number, number][] {
+  const pairs: [number, number][] = [];
+  for (let i = 0; i < legs.length; i++) {
+    for (let j = i + 1; j < legs.length; j++) {
+      const a = legs[i], b = legs[j];
+      const sameStrike = a.strike_mode === "ATM"
+        ? b.strike_mode === "ATM"
+        : b.strike_mode === a.strike_mode && parseFloat(a.strike_value || "0") === parseFloat(b.strike_value || "0");
+      if (a.action === b.action && a.option_type === b.option_type && sameStrike) pairs.push([i, j]);
+    }
+  }
+  return pairs;
+}
+
 function legPhrase(leg: LegForm): string {
   const lotWord = leg.lots === 1 ? "lot" : "lots";
   let strike = "ATM (at-the-money)";
@@ -48,6 +84,21 @@ export default function StrategyBuilderModal({ onClose, onSuccess, editStrategy 
   const [step, setStep] = useState(1);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string[]>([]);
+
+  // Template picker — only for brand-new strategies, shown before Step 1.
+  const [showTemplatePicker, setShowTemplatePicker] = useState(!isEditing);
+  const [templates, setTemplates] = useState<StrategyTemplate[]>([]);
+  useEffect(() => {
+    if (!showTemplatePicker) return;
+    (async () => {
+      try {
+        const response = await fetch("/api/custom-strategies/templates/strategy-types", { credentials: "include" });
+        if (response.ok) setTemplates((await response.json()).strategy_types || []);
+      } catch {
+        // Picker still works with "Start from scratch" even if templates fail to load.
+      }
+    })();
+  }, [showTemplatePicker]);
 
   const [name, setName] = useState(editStrategy?.name ?? "");
   const [instrumentType, setInstrumentType] = useState<"INDEX" | "STOCK">((editStrategy?.instrument_type as "INDEX" | "STOCK") ?? "INDEX");
@@ -76,6 +127,11 @@ export default function StrategyBuilderModal({ onClose, onSuccess, editStrategy 
   const [exitDaysBeforeExpiry, setExitDaysBeforeExpiry] = useState(editStrategy?.rules?.exit.exit_days_before_expiry ?? 1);
 
   const [symbolsError, setSymbolsError] = useState("");
+
+  const pickTemplate = (template: StrategyTemplate | null) => {
+    if (template) setLegs(templateLegsToForm(template.legs));
+    setShowTemplatePicker(false);
+  };
 
   useEffect(() => {
     async function fetchSymbols() {
@@ -219,18 +275,51 @@ export default function StrategyBuilderModal({ onClose, onSuccess, editStrategy 
       <div className="bg-white rounded-lg w-full max-w-2xl max-h-[90vh] overflow-hidden flex flex-col" style={FONT}>
         <div className="px-6 py-4 border-b flex items-center justify-between shrink-0" style={{ borderColor: C.border2 }}>
           <div>
-            <h2 className="text-lg font-semibold text-gray-800">{isEditing ? "Edit Strategy" : "Build an Options Strategy"}</h2>
-            <div className="flex items-center gap-2 mt-1">
-              {[1, 2, 3, 4].map((s) => (
-                <div key={s} className={`w-6 h-6 rounded-full flex items-center justify-center text-xs ${s <= step ? "bg-orange-500 text-white" : "bg-gray-200 text-gray-600"}`}>
-                  {s < step ? <Check size={12} /> : s}
-                </div>
-              ))}
-            </div>
+            <h2 className="text-lg font-semibold text-gray-800">{showTemplatePicker ? "Choose a Starting Point" : isEditing ? "Edit Strategy" : "Build an Options Strategy"}</h2>
+            {!showTemplatePicker && (
+              <div className="flex items-center gap-2 mt-1">
+                {[1, 2, 3, 4].map((s) => (
+                  <div key={s} className={`w-6 h-6 rounded-full flex items-center justify-center text-xs ${s <= step ? "bg-orange-500 text-white" : "bg-gray-200 text-gray-600"}`}>
+                    {s < step ? <Check size={12} /> : s}
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
           <button onClick={onClose} className="text-gray-400 hover:text-gray-600"><X size={20} /></button>
         </div>
 
+        {showTemplatePicker ? (
+          <div className="p-6 overflow-y-auto flex-1 space-y-4">
+            <p className="text-xs text-gray-500">Start from a common strategy shape, or build one leg at a time from scratch. Either way, every leg is fully editable in the next step.</p>
+            <div className="grid grid-cols-2 gap-3">
+              {templates.filter((t) => t.type !== "CUSTOM").map((t) => (
+                <button key={t.type} onClick={() => pickTemplate(t)}
+                  className="text-left p-4 rounded-lg border-2 border-gray-200 hover:border-orange-300 transition-colors focus:outline-none"
+                >
+                  <div className="flex items-center gap-2 mb-1.5">
+                    <LayoutTemplate size={14} style={{ color: C.orange }} />
+                    <span className="text-sm font-semibold text-gray-800">{TEMPLATE_LABELS[t.type] || t.type}</span>
+                    <span className="ml-auto text-[10px] uppercase font-bold px-1.5 py-0.5 rounded"
+                      style={{
+                        background: t.risk_level === "high" ? "#fdeceb" : t.risk_level === "medium" ? "#fff6df" : "#e8f7ec",
+                        color: t.risk_level === "high" ? "#c22b26" : t.risk_level === "medium" ? "#a16a00" : "#1f8a3d",
+                      }}>
+                      {t.risk_level}
+                    </span>
+                  </div>
+                  <p className="text-xs text-gray-500 leading-relaxed">{t.description}</p>
+                  <p className="text-[11px] text-gray-400 mt-2">{t.legs.length} leg{t.legs.length !== 1 ? "s" : ""}</p>
+                </button>
+              ))}
+            </div>
+            <button onClick={() => pickTemplate(null)}
+              className="w-full text-left p-4 rounded-lg border-2 border-dashed border-gray-200 hover:border-orange-300 transition-colors focus:outline-none">
+              <span className="text-sm font-semibold text-gray-700">Start from scratch</span>
+              <p className="text-xs text-gray-500 mt-1">Build any combination of legs yourself, one at a time.</p>
+            </button>
+          </div>
+        ) : (
         <div className="p-6 overflow-y-auto flex-1">
           {error.length > 0 && (
             <div className="mb-4 px-4 py-3 rounded bg-red-50 border border-red-200 text-red-600 text-xs space-y-1">
@@ -405,6 +494,12 @@ export default function StrategyBuilderModal({ onClose, onSuccess, editStrategy 
                   <Plus size={16} /> Add another leg
                 </button>
               )}
+              {findDuplicateLegPairs(legs).map(([i, j]) => (
+                <div key={`${i}-${j}`} className="flex items-start gap-2 px-3 py-2 rounded-lg text-xs" style={{ background: "#fff9e6", color: "#a16a00" }}>
+                  <AlertTriangle size={13} className="shrink-0 mt-0.5" />
+                  <span>Leg {i + 1} and Leg {j + 1} are identical — combine them into one leg with a higher lot count instead of two separate legs.</span>
+                </div>
+              ))}
             </div>
           )}
 
@@ -490,7 +585,9 @@ export default function StrategyBuilderModal({ onClose, onSuccess, editStrategy 
             </div>
           )}
         </div>
+        )}
 
+        {!showTemplatePicker && (
         <div className="px-6 py-4 border-t flex items-center justify-between shrink-0" style={{ borderColor: C.border2 }}>
           {step > 1 ? (
             <button onClick={() => setStep(step - 1)} className="px-4 py-2 rounded-lg text-sm font-medium bg-gray-100 text-gray-700 hover:bg-gray-200">Back</button>
@@ -507,6 +604,7 @@ export default function StrategyBuilderModal({ onClose, onSuccess, editStrategy 
             </button>
           )}
         </div>
+        )}
       </div>
     </div>
   );

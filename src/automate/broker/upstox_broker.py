@@ -508,6 +508,8 @@ class UpstoxBroker(BaseBroker):
         product: str = "D",
         order_type: str = "MARKET",
         tag: str = "",
+        price: float = 0,
+        trigger_price: float = 0,
     ) -> Optional[str]:
         """
         Place a SELL or BUY order for one options leg via the v3 OrderApi.
@@ -516,13 +518,19 @@ class UpstoxBroker(BaseBroker):
           - quantity:           Total units (lot_size × num_lots)
           - product:            'D' = NRML (overnight), 'I' = MIS (intraday)
           - validity:           'DAY' = valid for the current session only
-          - price:              0 for MARKET orders (ignored by exchange)
+          - price:              0 for MARKET orders; the limit price for
+                                 'LIMIT'/'SL' orders (ignored by the exchange
+                                 for 'MARKET'/'SL-M').
           - tag:                Optional 16-char label shown in order book
           - instrument_token:   Upstox token e.g. 'NSE_FO|12345'
-          - order_type:         'MARKET' or 'LIMIT'
+          - order_type:         'MARKET', 'LIMIT', 'SL' (stop-limit), or
+                                 'SL-M' (stop-market)
           - transaction_type:   'SELL' (write to open) or 'BUY' (square off)
           - disclosed_quantity: 0 = do not disclose partial quantity
-          - trigger_price:      0 for non-SL orders
+          - trigger_price:      0 for non-SL orders; the stop trigger for
+                                 'SL'/'SL-M' orders — required by the
+                                 exchange for those two order types, ignored
+                                 otherwise.
           - is_amo:             False = regular session, True = after-market
           - slice:              True = auto-slice if qty > freeze limit
 
@@ -531,8 +539,12 @@ class UpstoxBroker(BaseBroker):
             instrument_token: Upstox instrument token for the option contract.
             quantity:         Number of units (lot_size × lots).
             product:          'D' for NRML or 'I' for MIS.
-            order_type:       'MARKET' (default) or 'LIMIT'.
+            order_type:       'MARKET' (default), 'LIMIT', 'SL', or 'SL-M'.
             tag:              Order tag for identification (max 16 chars).
+            price:            Limit price — required for 'LIMIT'/'SL', ignored
+                               for 'MARKET'/'SL-M'.
+            trigger_price:    Stop trigger — required for 'SL'/'SL-M',
+                               ignored for 'MARKET'/'LIMIT'.
 
         Returns:
             Order ID string if placed, or None on dry-run / failure.
@@ -544,13 +556,13 @@ class UpstoxBroker(BaseBroker):
             quantity=quantity,
             product=product,           # 'D' = NRML | 'I' = MIS
             validity="DAY",            # Always DAY for options swing entries
-            price=0,                   # 0 = market order (price ignored)
+            price=price,               # 0 for MARKET/SL-M; limit price otherwise
             tag=tag,
             instrument_token=instrument_token,
-            order_type=order_type,     # 'MARKET' or 'LIMIT'
+            order_type=order_type,     # 'MARKET' | 'LIMIT' | 'SL' | 'SL-M'
             transaction_type=transaction_type,
             disclosed_quantity=0,      # No partial disclosure
-            trigger_price=0,           # Not a stop-loss order
+            trigger_price=trigger_price,  # 0 unless order_type is SL/SL-M
             is_amo=False,              # Regular market hours, not AMO
             slice=True,                # Auto-slice for large qty orders
         )
@@ -607,9 +619,11 @@ class UpstoxBroker(BaseBroker):
         order_type: str = "MARKET",
         tag: str = "",
         user_id: Optional[int] = None,
+        price: float = 0,
+        trigger_price: float = 0,
     ) -> Optional[str]:
-        """Place a SELL (write) order for one options leg. See BaseBroker. user_id unused — a live order is checked against the real broker's own real margin, not a simulated wallet."""
-        return self._place_order("SELL", instrument_token, quantity, product, order_type, tag)
+        """Place a SELL (write) order for one options leg. See BaseBroker. user_id unused — a live order is checked against the real broker's own real margin, not a simulated wallet. price/trigger_price: see _place_order — only meaningful for order_type 'LIMIT'/'SL'/'SL-M'."""
+        return self._place_order("SELL", instrument_token, quantity, product, order_type, tag, price, trigger_price)
 
     def place_buy_order(
         self,
@@ -619,9 +633,73 @@ class UpstoxBroker(BaseBroker):
         order_type: str = "MARKET",
         tag: str = "",
         user_id: Optional[int] = None,
+        price: float = 0,
+        trigger_price: float = 0,
     ) -> Optional[str]:
-        """Place a BUY order to square off an options leg. See BaseBroker. user_id unused — see place_sell_order."""
-        return self._place_order("BUY", instrument_token, quantity, product, order_type, tag)
+        """Place a BUY order to square off an options leg. See BaseBroker. user_id unused — see place_sell_order. price/trigger_price: see _place_order."""
+        return self._place_order("BUY", instrument_token, quantity, product, order_type, tag, price, trigger_price)
+
+    # ------------------------------------------------------------------
+    # Order Execution: Cancel / Modify
+    # ------------------------------------------------------------------
+
+    def cancel_order(self, order_id: str) -> bool:
+        """
+        Cancel a live order that hasn't fully filled yet, via the v3 OrderApi.
+        Used by advanced_orders_scheduler.py to cancel the sibling leg of an
+        OCO pair once the other leg fills, and to tear down a trailing-stop
+        order that's being replaced with a new trigger price.
+        """
+        try:
+            self._order_api_v3.cancel_order(order_id=order_id)
+            log.info("Order cancelled | order_id=%s", order_id)
+            return True
+        except ApiException as exc:
+            log.error("ApiException cancelling order '%s': HTTP %s — %s", order_id, exc.status, exc.body)
+            return False
+        except Exception as exc:
+            log.error("Unexpected error cancelling order '%s': %s", order_id, exc, exc_info=True)
+            return False
+
+    def modify_order(
+        self,
+        order_id: str,
+        order_type: str,
+        price: float = 0,
+        trigger_price: float = 0,
+        quantity: Optional[int] = None,
+    ) -> bool:
+        """
+        Modify a resting order's price/trigger/quantity in place, via the v3
+        OrderApi. Used by advanced_orders_scheduler.py to advance a
+        trailing-stop order's trigger_price without cancel+replace (avoids a
+        window where no protective order is resting at the exchange).
+
+        order_type/price/trigger_price are all REQUIRED (not merely
+        re-sent) — ModifyOrderRequest.price/order_type/trigger_price/
+        validity setters all raise ValueError on None (verified against
+        the installed upstox_client SDK's generated setters; this is a
+        full order replace, not a partial patch, so the caller must pass
+        the order's complete current shape, not just the field it wants
+        to change).
+        """
+        try:
+            self._order_api_v3.modify_order(body=upstox_client.ModifyOrderRequest(
+                order_id=order_id,
+                quantity=quantity,
+                price=price,
+                trigger_price=trigger_price,
+                order_type=order_type,
+                validity="DAY",
+            ))
+            log.info("Order modified | order_id=%s | price=%s | trigger_price=%s", order_id, price, trigger_price)
+            return True
+        except ApiException as exc:
+            log.error("ApiException modifying order '%s': HTTP %s — %s", order_id, exc.status, exc.body)
+            return False
+        except Exception as exc:
+            log.error("Unexpected error modifying order '%s': %s", order_id, exc, exc_info=True)
+            return False
 
     # ------------------------------------------------------------------
     # Order Execution: Basket (multi-order) SELL

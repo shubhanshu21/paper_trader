@@ -4,6 +4,7 @@ api/routes_custom_strategies.py — Custom strategy CRUD and deployment API.
 Supports creating, updating, deploying custom strategies with full
 workflow from draft → backtesting → paper trading → live deployment.
 """
+import asyncio
 import json
 from datetime import datetime
 from typing import Optional, List, Dict, Any
@@ -12,11 +13,13 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from automate.api.auth import get_current_user
-from automate.db.engine import get_db
-from automate.db.models import CustomStrategy, CustomStrategyPosition
+from automate.db.engine import get_db, SessionLocal
+from automate.db.models import CustomBacktestRun, CustomStrategy, CustomStrategyPosition
 from automate.strategies.custom.rule_schema import validate_rules, describe_rules
+from automate.utils.logger import get_logger
 
 router = APIRouter(prefix="/api/custom-strategies", tags=["custom-strategies"])
+log = get_logger(__name__)
 
 
 def _current_user_id(user: dict) -> int:
@@ -300,16 +303,193 @@ class BacktestRequest(BaseModel):
     to_date: Optional[str] = None
 
 
-@router.post("/{strategy_id}/backtest")
-def backtest_strategy(strategy_id: int, request: BacktestRequest, db: Session = Depends(get_db), user: dict = Depends(get_current_user)):
+def _run_backtest_symbols(
+    symbols: List[str],
+    rules: dict,
+    instrument_type: str,
+    from_date: Optional[str],
+    to_date: Optional[str],
+    on_progress: Optional[Any] = None,
+) -> tuple:
     """
-    Run this strategy's rules against real historical NSE F&O bhavcopy data
-    (one simulated trade per historical monthly expiry cycle in range) and
-    store the average return. See backtest/custom_engine.py for caveats
-    (daily EOD data, no intraday slippage model).
+    Run CustomRuleBacktestEngine once per symbol (a strategy can be
+    configured against several — the old code silently only ever
+    backtested symbols[0]), tag each cycle with its symbol, and merge them
+    chronologically into one combined cycle list. A symbol whose
+    instrument key can't be resolved (RuntimeError) is skipped rather than
+    aborting the whole run, as long as at least one other symbol produces
+    cycles.
+
+    Returns (merged_cycles_sorted_by_entry_date, per_symbol_breakdown,
+    skipped_symbols).
     """
     from automate.backtest.custom_engine import CustomRuleBacktestEngine
 
+    option_instrument = "OPTIDX" if instrument_type == "INDEX" else "OPTSTK"
+    future_instrument = "FUTIDX" if instrument_type == "INDEX" else "FUTSTK"
+
+    all_cycles: List[dict] = []
+    per_symbol: Dict[str, dict] = {}
+    skipped_symbols: Dict[str, str] = {}
+
+    for symbol in symbols:
+        try:
+            engine = CustomRuleBacktestEngine(
+                symbol=symbol, rules=rules, option_instrument=option_instrument, future_instrument=future_instrument,
+            )
+            cycles = engine.run(from_date, to_date, on_progress=(
+                (lambda done, total, sym=symbol: on_progress(sym, done, total)) if on_progress else None
+            ))
+        except RuntimeError as exc:
+            skipped_symbols[symbol] = str(exc)
+            continue
+
+        if not cycles:
+            skipped_symbols[symbol] = "No historical cycles produced a valid simulated trade in this date range."
+            continue
+
+        for c in cycles:
+            c["symbol"] = symbol
+        all_cycles.extend(cycles)
+        wins = sum(1 for c in cycles if c["won"])
+        per_symbol[symbol] = {
+            "cycles_tested": len(cycles),
+            "avg_return_pct": round(sum(c["pnl_pct_of_premium"] for c in cycles) / len(cycles), 2),
+            "win_rate_pct": round(wins / len(cycles) * 100.0, 2),
+        }
+
+    all_cycles.sort(key=lambda c: c["entry_date"])
+    return all_cycles, per_symbol, skipped_symbols
+
+
+def _run_backtest_sync(run_id: int) -> None:
+    """
+    The actual (blocking) backtest computation — always run via
+    `await asyncio.to_thread(_run_backtest_sync, run_id)` from
+    `_execute_backtest_run`, never awaited directly, since
+    CustomRuleBacktestEngine does synchronous SQLAlchemy/SQL work. Opens
+    its own DB session (the request's `db: Session = Depends(get_db)` is
+    closed by the time this runs in the background) and NEVER lets an
+    exception escape uncaught — always leaves the CustomBacktestRun row in a
+    terminal COMPLETED/FAILED state, matching this codebase's other
+    background-task error-handling convention (see
+    custom_strategy_scheduler.py).
+    """
+    from automate.backtest.custom_engine import compute_nifty_benchmark_return
+    from automate.utils.backtest_stats import compute_backtest_stats
+
+    db = SessionLocal()
+    try:
+        run = db.query(CustomBacktestRun).filter(CustomBacktestRun.id == run_id).first()
+        if run is None:
+            log.error("backtest run %s: row vanished before execution started.", run_id)
+            return
+
+        run.status = "RUNNING"
+        db.commit()
+
+        rules = json.loads(run.rules_snapshot_json)
+        db_strategy = db.query(CustomStrategy).filter(CustomStrategy.id == run.strategy_id).first()
+        symbols = json.loads(db_strategy.symbols) if db_strategy else []
+
+        # Coarse per-symbol progress: total = len(symbols) * 100, each
+        # symbol's own cycle-count contributes proportionally — a strategy
+        # backtest doesn't know its total cycle count across ALL symbols
+        # up front (discover_cycles() runs per-symbol, inside the engine),
+        # so this is an approximation, refined as each symbol finishes.
+        run.progress_total = max(len(symbols), 1) * 100
+        completed_symbols = {"n": 0}
+
+        def on_progress(symbol: str, done: int, total: int) -> None:
+            frac = (done / total) if total else 1.0
+            run.progress_current = int((completed_symbols["n"] + frac) * 100)
+            # Commit every 5th cycle (or the symbol's last one) rather than
+            # every single cycle — a 20+ year monthly history is ~250
+            # cycles; no need to round-trip the DB that often just for a
+            # progress bar.
+            if done % 5 == 0 or done >= total:
+                db.commit()
+            if total and done >= total:
+                completed_symbols["n"] += 1
+
+        cycles, per_symbol, skipped_symbols = _run_backtest_symbols(
+            symbols, rules, db_strategy.instrument_type if db_strategy else "STOCK",
+            run.from_date, run.to_date, on_progress=on_progress,
+        )
+
+        if not cycles:
+            reasons = "; ".join(f"{s}: {r}" for s, r in skipped_symbols.items()) or "no symbols configured"
+            raise RuntimeError(f"No historical cycles produced a valid simulated trade. {reasons}")
+
+        first_entry = cycles[0]["entry_date"]
+        last_exit = max(c["exit_date"] for c in cycles)
+        benchmark_return_pct = compute_nifty_benchmark_return(first_entry, last_exit)
+
+        avg_return_pct = sum(c["pnl_pct_of_premium"] for c in cycles) / len(cycles)
+        win_rate = sum(1 for c in cycles if c["won"]) / len(cycles) * 100.0
+        run_at = datetime.now()
+
+        result = {
+            "strategy_id": run.strategy_id,
+            "run_id": run.id,
+            "cycles_tested": len(cycles),
+            "avg_return_pct_of_premium": round(avg_return_pct, 2),
+            "win_rate_pct": round(win_rate, 2),
+            "from_date": run.from_date,
+            "to_date": run.to_date,
+            "run_at": run_at.isoformat(),
+            "cycles": cycles,
+            "per_symbol": per_symbol,
+            "skipped_symbols": skipped_symbols,
+            **compute_backtest_stats(cycles, rules=rules, benchmark_return_pct=benchmark_return_pct),
+        }
+
+        run.status = "COMPLETED"
+        run.progress_current = run.progress_total or 100
+        run.result_json = json.dumps(result)
+        run.completed_at = run_at
+        db.commit()
+
+        if db_strategy is not None:
+            db_strategy.backtest_return_pct = round(avg_return_pct, 4)
+            # Overwrites any previous run for this strategy — the single
+            # "latest" result GET /{id}/backtest reads; full history lives
+            # in backtest_runs, see GET /{id}/backtest/runs.
+            db_strategy.backtest_result_json = json.dumps(result)
+            db_strategy.backtest_run_at = run_at
+            if db_strategy.status == "DRAFT":
+                db_strategy.status = "BACKTESTING"
+            db.commit()
+
+    except Exception as exc:
+        db.rollback()
+        run = db.query(CustomBacktestRun).filter(CustomBacktestRun.id == run_id).first()
+        if run is not None:
+            run.status = "FAILED"
+            run.error_message = str(exc)
+            run.completed_at = datetime.now()
+            db.commit()
+        log.error("backtest run %s failed: %s", run_id, exc, exc_info=True)
+    finally:
+        db.close()
+
+
+async def _execute_backtest_run(run_id: int) -> None:
+    await asyncio.to_thread(_run_backtest_sync, run_id)
+
+
+@router.post("/{strategy_id}/backtest", status_code=202)
+def backtest_strategy(strategy_id: int, request: BacktestRequest, db: Session = Depends(get_db), user: dict = Depends(get_current_user)):
+    """
+    Queue a backtest of this strategy's rules against real historical NSE
+    F&O bhavcopy data (one simulated trade per historical expiry cycle in
+    range, across every configured symbol) and return immediately with a
+    run_id — the actual computation runs in the background (see
+    _execute_backtest_run) so a long history doesn't tie up the request
+    or risk a timeout. Poll GET /{id}/backtest/runs/{run_id} for progress
+    and the final result. See backtest/custom_engine.py for methodology
+    caveats (daily EOD data, simulated slippage, not tick-accurate).
+    """
     db_strategy = _get_owned_strategy(db, strategy_id, _current_user_id(user))
     if not db_strategy.rules_json:
         raise HTTPException(status_code=400, detail="This strategy has no rules configured.")
@@ -321,67 +501,52 @@ def backtest_strategy(strategy_id: int, request: BacktestRequest, db: Session = 
                    "backtest is scoped to INDEX/STOCK for now.",
         )
 
-    symbols = json.loads(db_strategy.symbols)
-    symbol = symbols[0]
-    rules = json.loads(db_strategy.rules_json)
-    option_instrument = "OPTIDX" if db_strategy.instrument_type == "INDEX" else "OPTSTK"
-    future_instrument = "FUTIDX" if db_strategy.instrument_type == "INDEX" else "FUTSTK"
-
-    try:
-        engine = CustomRuleBacktestEngine(
-            symbol=symbol, rules=rules, option_instrument=option_instrument, future_instrument=future_instrument,
-        )
-        cycles = engine.run(request.from_date, request.to_date)
-    except RuntimeError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
-
-    if not cycles:
-        raise HTTPException(
-            status_code=400,
-            detail="No historical cycles produced a valid simulated trade — check the symbol has "
-                   "downloaded history (scripts/download_real_history.py) and the date range covers "
-                   "real expiry cycles.",
-        )
-
-    from automate.utils.backtest_stats import compute_backtest_stats
-
-    avg_return_pct = sum(c["pnl_pct_of_premium"] for c in cycles) / len(cycles)
-    win_rate = sum(1 for c in cycles if c["won"]) / len(cycles) * 100.0
-    run_at = datetime.now()
-
-    result = {
-        "strategy_id": strategy_id,
-        "cycles_tested": len(cycles),
-        "avg_return_pct_of_premium": round(avg_return_pct, 2),
-        "win_rate_pct": round(win_rate, 2),
-        "from_date": request.from_date,
-        "to_date": request.to_date,
-        "run_at": run_at.isoformat(),
-        "cycles": cycles,
-        **compute_backtest_stats(cycles),
-    }
-
-    db_strategy.backtest_return_pct = round(avg_return_pct, 4)
-    # Overwrites any previous run for this strategy — one stored result per
-    # strategy (see db/models.py's CustomStrategy.backtest_result_json), not
-    # a history of every run ever made.
-    db_strategy.backtest_result_json = json.dumps(result)
-    db_strategy.backtest_run_at = run_at
-    if db_strategy.status == "DRAFT":
-        db_strategy.status = "BACKTESTING"
+    run = CustomBacktestRun(
+        strategy_id=strategy_id, user_id=_current_user_id(user), status="QUEUED",
+        from_date=request.from_date, to_date=request.to_date, rules_snapshot_json=db_strategy.rules_json,
+    )
+    db.add(run)
     db.commit()
-    db.refresh(db_strategy)
+    db.refresh(run)
 
-    return {**result, "strategy": db_strategy.to_dict()}
+    asyncio.create_task(_execute_backtest_run(run.id))
+
+    return {"run_id": run.id, "status": run.status}
+
+
+@router.get("/{strategy_id}/backtest/runs")
+def list_backtest_runs(strategy_id: int, limit: int = 20, db: Session = Depends(get_db), user: dict = Depends(get_current_user)):
+    """Run history for this strategy, newest first — lets the UI list past runs and pick two to compare."""
+    _get_owned_strategy(db, strategy_id, _current_user_id(user))  # ownership check (404s if not owned)
+    runs = (
+        db.query(CustomBacktestRun)
+        .filter(CustomBacktestRun.strategy_id == strategy_id, CustomBacktestRun.user_id == _current_user_id(user))
+        .order_by(CustomBacktestRun.created_at.desc())
+        .limit(min(limit, 100))
+        .all()
+    )
+    return {"runs": [r.to_dict(include_result=False) for r in runs]}
+
+
+@router.get("/{strategy_id}/backtest/runs/{run_id}")
+def get_backtest_run(strategy_id: int, run_id: int, db: Session = Depends(get_db), user: dict = Depends(get_current_user)):
+    """Poll a single run's status/progress/result — used both while RUNNING and to view/compare a completed run."""
+    _get_owned_strategy(db, strategy_id, _current_user_id(user))  # ownership check (404s if not owned)
+    run = db.query(CustomBacktestRun).filter(
+        CustomBacktestRun.id == run_id, CustomBacktestRun.strategy_id == strategy_id, CustomBacktestRun.user_id == _current_user_id(user),
+    ).first()
+    if not run:
+        raise HTTPException(status_code=404, detail="Backtest run not found")
+    return run.to_dict(include_result=True)
 
 
 @router.get("/{strategy_id}/backtest")
 def get_stored_backtest_result(strategy_id: int, db: Session = Depends(get_db), user: dict = Depends(get_current_user)):
     """
-    The most recently run backtest result for this strategy, persisted —
-    lets the UI show "View Backtest Results" anytime without re-running,
-    and survive a page reload/navigating away and back. Returns 404 if
-    this strategy has never been backtested.
+    The most recently COMPLETED backtest result for this strategy,
+    persisted — lets the UI show "View Backtest Results" anytime without
+    re-running, and survive a page reload/navigating away and back.
+    Returns 404 if this strategy has never completed a backtest.
     """
     db_strategy = _get_owned_strategy(db, strategy_id, _current_user_id(user))
     if not db_strategy.backtest_result_json:
@@ -389,50 +554,62 @@ def get_stored_backtest_result(strategy_id: int, db: Session = Depends(get_db), 
     return json.loads(db_strategy.backtest_result_json)
 
 
+def _leg(action: str, option_type: str, mode: str = "ATM", value: Optional[float] = None, lots: int = 1) -> dict:
+    return {"action": action, "option_type": option_type, "strike_selection": {"mode": mode, "value": value}, "lots": lots}
+
+
 @router.get("/templates/strategy-types")
 def get_strategy_types():
-    """Get available strategy types with descriptions."""
+    """
+    Available strategy templates with descriptions AND real, ready-to-use
+    leg specs — in the actual rules-schema shape (action/option_type/
+    strike_selection/lots, see rule_schema.py), not a display-only
+    approximation. Each template's `legs` passes validate_rules() as-is
+    (see tests/test_custom_strategy_templates.py) — the frontend's
+    template picker feeds this straight into the strategy builder's leg
+    state, no translation layer. Strike distances are sensible starting
+    points, not locked-in — the builder's Step 2 lets the user adjust
+    them like any other leg.
+    """
     return {
         "strategy_types": [
             {
                 "type": "STRADDLE",
-                "description": "Buy ATM call and put for volatility plays",
+                "description": "Buy ATM call and put — profits from a big move in either direction, loses if the underlying stays flat.",
                 "risk_level": "high",
-                "legs": [{"side": "BUY", "option_type": "CE"}, {"side": "BUY", "option_type": "PE"}]
+                "legs": [_leg("BUY", "CE"), _leg("BUY", "PE")],
             },
             {
                 "type": "STRANGLE",
-                "description": "Buy OTM call and put for cheaper volatility play",
+                "description": "Buy OTM call and put — cheaper than a straddle, needs an even bigger move to profit.",
                 "risk_level": "medium",
-                "legs": [{"side": "BUY", "option_type": "CE"}, {"side": "BUY", "option_type": "PE"}]
+                "legs": [_leg("BUY", "CE", "OTM_PERCENT", 5), _leg("BUY", "PE", "OTM_PERCENT", 5)],
             },
             {
                 "type": "IRON_CONDOR",
-                "description": "Sell OTM put spread and OTM call spread for income",
+                "description": "Sell a near OTM put + call, buy further OTM put + call as protection — defined-risk income from a range-bound market.",
                 "risk_level": "medium",
                 "legs": [
-                    {"side": "SELL", "option_type": "PE"},
-                    {"side": "BUY", "option_type": "PE"},
-                    {"side": "SELL", "option_type": "CE"},
-                    {"side": "BUY", "option_type": "CE"}
-                ]
+                    _leg("SELL", "PE", "OTM_PERCENT", 5), _leg("BUY", "PE", "OTM_PERCENT", 10),
+                    _leg("SELL", "CE", "OTM_PERCENT", 5), _leg("BUY", "CE", "OTM_PERCENT", 10),
+                ],
             },
             {
                 "type": "BUTTERFLY",
-                "description": "Limited risk strategy for directional moves",
+                "description": "Buy ATM call, sell 2x a bit further OTM, buy 1 more further OTM as protection — defined, low-cost risk for a pinned/range-bound view. Adjust the wing distances to taste.",
                 "risk_level": "low",
                 "legs": [
-                    {"side": "BUY", "option_type": "CE"},
-                    {"side": "SELL", "option_type": "CE", "quantity": 2},
-                    {"side": "BUY", "option_type": "CE"}
-                ]
+                    _leg("BUY", "CE"),
+                    _leg("SELL", "CE", "OTM_PERCENT", 5, lots=2),
+                    _leg("BUY", "CE", "OTM_PERCENT", 10),
+                ],
             },
             {
                 "type": "CUSTOM",
-                "description": "Custom multi-leg strategy with full control",
+                "description": "Start from a single leg and build any combination yourself.",
                 "risk_level": "variable",
-                "legs": []
-            }
+                "legs": [_leg("SELL", "CE")],
+            },
         ]
     }
 
@@ -537,7 +714,7 @@ def get_expected_payoff(strategy_id: int, db: Session = Depends(get_db), user: d
     from datetime import date
     from automate.strategies.custom.rule_strategy import RuleBasedStrategy, resolve_leg_strike
     from automate.utils.option_utils import find_instrument_token, find_leg_iv
-    from automate.utils.payoff import compute_payoff, probability_of_profit
+    from automate.utils.payoff import compute_payoff, compute_payoff_curve, probability_of_profit
     from automate.utils import black76
     from automate.utils.margin import estimate_margin_blocked
     from automate.api.custom_strategy_scheduler import _get_brokers, _audit, _kill_switch, _rate_limiter
@@ -668,11 +845,13 @@ def get_expected_payoff(strategy_id: int, db: Session = Depends(get_db), user: d
         results[symbol] = {
             **payoff,
             "max_profit_pct": max_profit_pct,
+            "capital_basis": round(capital_basis, 2) if capital_basis else None,
             "risk_reward_ratio": risk_reward_ratio,
             "probability_of_profit_pct": round(pop * 100, 2) if pop is not None else None,
             "breakevens_detail": [
                 {"price": b, "pct_from_spot": round((b - spot) / spot * 100, 2)} for b in payoff["breakevens"]
             ],
+            "payoff_curve": compute_payoff_curve(payoff_legs, spot),
             "spot_price": spot,
             "expiry": preview["expiry"],
             "legs": [

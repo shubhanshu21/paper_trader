@@ -159,6 +159,7 @@ def pause_strategy(strategy_id: int, db: Session = Depends(get_db), user: dict =
         )
     
     closed = _square_off_open_positions(strategy, db)
+    strategy.pre_pause_status = strategy.status
     strategy.status = "PAUSED"
     db.commit()
     db.refresh(strategy)
@@ -177,18 +178,20 @@ def resume_strategy(strategy_id: int, db: Session = Depends(get_db), user: dict 
 
     if strategy.status != "PAUSED":
         raise HTTPException(
-            status_code=400, 
+            status_code=400,
             detail="Can only resume strategies in PAUSED status"
         )
-    
-    # Resume to previous mode (paper or live)
-    # For now, default to paper trading
-    strategy.status = "PAPER_TRADING"
+
+    # Resume to the mode it was actually running in before it was paused
+    # (recorded by pause_strategy()); legacy rows paused before this field
+    # existed have no recorded mode, so fall back to paper trading.
+    strategy.status = strategy.pre_pause_status or "PAPER_TRADING"
+    strategy.pre_pause_status = None
     db.commit()
     db.refresh(strategy)
-    
+
     # TODO: Signal the daemon to resume strategy execution
-    
+
     return {
         "strategy_id": strategy_id,
         "status": strategy.status,

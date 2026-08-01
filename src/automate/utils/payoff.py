@@ -46,6 +46,38 @@ def total_payoff(legs: List[PayoffLeg], spot: float) -> float:
     return sum(_leg_payoff(leg, spot) for leg in legs)
 
 
+class PayoffCurvePoint(TypedDict):
+    price: float
+    pnl: float
+
+
+def compute_payoff_curve(legs: List[PayoffLeg], spot: float, num_points: int = 41) -> List[PayoffCurvePoint]:
+    """
+    Sample total_payoff() across a price range around `spot` — the actual
+    payoff-DIAGRAM data (P&L vs underlying price at expiry), for charting.
+    compute_payoff() above only returns the extremes/breakevens; this is
+    everything in between.
+
+    Range is spot * [0.85, 1.15] — wide enough to show the full shape for
+    a realistic weekly/monthly expiry move without the chart being mostly
+    flat unbounded tails. Every leg's exact strike is included as an extra
+    sample point (merged into the evenly-spaced range and de-duplicated)
+    so the piecewise-linear function's kinks render exactly at the strike,
+    not just approximated by nearby grid points.
+    """
+    if not legs or spot <= 0:
+        return []
+
+    lo, hi = spot * 0.85, spot * 1.15
+    step = (hi - lo) / (num_points - 1)
+    prices = {round(lo + i * step, 2) for i in range(num_points)}
+    for leg in legs:
+        if lo <= leg["strike"] <= hi:
+            prices.add(round(leg["strike"], 2))
+
+    return [{"price": p, "pnl": round(total_payoff(legs, p), 2)} for p in sorted(prices)]
+
+
 def compute_payoff(legs: List[PayoffLeg]) -> PayoffResult:
     if not legs:
         return {"max_profit": None, "max_loss": None, "breakevens": [], "net_premium": 0.0}

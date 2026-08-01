@@ -170,6 +170,38 @@ def _auto_login_get_code() -> str:
         driver.quit()
 
 
+def _invalidate_broker_caches() -> None:
+    """
+    Drop every already-constructed UpstoxBroker singleton in this process
+    after a successful token refresh above.
+
+    UpstoxConfig.ACCESS_TOKEN is DB-backed and always reads fresh (see
+    config._UpstoxConfigMeta), but UpstoxBroker itself bakes the token
+    into the Upstox SDK's Configuration object once at construction
+    (broker/upstox_broker.py __init__) and never re-reads it — so writing
+    a new token to the DB here has NO effect on any broker object that
+    already exists in memory. api/deps.py and api/custom_strategy_scheduler.py
+    each keep their own long-lived {'paper','live'} broker pair cached at
+    module scope for exactly that reason (avoid rebuilding on every call),
+    which means without this, a successful auto-login would keep every
+    live request 401ing against the OLD token until the process is
+    manually restarted — indistinguishable from the refresh never having
+    happened at all. Only relevant to the long-running API process; a
+    no-op (caught below) for one-shot CLI invocations that never imported
+    those modules.
+    """
+    try:
+        from automate.api.deps import reset_brokers_cache as _reset_api_deps_brokers
+        _reset_api_deps_brokers()
+    except Exception:
+        pass
+    try:
+        from automate.api.custom_strategy_scheduler import reset_brokers_cache as _reset_scheduler_brokers
+        _reset_scheduler_brokers()
+    except Exception:
+        pass
+
+
 def ensure_fresh_upstox_token(force: bool = False) -> Optional[str]:
     """
     Ensure UpstoxConfig.ACCESS_TOKEN is valid, refreshing it headlessly if
@@ -198,6 +230,7 @@ def ensure_fresh_upstox_token(force: bool = False) -> Optional[str]:
         )
         token = auth.exchange_code_for_token(code)
         UpstoxConfig.ACCESS_TOKEN = token  # persists to DB — see config._UpstoxConfigMeta
+        _invalidate_broker_caches()
         log.info("Upstox token refreshed automatically.")
         send_telegram_alert("🔑 Upstox token refreshed automatically — no action needed.")
         return token

@@ -5,7 +5,9 @@ import { User as UserType } from "../api";
 import { C, FONT } from "./Common";
 import NotificationBell from "./NotificationBell";
 
-const NAV = ["Dashboard", "Strategies", "Orders", "Holdings", "Positions", "Leaderboard"];
+const NAV = ["Dashboard", "Strategies", "Orders", "Advanced Orders", "Holdings", "Positions", "Leaderboard"];
+
+const navSlug = (navItem: string) => navItem.toLowerCase().replace(/\s+/g, "-");
 
 interface TopNavProps {
   currentUser: UserType | null;
@@ -29,8 +31,7 @@ export default function TopNav({ currentUser, onLogout }: TopNavProps) {
   }, []);
 
   const handleNavClick = (navItem: string) => {
-    const path = navItem.toLowerCase();
-    navigate(`/${path}`);
+    navigate(`/${navSlug(navItem)}`);
     setMobileMenu(false);
   };
 
@@ -60,7 +61,7 @@ export default function TopNav({ currentUser, onLogout }: TopNavProps) {
         {/* Desktop Navigation */}
         <nav className="hidden md:flex items-center gap-[28px] relative">
           {NAV.map((n) => {
-            const active = currentPage === n.toLowerCase();
+            const active = currentPage === navSlug(n);
             return (
               <button
                 key={n}
@@ -152,7 +153,7 @@ export default function TopNav({ currentUser, onLogout }: TopNavProps) {
         <div className="md:hidden absolute top-16 left-0 right-0 bg-white border-b shadow-lg z-30" style={{ borderColor: C.border2 }}>
           <div className="flex flex-col p-4 space-y-3">
             {NAV.map((n) => {
-              const active = currentPage === n.toLowerCase();
+              const active = currentPage === navSlug(n);
               return (
                 <button
                   key={n}

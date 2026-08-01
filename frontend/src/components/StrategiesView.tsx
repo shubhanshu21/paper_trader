@@ -1,13 +1,16 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, type ReactNode } from "react";
 import {
   Plus, Play, Pause, RefreshCw, TrendingUp, AlertCircle, BarChart3, Trash2, Pencil,
   Layers, Clock, LogOut, Activity, FileText, Target, ArrowUpRight, ArrowDownRight, Calendar, IndianRupee, Info, X,
+  Download, GitCompare, Eye,
   type LucideIcon,
 } from "lucide-react";
 import { C, FONT, useToast, DatePicker, fmtDate, fmtDateTime, formatTime12h, inr } from "./Common";
 import { wsUrl } from "../api";
 import { useCustomStrategyPositions } from "../hooks/useCustomStrategyPositions";
 import StrategyBuilderModal from "./StrategyBuilderModal";
+import BacktestEquityChart from "./BacktestEquityChart";
+import PayoffDiagramChart from "./PayoffDiagramChart";
 
 interface StrategyLeg {
   action: string;
@@ -58,9 +61,18 @@ interface BacktestCycle {
   pnl_pct_of_premium: number;
   won: boolean;
   liquid: boolean;
+  symbol?: string;
+}
+
+interface PerSymbolBreakdown {
+  cycles_tested: number;
+  avg_return_pct: number;
+  win_rate_pct: number;
 }
 
 interface BacktestResult {
+  run_id?: number;
+  strategy_id?: number;
   cycles_tested: number;
   avg_return_pct_of_premium: number;
   win_rate_pct: number;
@@ -78,6 +90,39 @@ interface BacktestResult {
   avg_win_pct?: number | null;
   avg_loss_pct?: number | null;
   equity_curve?: number[];
+  // Added for the "world-class" backtest pass — Indian-market-specific
+  // (NIFTY 50 benchmark, India risk-free rate) risk/return stats.
+  equity_curve_compounded?: number[];
+  total_return_pct?: number | null;
+  cagr_pct?: number | null;
+  sharpe_ratio?: number | null;
+  sortino_ratio?: number | null;
+  calmar_ratio?: number | null;
+  max_drawdown_duration_days?: number | null;
+  max_drawdown_ongoing?: boolean;
+  exposure_pct?: number | null;
+  benchmark_return_pct?: number | null;
+  alpha_pct?: number | null;
+  sample_size_warning?: "limited" | "very_limited" | null;
+  per_symbol?: Record<string, PerSymbolBreakdown>;
+  skipped_symbols?: Record<string, string>;
+}
+
+interface BacktestRunSummary {
+  run_id: number;
+  strategy_id: number;
+  status: "QUEUED" | "RUNNING" | "COMPLETED" | "FAILED";
+  from_date: string | null;
+  to_date: string | null;
+  progress_current: number;
+  progress_total: number | null;
+  error_message: string | null;
+  created_at: string | null;
+  completed_at: string | null;
+}
+
+interface BacktestRunDetail extends BacktestRunSummary {
+  result: BacktestResult | null;
 }
 
 interface LegGreeks {
@@ -113,8 +158,10 @@ interface PayoffSymbolResult {
   max_profit: number | null;
   max_profit_pct: number | null;
   max_loss: number | null;
+  capital_basis?: number | null;
   breakevens: number[];
   breakevens_detail?: { price: number; pct_from_spot: number }[];
+  payoff_curve?: { price: number; pnl: number }[];
   risk_reward_ratio: number | null;
   probability_of_profit_pct: number | null;
   net_premium: number;
@@ -312,17 +359,59 @@ function BacktestStatTile({ label, value, positive }: { label: string; value: st
   );
 }
 
+const SAMPLE_SIZE_COPY: Record<string, string> = {
+  very_limited: "Fewer than 5 cycles tested — not enough history to draw any real conclusion from these numbers.",
+  limited: "Fewer than 20 cycles tested — treat these stats as a rough signal, not a reliable estimate.",
+};
+
 function BacktestStatsPanel({ result }: { result: BacktestResult }) {
   const hasStats = result.total_net_pnl !== undefined;
   if (!hasStats) return null;
   return (
     <div className="px-6 py-4 border-b" style={{ borderColor: C.border2 }}>
-      {result.equity_curve && result.equity_curve.length >= 2 && (
+      {result.sample_size_warning && (
+        <div className="flex items-center gap-2 px-3 py-2 mb-4 rounded-lg text-xs" style={{ background: "#fff9e6", color: "#a16a00" }}>
+          <AlertCircle size={13} className="shrink-0" />
+          {SAMPLE_SIZE_COPY[result.sample_size_warning]}
+        </div>
+      )}
+
+      {result.equity_curve_compounded && result.equity_curve_compounded.length >= 2 ? (
+        <div className="mb-4">
+          <div className="text-[11px] uppercase tracking-wide text-gray-400 mb-1.5">Equity Curve (₹100,000 notional, compounded) &amp; Drawdown</div>
+          <BacktestEquityChart
+            equityCurve={result.equity_curve_compounded}
+            dates={result.cycles.map((c) => c.exit_date)}
+          />
+        </div>
+      ) : result.equity_curve && result.equity_curve.length >= 2 && (
         <div className="mb-4">
           <div className="text-[11px] uppercase tracking-wide text-gray-400 mb-1.5">Equity Curve (cumulative % of premium)</div>
           <EquityCurveChart curve={result.equity_curve} />
         </div>
       )}
+
+      <div className="text-[11px] uppercase tracking-wide text-gray-400 mb-1.5 mt-1">Return &amp; Risk</div>
+      <div className="grid grid-cols-4 gap-2 mb-3">
+        <BacktestStatTile label="Total Return" value={result.total_return_pct != null ? `${result.total_return_pct.toFixed(2)}%` : "—"} positive={result.total_return_pct != null ? result.total_return_pct >= 0 : null} />
+        <BacktestStatTile label="CAGR" value={result.cagr_pct != null ? `${result.cagr_pct.toFixed(2)}%` : "—"} positive={result.cagr_pct != null ? result.cagr_pct >= 0 : null} />
+        <BacktestStatTile label="Sharpe Ratio" value={result.sharpe_ratio != null ? result.sharpe_ratio.toFixed(2) : "—"} positive={result.sharpe_ratio != null ? result.sharpe_ratio >= 0 : null} />
+        <BacktestStatTile label="Sortino Ratio" value={result.sortino_ratio != null ? result.sortino_ratio.toFixed(2) : "—"} positive={result.sortino_ratio != null ? result.sortino_ratio >= 0 : null} />
+        <BacktestStatTile label="Calmar Ratio" value={result.calmar_ratio != null ? result.calmar_ratio.toFixed(2) : "—"} positive={result.calmar_ratio != null ? result.calmar_ratio >= 0 : null} />
+        <BacktestStatTile
+          label="Max Drawdown Duration"
+          value={result.max_drawdown_duration_days != null ? `${result.max_drawdown_duration_days}d${result.max_drawdown_ongoing ? "+ (ongoing)" : ""}` : "—"}
+          positive={false}
+        />
+        <BacktestStatTile label="Exposure" value={result.exposure_pct != null ? `${result.exposure_pct.toFixed(1)}%` : "—"} />
+        <BacktestStatTile
+          label="vs NIFTY 50 (Alpha)"
+          value={result.alpha_pct != null ? `${result.alpha_pct >= 0 ? "+" : ""}${result.alpha_pct.toFixed(2)}%` : "—"}
+          positive={result.alpha_pct != null ? result.alpha_pct >= 0 : null}
+        />
+      </div>
+
+      <div className="text-[11px] uppercase tracking-wide text-gray-400 mb-1.5">Trade Stats</div>
       <div className="grid grid-cols-4 gap-2">
         <BacktestStatTile label="Total Net P&L" value={`${(result.total_net_pnl ?? 0) < 0 ? "-" : ""}₹${Math.abs(result.total_net_pnl ?? 0).toFixed(2)}`} positive={(result.total_net_pnl ?? 0) >= 0} />
         <BacktestStatTile label="Max Drawdown" value={`${(result.max_drawdown_pct ?? 0).toFixed(2)}%`} positive={false} />
@@ -333,13 +422,64 @@ function BacktestStatsPanel({ result }: { result: BacktestResult }) {
         <BacktestStatTile label="Avg Loss" value={result.avg_loss_pct != null ? `${result.avg_loss_pct.toFixed(2)}%` : "—"} positive={false} />
         <BacktestStatTile label="Max Streak (W / L)" value={`${result.max_consecutive_wins ?? 0} / ${result.max_consecutive_losses ?? 0}`} />
       </div>
+
+      {result.per_symbol && Object.keys(result.per_symbol).length > 1 && (
+        <div className="mt-4">
+          <div className="text-[11px] uppercase tracking-wide text-gray-400 mb-1.5">Per Symbol</div>
+          <div className="flex flex-wrap gap-2">
+            {Object.entries(result.per_symbol).map(([sym, s]) => (
+              <div key={sym} className="px-3 py-1.5 rounded-lg border text-xs" style={{ borderColor: C.border2 }}>
+                <span className="font-semibold text-gray-700">{sym}</span>
+                <span className="text-gray-400"> · {s.cycles_tested} cycles · </span>
+                <span style={{ color: s.avg_return_pct >= 0 ? C.green : C.red }}>{s.avg_return_pct >= 0 ? "+" : ""}{s.avg_return_pct.toFixed(2)}%</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <p className="text-[10px] text-gray-400 mt-4">
+        Based on daily EOD NSE bhavcopy data with simulated slippage — not tick-accurate. Benchmark is NIFTY 50 buy-and-hold over the same date range.
+      </p>
     </div>
   );
 }
 
+function cyclesToCsv(cycles: BacktestCycle[]): string {
+  const header = ["symbol", "entry_date", "exit_date", "exit_reason", "net_pnl", "pnl_pct_of_premium", "won", "liquid"];
+  const rows = cycles.map((c) => [
+    c.symbol ?? "", c.entry_date, c.exit_date, c.exit_reason,
+    c.net_pnl.toFixed(2), c.pnl_pct_of_premium.toFixed(2), c.won ? "true" : "false", c.liquid ? "true" : "false",
+  ]);
+  return [header, ...rows].map((r) => r.join(",")).join("\n");
+}
+
+function downloadCsv(filename: string, content: string) {
+  const blob = new Blob([content], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+type OutcomeFilter = "all" | "won" | "lost";
+
 function BacktestResultsModal({
   strategyName, result, onClose,
 }: { strategyName: string; result: BacktestResult; onClose: () => void }) {
+  const [outcomeFilter, setOutcomeFilter] = useState<OutcomeFilter>("all");
+  const [liquidOnly, setLiquidOnly] = useState(false);
+  const [symbolFilter, setSymbolFilter] = useState<string>("all");
+
+  const symbols = Array.from(new Set(result.cycles.map((c) => c.symbol).filter(Boolean))) as string[];
+  const filteredCycles = result.cycles.filter((c) =>
+    (outcomeFilter === "all" || (outcomeFilter === "won") === c.won) &&
+    (!liquidOnly || c.liquid) &&
+    (symbolFilter === "all" || c.symbol === symbolFilter)
+  );
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-40 backdrop-blur-sm p-4">
       <div className="bg-white rounded-2xl w-full max-w-3xl max-h-[85vh] flex flex-col border shadow-2xl" style={{ borderColor: C.border }}>
@@ -362,9 +502,39 @@ function BacktestResultsModal({
         </div>
         <div className="overflow-y-auto flex-1">
           <BacktestStatsPanel result={result} />
+
+          <div className="flex items-center justify-between gap-2 px-4 py-2.5 border-b flex-wrap" style={{ borderColor: C.border2 }}>
+            <div className="flex items-center gap-1.5 flex-wrap">
+              {(["all", "won", "lost"] as OutcomeFilter[]).map((f) => (
+                <button key={f} onClick={() => setOutcomeFilter(f)}
+                  className="px-2.5 py-1 rounded-full text-[11px] font-semibold transition-colors focus:outline-none"
+                  style={outcomeFilter === f ? { backgroundColor: C.orange, color: "#fff" } : { backgroundColor: C.hover, color: C.text }}>
+                  {f === "all" ? "All" : f === "won" ? "Won" : "Lost"}
+                </button>
+              ))}
+              <button onClick={() => setLiquidOnly((v) => !v)}
+                className="px-2.5 py-1 rounded-full text-[11px] font-semibold transition-colors focus:outline-none"
+                style={liquidOnly ? { backgroundColor: C.orange, color: "#fff" } : { backgroundColor: C.hover, color: C.text }}>
+                Liquid only
+              </button>
+              {symbols.length > 1 && (
+                <select value={symbolFilter} onChange={(e) => setSymbolFilter(e.target.value)}
+                  className="px-2 py-1 rounded-full text-[11px] font-semibold border focus:outline-none" style={{ borderColor: C.border2 }}>
+                  <option value="all">All symbols</option>
+                  {symbols.map((s) => <option key={s} value={s}>{s}</option>)}
+                </select>
+              )}
+            </div>
+            <button onClick={() => downloadCsv(`backtest_${strategyName.replace(/\s+/g, "_")}_${result.run_id ?? "latest"}.csv`, cyclesToCsv(filteredCycles))}
+              className="flex items-center gap-1 text-[11px] font-semibold hover:underline focus:outline-none" style={{ color: C.blue }}>
+              <Download size={12} /> Export CSV
+            </button>
+          </div>
+
           <table className="w-full text-sm">
             <thead>
               <tr className="text-[11px] uppercase tracking-wide text-gray-400 border-b sticky top-0" style={{ borderColor: C.border2, background: C.tableHeaderBg }}>
+                {symbols.length > 1 && <th className="px-4 py-2.5 text-left font-medium">Symbol</th>}
                 <th className="px-4 py-2.5 text-left font-medium">Entry</th>
                 <th className="px-4 py-2.5 text-left font-medium">Exit</th>
                 <th className="px-4 py-2.5 text-left font-medium">Reason</th>
@@ -374,8 +544,11 @@ function BacktestResultsModal({
               </tr>
             </thead>
             <tbody>
-              {result.cycles.map((c, i) => (
+              {filteredCycles.length === 0 ? (
+                <tr><td colSpan={symbols.length > 1 ? 7 : 6} className="px-4 py-8 text-center text-xs text-gray-400">No cycles match these filters.</td></tr>
+              ) : filteredCycles.map((c, i) => (
                 <tr key={i} className="border-b last:border-0 text-xs" style={{ borderColor: C.border }}>
+                  {symbols.length > 1 && <td className="px-4 py-2.5 font-semibold text-gray-600">{c.symbol}</td>}
                   <td className="px-4 py-2.5">{fmtDate(c.entry_date)}</td>
                   <td className="px-4 py-2.5">{fmtDate(c.exit_date)}</td>
                   <td className="px-4 py-2.5">
@@ -394,6 +567,150 @@ function BacktestResultsModal({
   );
 }
 
+const RUN_STATUS_META: Record<string, { bg: string; fg: string; label: string }> = {
+  QUEUED: { bg: "#f1f2f4", fg: "#5f6672", label: "Queued" },
+  RUNNING: { bg: "#eaf1ff", fg: "#2f5fd6", label: "Running" },
+  COMPLETED: { bg: "#e8f7ec", fg: "#1f8a3d", label: "Completed" },
+  FAILED: { bg: "#fdeceb", fg: "#c22b26", label: "Failed" },
+};
+
+function BacktestRunHistoryPanel({
+  runs, compareRunIds, onToggleCompare, onViewRun,
+}: { runs: BacktestRunSummary[]; compareRunIds: number[]; onToggleCompare: (runId: number) => void; onViewRun: (runId: number) => void }) {
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-3">
+        <div className="flex items-center gap-2">
+          <Clock size={14} style={{ color: C.muted }} />
+          <h3 className="text-xs font-semibold uppercase tracking-wide text-gray-500">Backtest Run History</h3>
+        </div>
+        {compareRunIds.length > 0 && (
+          <span className="text-[11px] text-gray-400">{compareRunIds.length}/2 selected to compare</span>
+        )}
+      </div>
+      <div className="overflow-x-auto border rounded-xl" style={{ borderColor: C.border2 }}>
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="text-[11px] uppercase tracking-wide text-gray-400 border-b" style={{ borderColor: C.border2, background: C.tableHeaderBg }}>
+              <th className="px-3 py-2 text-center font-medium w-10">
+                <GitCompare size={12} className="mx-auto" style={{ color: C.muted }} />
+              </th>
+              <th className="px-4 py-2 text-left font-medium">Run</th>
+              <th className="px-4 py-2 text-left font-medium">Range</th>
+              <th className="px-4 py-2 text-left font-medium">Status</th>
+              <th className="px-4 py-2 text-right font-medium w-16" />
+            </tr>
+          </thead>
+          <tbody>
+            {runs.slice(0, 10).map((r) => {
+              const meta = RUN_STATUS_META[r.status] || RUN_STATUS_META.QUEUED;
+              return (
+                <tr key={r.run_id} className="border-b last:border-0" style={{ borderColor: C.border }}>
+                  <td className="px-3 py-2 text-center">
+                    {r.status === "COMPLETED" && (
+                      <input type="checkbox" checked={compareRunIds.includes(r.run_id)} onChange={() => onToggleCompare(r.run_id)}
+                        className="rounded border-gray-300 text-orange-500 focus:ring-orange-500" />
+                    )}
+                  </td>
+                  <td className="px-4 py-2 text-xs text-gray-700">{r.created_at ? fmtDateTime(r.created_at) : "—"}</td>
+                  <td className="px-4 py-2 text-xs text-gray-500">
+                    {r.from_date ? fmtDate(r.from_date) : "Earliest"} → {r.to_date ? fmtDate(r.to_date) : "Today"}
+                  </td>
+                  <td className="px-4 py-2">
+                    <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[11px] font-semibold" style={{ backgroundColor: meta.bg, color: meta.fg }}>
+                      {r.status === "RUNNING" && r.progress_total ? `${Math.round((r.progress_current / r.progress_total) * 100)}%` : meta.label}
+                    </span>
+                    {r.status === "FAILED" && r.error_message && (
+                      <span className="block text-[10px] text-gray-400 mt-0.5 max-w-xs truncate" title={r.error_message}>{r.error_message}</span>
+                    )}
+                  </td>
+                  <td className="px-4 py-2 text-right">
+                    {r.status === "COMPLETED" && (
+                      <button onClick={() => onViewRun(r.run_id)} className="text-gray-400 hover:text-orange-500 transition-colors focus:outline-none" title="View results">
+                        <Eye size={14} />
+                      </button>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function BacktestCompareModal({
+  strategyId, runIds, runs, onClose,
+}: { strategyId: number; runIds: number[]; runs: BacktestRunSummary[]; onClose: () => void }) {
+  const [results, setResults] = useState<Record<number, BacktestResult>>({});
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    (async () => {
+      const entries = await Promise.all(runIds.map(async (id) => {
+        const response = await fetch(`/api/custom-strategies/${strategyId}/backtest/runs/${id}`, { credentials: "include" });
+        if (!response.ok) return null;
+        const detail: BacktestRunDetail = await response.json();
+        return detail.result ? [id, detail.result] as const : null;
+      }));
+      if (!cancelled) {
+        setResults(Object.fromEntries(entries.filter((e): e is [number, BacktestResult] => e !== null)));
+        setLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [strategyId, runIds]);
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-40 backdrop-blur-sm p-4">
+      <div className="bg-white rounded-2xl w-full max-w-4xl max-h-[85vh] flex flex-col border shadow-2xl" style={{ borderColor: C.border }}>
+        <div className="px-6 py-4 border-b flex items-center justify-between shrink-0" style={{ borderColor: C.border2 }}>
+          <h3 className="text-base font-bold text-gray-800 flex items-center gap-2"><GitCompare size={16} style={{ color: C.blue }} /> Compare Backtest Runs</h3>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 focus:outline-none"><X size={20} /></button>
+        </div>
+        <div className="overflow-y-auto flex-1 p-6">
+          {loading ? (
+            <div className="flex items-center justify-center py-16"><RefreshCw className="animate-spin" size={20} style={{ color: C.orange }} /></div>
+          ) : (
+            <div className="grid grid-cols-2 gap-5">
+              {runIds.map((id) => {
+                const result = results[id];
+                const run = runs.find((r) => r.run_id === id);
+                if (!result || !run) return <div key={id} className="text-xs text-gray-400">Result unavailable.</div>;
+                return (
+                  <div key={id} className="border rounded-xl p-4" style={{ borderColor: C.border2 }}>
+                    <div className="text-xs font-semibold text-gray-700 mb-1">{fmtDateTime(run.created_at || "")}</div>
+                    <div className="text-[11px] text-gray-400 mb-3">
+                      {run.from_date ? fmtDate(run.from_date) : "Earliest"} → {run.to_date ? fmtDate(run.to_date) : "Today"}
+                    </div>
+                    {result.equity_curve_compounded && result.equity_curve_compounded.length >= 2 && (
+                      <div className="mb-3">
+                        <BacktestEquityChart equityCurve={result.equity_curve_compounded} dates={result.cycles.map((c) => c.exit_date)} height={180} />
+                      </div>
+                    )}
+                    <div className="grid grid-cols-2 gap-2 text-xs">
+                      <div><span className="text-gray-400">Cycles</span> <span className="font-semibold text-gray-700">{result.cycles_tested}</span></div>
+                      <div><span className="text-gray-400">Win Rate</span> <span className="font-semibold text-gray-700">{result.win_rate_pct.toFixed(1)}%</span></div>
+                      <div><span className="text-gray-400">Total Return</span> <span className="font-semibold" style={{ color: (result.total_return_pct ?? 0) >= 0 ? C.green : C.red }}>{result.total_return_pct != null ? `${result.total_return_pct.toFixed(2)}%` : "—"}</span></div>
+                      <div><span className="text-gray-400">CAGR</span> <span className="font-semibold text-gray-700">{result.cagr_pct != null ? `${result.cagr_pct.toFixed(2)}%` : "—"}</span></div>
+                      <div><span className="text-gray-400">Sharpe</span> <span className="font-semibold text-gray-700">{result.sharpe_ratio != null ? result.sharpe_ratio.toFixed(2) : "—"}</span></div>
+                      <div><span className="text-gray-400">Max DD</span> <span className="font-semibold text-gray-700">{(result.max_drawdown_pct ?? 0).toFixed(2)}%</span></div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function StrategiesView() {
   const toast = useToast();
   const [strategies, setStrategies] = useState<CustomStrategy[]>([]);
@@ -401,9 +718,12 @@ export default function StrategiesView() {
   const [loading, setLoading] = useState(false);
   const [modalMode, setModalMode] = useState<null | "create" | "edit">(null);
   const [backtesting, setBacktesting] = useState(false);
+  const [backtestProgress, setBacktestProgress] = useState<{ current: number; total: number } | null>(null);
   const [backtestResult, setBacktestResult] = useState<BacktestResult | null>(null);
   const [backtestError, setBacktestError] = useState("");
   const [showBacktestModal, setShowBacktestModal] = useState(false);
+  const [backtestRuns, setBacktestRuns] = useState<BacktestRunSummary[]>([]);
+  const [compareRunIds, setCompareRunIds] = useState<number[]>([]);
   const [strategiesPage, setStrategiesPage] = useState(1);
   const STRATEGIES_PER_PAGE = 5;
   const [liveGreeks, setLiveGreeks] = useState<LiveGreeksResponse | null>(null);
@@ -512,9 +832,16 @@ export default function StrategiesView() {
     return () => { cancelled = true; };
   }, [selectedStrategy?.id]);
 
+  useEffect(() => {
+    setBacktestRuns([]);
+    setCompareRunIds([]);
+    if (selectedStrategy) loadBacktestRuns(selectedStrategy);
+  }, [selectedStrategy?.id]);
+
   const [confirmModal, setConfirmModal] = useState<{
     title: string;
     message: string;
+    detail?: ReactNode;
     confirmText?: string;
     cancelText?: string;
     confirmColor?: string;
@@ -598,8 +925,58 @@ export default function StrategiesView() {
     }
   };
 
+  const loadBacktestRuns = async (strategy: CustomStrategy) => {
+    try {
+      const response = await fetch(`/api/custom-strategies/${strategy.id}/backtest/runs`, { credentials: "include" });
+      if (response.ok) setBacktestRuns((await response.json()).runs || []);
+    } catch {
+      // Run history is supplementary — silently leave the list as-is.
+    }
+  };
+
+  const pollBacktestRun = async (strategy: CustomStrategy, runId: number) => {
+    // Polls every 1.5s while QUEUED/RUNNING — a 20+ year monthly history
+    // is a real background job now (see routes_custom_strategies.py's
+    // async POST /backtest), not something that finishes within one request.
+    for (;;) {
+      await new Promise((r) => setTimeout(r, 1500));
+      let run: BacktestRunDetail;
+      try {
+        const response = await fetch(`/api/custom-strategies/${strategy.id}/backtest/runs/${runId}`, { credentials: "include" });
+        if (!response.ok) throw new Error("poll failed");
+        run = await response.json();
+      } catch {
+        continue; // transient network hiccup — keep polling rather than giving up
+      }
+
+      if (run.progress_total) setBacktestProgress({ current: run.progress_current, total: run.progress_total });
+
+      if (run.status === "COMPLETED" && run.result) {
+        setBacktestResult(run.result);
+        setShowBacktestModal(true);
+        setBacktesting(false);
+        setBacktestProgress(null);
+        loadStrategies();
+        loadBacktestRuns(strategy);
+        toast.success("Backtest completed successfully!");
+        return;
+      }
+      if (run.status === "FAILED") {
+        const errText = run.error_message || "Backtest failed.";
+        setBacktestError(errText);
+        setBacktesting(false);
+        setBacktestProgress(null);
+        loadBacktestRuns(strategy);
+        toast.error(errText);
+        return;
+      }
+      // else QUEUED/RUNNING — keep polling
+    }
+  };
+
   const runBacktest = async (strategy: CustomStrategy, fromDate?: string, toDate?: string) => {
     setBacktesting(true);
+    setBacktestProgress(null);
     setBacktestResult(null);
     setBacktestError("");
     try {
@@ -610,20 +987,17 @@ export default function StrategiesView() {
         body: JSON.stringify({ from_date: fromDate || null, to_date: toDate || null }),
       });
       const data = await response.json();
-      if (response.ok) {
-        setBacktestResult(data);
-        setShowBacktestModal(true);
-        loadStrategies();
-        toast.success("Backtest completed successfully!");
+      if (response.ok && data.run_id) {
+        pollBacktestRun(strategy, data.run_id); // not awaited — polls in the background, updates state as it goes
       } else {
         const errText = Array.isArray(data.detail) ? data.detail.join(" ") : data.detail || "Backtest failed.";
         setBacktestError(errText);
         toast.error(errText);
+        setBacktesting(false);
       }
     } catch {
       setBacktestError("Backtest request failed.");
       toast.error("Backtest request failed.");
-    } finally {
       setBacktesting(false);
     }
   };
@@ -848,6 +1222,17 @@ export default function StrategiesView() {
                       <BarChart3 size={14} /> {backtesting ? "Backtesting..." : "Re-run Backtest"}
                     </button>
                   )}
+                  {backtesting && backtestProgress && (
+                    <div className="flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-semibold" style={{ backgroundColor: C.hover, color: C.text }}>
+                      <div className="w-20 h-1.5 rounded-full overflow-hidden" style={{ backgroundColor: C.border2 }}>
+                        <div className="h-full rounded-full transition-all" style={{
+                          width: `${Math.min(100, Math.round((backtestProgress.current / backtestProgress.total) * 100))}%`,
+                          backgroundColor: C.blue,
+                        }} />
+                      </div>
+                      <span>{Math.min(100, Math.round((backtestProgress.current / backtestProgress.total) * 100))}%</span>
+                    </div>
+                  )}
                   {backtestResult && (
                     <button onClick={() => setShowBacktestModal(true)}
                       className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-semibold transition-colors focus:outline-none hover:opacity-80"
@@ -864,9 +1249,27 @@ export default function StrategiesView() {
                   )}
                   {canTransitionTo(selectedStrategy.status, "LIVE") && (
                     <button onClick={() => {
+                      const symbolResults = Object.entries(payoff?.symbols || {}).filter(([, r]) => !r.error);
                       setConfirmModal({
                         title: "Go LIVE",
                         message: "Go LIVE — Upstox will place real orders with real money. Continue?",
+                        detail: symbolResults.length > 0 ? (
+                          <div className="mt-3 space-y-2">
+                            {symbolResults.map(([symbol, r]) => (
+                              <div key={symbol} className="rounded-lg border p-2.5 text-xs" style={{ borderColor: C.border2 }}>
+                                <div className="font-semibold text-gray-700 mb-1">{symbol}</div>
+                                <div className="grid grid-cols-3 gap-2">
+                                  <div><span className="text-gray-400">Max Loss</span> <span className="block font-semibold" style={{ color: C.red }}>{r.max_loss != null ? `₹${inr(Math.abs(r.max_loss), 2)}` : "Unlimited"}</span></div>
+                                  <div><span className="text-gray-400">Margin/Capital</span> <span className="block font-semibold text-gray-700">{r.capital_basis != null ? `₹${inr(r.capital_basis, 2)}` : "—"}</span></div>
+                                  <div><span className="text-gray-400">POP</span> <span className="block font-semibold text-gray-700">{r.probability_of_profit_pct != null ? `${r.probability_of_profit_pct}%` : "N/A"}</span></div>
+                                </div>
+                              </div>
+                            ))}
+                            <p className="text-[10px] text-gray-400">Based on current live premiums if entered right now — actual live fills may differ.</p>
+                          </div>
+                        ) : (
+                          <p className="mt-2 text-xs text-gray-400">Could not load a current risk estimate — check the "Expected Profit &amp; Loss" panel below before going live.</p>
+                        ),
                         confirmText: "Go Live",
                         confirmColor: C.orange,
                         onConfirm: () => handleStatusChange(selectedStrategy, "LIVE")
@@ -947,6 +1350,35 @@ export default function StrategiesView() {
                   <StatCard icon={Activity} label="Paper (last trade)" value={selectedStrategy.paper_return_pct} accent={C.green} />
                   <StatCard icon={Target} label="Live (last trade)" value={selectedStrategy.live_return_pct} accent={C.orange} />
                 </div>
+
+                {backtestRuns.length > 0 && (
+                  <BacktestRunHistoryPanel
+                    runs={backtestRuns}
+                    compareRunIds={compareRunIds}
+                    onToggleCompare={(runId) => {
+                      setCompareRunIds((prev) => {
+                        if (prev.includes(runId)) return prev.filter((id) => id !== runId);
+                        return prev.length >= 2 ? [prev[1], runId] : [...prev, runId];
+                      });
+                    }}
+                    onViewRun={async (runId) => {
+                      const response = await fetch(`/api/custom-strategies/${selectedStrategy.id}/backtest/runs/${runId}`, { credentials: "include" });
+                      if (response.ok) {
+                        const run: BacktestRunDetail = await response.json();
+                        if (run.result) { setBacktestResult(run.result); setShowBacktestModal(true); }
+                      }
+                    }}
+                  />
+                )}
+
+                {compareRunIds.length === 2 && selectedStrategy && (
+                  <BacktestCompareModal
+                    strategyId={selectedStrategy.id}
+                    runIds={compareRunIds}
+                    runs={backtestRuns}
+                    onClose={() => setCompareRunIds([])}
+                  />
+                )}
 
                 {selectedStrategy.rules && (
                   <div>
@@ -1030,6 +1462,17 @@ export default function StrategiesView() {
                               {r.error ? (
                                 <div className="text-xs text-gray-400">{symbol}: {r.error}</div>
                               ) : (
+                                <>
+                                {r.payoff_curve && r.payoff_curve.length >= 2 && r.spot_price != null && (
+                                  <div className="mb-4">
+                                    <div className="text-[11px] text-gray-400 mb-1.5">{symbol} · Payoff at Expiry</div>
+                                    <PayoffDiagramChart
+                                      curve={r.payoff_curve}
+                                      spotPrice={r.spot_price}
+                                      breakevens={r.breakevens_detail?.map((b) => b.price) ?? r.breakevens}
+                                    />
+                                  </div>
+                                )}
                                 <div className="grid grid-cols-5 gap-4">
                                   <div>
                                     <div className="text-[11px] text-gray-400 mb-1">{symbol} · Max Profit</div>
@@ -1075,6 +1518,7 @@ export default function StrategiesView() {
                                     )}
                                   </div>
                                 </div>
+                                </>
                               )}
                             </div>
                           ))}
@@ -1289,9 +1733,10 @@ export default function StrategiesView() {
 
       {confirmModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-40 backdrop-blur-sm">
-          <div className="bg-white rounded-2xl p-6 max-w-sm w-full mx-4 border shadow-2xl" style={{ borderColor: C.border }}>
+          <div className={`bg-white rounded-2xl p-6 w-full mx-4 border shadow-2xl max-h-[85vh] overflow-y-auto ${confirmModal.detail ? "max-w-md" : "max-w-sm"}`} style={{ borderColor: C.border }}>
             <h3 className="text-base font-bold text-gray-800">{confirmModal.title}</h3>
             <p className="text-xs text-gray-500 mt-2 leading-relaxed">{confirmModal.message}</p>
+            {confirmModal.detail}
             <div className="flex justify-end gap-2 mt-6">
               <button
                 onClick={() => setConfirmModal(null)}

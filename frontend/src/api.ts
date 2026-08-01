@@ -189,6 +189,72 @@ export interface OrderExecution {
   strategy_name: string | null;
 }
 
+export interface OrderLeg {
+  instrument_token: string;
+  transaction_type: 'BUY' | 'SELL';
+  quantity: number;
+  order_type: 'MARKET' | 'LIMIT' | 'SL' | 'SL-M';
+  price?: number;
+  trigger_price?: number;
+  product?: string;
+  // Present once the backend has recorded/placed the leg — absent on the
+  // outbound create request.
+  status?: 'PENDING' | 'PLACED' | 'COMPLETE' | 'CANCELLED' | 'REJECTED';
+  order_id?: string | null;
+}
+
+export interface OcoOrder {
+  id: string;
+  kind: 'OCO';
+  mode: 'paper' | 'live';
+  strategy_name: string | null;
+  status: 'ACTIVE' | 'COMPLETED' | 'CANCELLED';
+  created_at: string | null;
+  updated_at: string | null;
+  primary_order: OrderLeg;
+  secondary_order: OrderLeg;
+}
+
+export interface TrailingStopOrder {
+  id: string;
+  kind: 'TRAILING_STOP';
+  mode: 'paper' | 'live';
+  strategy_name: string | null;
+  status: 'ACTIVE' | 'COMPLETED' | 'CANCELLED';
+  created_at: string | null;
+  updated_at: string | null;
+  symbol: string;
+  instrument_token: string;
+  side: 'BUY' | 'SELL';
+  quantity: number;
+  trail_amount: number;
+  trail_type: 'points' | 'percentage';
+  current_stop_price: number | null;
+  highest_price: number | null;
+  lowest_price: number | null;
+  exit_order_id: string | null;
+  exit_price: number | null;
+}
+
+export interface BracketOrder {
+  id: string;
+  kind: 'BRACKET';
+  mode: 'paper' | 'live';
+  strategy_name: string | null;
+  status: 'ACTIVE' | 'COMPLETED' | 'CANCELLED';
+  created_at: string | null;
+  updated_at: string | null;
+  entry_order: OrderLeg;
+  take_profit: OrderLeg;
+  stop_loss: OrderLeg;
+}
+
+export interface AdvancedOrdersList {
+  oco_orders: OcoOrder[];
+  trailing_stops: TrailingStopOrder[];
+  bracket_orders: BracketOrder[];
+}
+
 export interface LeaderboardRow {
   strategy: string;
   symbol: string;
@@ -436,6 +502,39 @@ export const api = {
     request<{ status: string; order_id: string }>(`/api/orders/tracking/${orderId}/cancel`, {
       method: 'POST',
     }),
+
+  // Advanced Orders (OCO / Trailing Stop / Bracket)
+  createOcoOrder: (req: { mode: 'paper' | 'live'; primary_order: OrderLeg; secondary_order: OrderLeg; strategy_name?: string }) =>
+    request<{ oco_id: string; status: string; message: string }>('/api/orders/advanced/oco', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(req),
+    }),
+  cancelOcoOrder: (ocoId: string) =>
+    request<{ status: string; oco_id: string }>(`/api/orders/advanced/oco/${ocoId}`, { method: 'DELETE' }),
+
+  createTrailingStop: (req: {
+    mode: 'paper' | 'live'; instrument_token: string; symbol: string; side: 'BUY' | 'SELL';
+    quantity: number; trail_amount: number; trail_type: 'points' | 'percentage'; product?: string; strategy_name?: string;
+  }) =>
+    request<{ ts_id: string; status: string; message: string }>('/api/orders/advanced/trailing-stop', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(req),
+    }),
+  cancelTrailingStop: (tsId: string) =>
+    request<{ status: string; ts_id: string }>(`/api/orders/advanced/trailing-stop/${tsId}`, { method: 'DELETE' }),
+
+  createBracketOrder: (req: { mode: 'paper' | 'live'; entry_order: OrderLeg; take_profit: OrderLeg; stop_loss: OrderLeg; strategy_name?: string }) =>
+    request<{ bracket_id: string; status: string; message: string }>('/api/orders/advanced/bracket', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(req),
+    }),
+  cancelBracketOrder: (bracketId: string) =>
+    request<{ status: string; bracket_id: string }>(`/api/orders/advanced/bracket/${bracketId}`, { method: 'DELETE' }),
+
+  getAdvancedOrders: () => request<AdvancedOrdersList>('/api/orders/advanced/list'),
 
   // Backtesting
   runBacktest: (req: BacktestRequest) =>

@@ -33,7 +33,19 @@ from automate.api import (
     ws_custom_strategy_greeks, routes_notifications, ws_notifications,
     ws_custom_strategy_positions, ws_market_depth,
 )
-from automate.config import PanelAuthConfig
+from automate.config import LogConfig, PanelAuthConfig
+from automate.utils.logger import setup_logger
+
+# Every module in this app calls utils.logger.get_logger(__name__), which is
+# just logging.getLogger(name) — it attaches no handlers itself and relies
+# entirely on propagation to the root logger. Nothing configured the root
+# logger before this, so every log.info()/log.debug() call across the whole
+# API process (scheduler startup messages, "token refreshed automatically",
+# etc.) was silently dropped — only WARNING+ ever appeared, via Python's
+# handler-of-last-resort. Console-only (no log_file) since this process's
+# stdout is already captured to logs/api.log by whatever runs uvicorn; a
+# second TimedRotatingFileHandler on the same path would double-write it.
+setup_logger(name="", level=LogConfig.LEVEL)
 
 log = logging.getLogger("api")
 
@@ -177,6 +189,7 @@ async def _start_background_tasks():
     from automate.api.market_broadcaster import market_price_broadcaster
     from automate.api.custom_strategy_scheduler import custom_strategy_scheduler
     from automate.api.token_refresh_scheduler import token_refresh_scheduler
+    from automate.api.advanced_orders_scheduler import advanced_orders_scheduler
 
     # run_daemon.py (the old cron/systemd-style CLI daemon) is retired —
     # it only ever ran hand-written strategies (strategies/registry.py,
@@ -189,6 +202,7 @@ async def _start_background_tasks():
     asyncio.create_task(market_price_broadcaster())
     asyncio.create_task(custom_strategy_scheduler())
     asyncio.create_task(token_refresh_scheduler())
+    asyncio.create_task(advanced_orders_scheduler())
 
 
 @app.get("/api/health")

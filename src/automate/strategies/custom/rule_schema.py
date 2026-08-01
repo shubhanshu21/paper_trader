@@ -87,6 +87,7 @@ def validate_rules(rules: dict) -> List[str]:
     elif len(legs) > MAX_LEGS:
         errors.append(f"A strategy can have at most {MAX_LEGS} legs.")
     else:
+        seen_leg_signatures: dict = {}
         for i, leg in enumerate(legs, 1):
             prefix = f"Leg {i}:"
             if not isinstance(leg, dict):
@@ -109,6 +110,20 @@ def validate_rules(rules: dict) -> List[str]:
                     errors.append(f"{prefix} strike selection '{sel['mode']}' needs a numeric value.")
                 elif sel["mode"] in ("OTM_PERCENT", "OTM_POINTS") and val < 0:
                     errors.append(f"{prefix} OTM distance can't be negative.")
+
+            # Two legs with identical (action, option_type, strike) are
+            # always a mistake — the user meant a higher `lots` on ONE
+            # leg, not two separate legs that resolve to the exact same
+            # instrument. Only checked once every other field on this leg
+            # is already known-valid, so a signature is never built from
+            # malformed data.
+            if action in _ACTIONS and leg.get("option_type") in _OPTION_TYPES and isinstance(sel, dict) and sel.get("mode") in _STRIKE_MODES:
+                value = sel.get("value")
+                signature = (action, leg["option_type"], sel["mode"], float(value) if isinstance(value, (int, float)) else None)
+                if signature in seen_leg_signatures:
+                    errors.append(f"{prefix} identical to Leg {seen_leg_signatures[signature]} — combine them into one leg with a higher lot count instead.")
+                else:
+                    seen_leg_signatures[signature] = i
 
     entry = rules.get("entry")
     if not isinstance(entry, dict) or entry.get("mode") not in _ENTRY_MODES:

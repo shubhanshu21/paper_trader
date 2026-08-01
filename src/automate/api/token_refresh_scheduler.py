@@ -42,6 +42,19 @@ def _market_is_open_now() -> bool:
 
 
 def _refresh_bounded() -> Optional[str]:
+    """
+    Same contract as ensure_fresh_upstox_token(), but never blocks the
+    caller past _TOKEN_REFRESH_TIMEOUT_SEC. The underlying Selenium call
+    keeps running in its background thread either way (it cleans up its
+    own browser session in a `finally`, see upstox_auto_login.py) — this
+    just stops WAITING on it and moves on, so a slow/stuck login attempt
+    can never freeze the scheduler loop for everyone else. Same pattern
+    as cli/run_daemon.py's _ensure_fresh_upstox_token_bounded().
+    """
+    # NOT a `with` block deliberately — ThreadPoolExecutor's context-manager
+    # exit calls shutdown(wait=True), which would block on the very thread
+    # we're trying to stop waiting on. shutdown(wait=False) here lets that
+    # thread keep running and clean up on its own, without us waiting on it.
     executor = ThreadPoolExecutor(max_workers=1)
     future = executor.submit(ensure_fresh_upstox_token)
     try:

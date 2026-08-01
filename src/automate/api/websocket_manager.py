@@ -115,8 +115,12 @@ class ConnectionManager:
         
         message_str = json.dumps(message)
         disconnected = set()
-        
-        for connection_id in self.symbol_subscriptions[symbol]:
+
+        # Snapshot before iterating — connect()/disconnect() can mutate
+        # symbol_subscriptions/active_connections while we're awaiting
+        # send_text() below, which would otherwise raise RuntimeError:
+        # Set changed size during iteration.
+        for connection_id in list(self.symbol_subscriptions[symbol]):
             if connection_id in self.active_connections:
                 try:
                     await self.active_connections[connection_id].send_text(message_str)
@@ -140,8 +144,9 @@ class ConnectionManager:
         """Broadcast a message to all active connections."""
         message_str = json.dumps(message)
         disconnected = set()
-        
-        for connection_id, websocket in self.active_connections.items():
+
+        # Snapshot before iterating — see broadcast_to_symbol() above for why.
+        for connection_id, websocket in list(self.active_connections.items()):
             try:
                 await websocket.send_text(message_str)
             except Exception as e:
