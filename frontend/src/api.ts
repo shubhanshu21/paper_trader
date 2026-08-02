@@ -333,6 +333,17 @@ function getCookie(name: string): string {
   return '';
 }
 
+// For the handful of call sites that use a raw fetch() instead of
+// request() above (e.g. to stream/poll without the shared error-parsing
+// wrapper) — request() already attaches this automatically for every
+// POST/PUT/DELETE/PATCH, but a raw fetch() must do it itself or the
+// backend's CSRF double-submit check (api/auth.py::validate_csrf) 400s
+// it. Spread this into a raw fetch's `headers` for any state-changing call.
+export function csrfHeaders(): Record<string, string> {
+  const token = getCookie('csrf_token');
+  return token ? { 'X-CSRF-Token': token } : {};
+}
+
 // Carries the raw (possibly per-field-list) `detail` from a FastAPI error
 // response alongside a flattened `.message`, so callers that want the
 // original list (e.g. StrategyBuilderModal's per-line validation errors —

@@ -6,7 +6,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { C, FONT, useToast, DatePicker, fmtDate, fmtDateTime, formatTime12h, inr } from "./Common";
-import { api, wsUrl } from "../api";
+import { api, wsUrl, csrfHeaders } from "../api";
 import type { CustomStrategy, CustomStrategyRules, PortfolioGreeksResponse } from "../types/customStrategy";
 import { useCustomStrategyPositions } from "../hooks/useCustomStrategyPositions";
 import StrategyBuilderModal from "./StrategyBuilderModal";
@@ -970,7 +970,7 @@ export default function StrategiesView({
       const response = await fetch(`/api/custom-strategies/${strategy.id}/backtest`, {
         method: "POST",
         credentials: "include",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...csrfHeaders() },
         body: JSON.stringify({ from_date: fromDate || null, to_date: toDate || null }),
       });
       const data = await response.json();
@@ -1003,8 +1003,15 @@ export default function StrategiesView({
   };
 
   const canTransitionTo = (currentStatus: string, targetStatus: string) => {
+    // Mirrors routes_custom_strategies.py::update_strategy_status's
+    // valid_transitions exactly, including DRAFT -> PAPER_TRADING — the
+    // backend additionally requires backtest_return_pct to be set for
+    // that specific transition (see the strategy-object-aware check at
+    // this function's "Paper Trade" button call site below); update_strategy()
+    // clears backtest_return_pct back to None the moment rules actually
+    // change, so a non-null value here is trustworthy, not stale.
     const transitions: Record<string, string[]> = {
-      "DRAFT": ["BACKTESTING", "STOPPED"],
+      "DRAFT": ["BACKTESTING", "PAPER_TRADING", "STOPPED"],
       "BACKTESTING": ["PAPER_TRADING", "DRAFT", "STOPPED"],
       "PAPER_TRADING": ["LIVE", "DRAFT", "PAUSED", "STOPPED"],
       "LIVE": ["PAUSED", "STOPPED"],
@@ -1243,7 +1250,8 @@ export default function StrategiesView({
                       <TrendingUp size={14} /> View Backtest Results
                     </button>
                   )}
-                  {canTransitionTo(selectedStrategy.status, "PAPER_TRADING") && (
+                  {canTransitionTo(selectedStrategy.status, "PAPER_TRADING") &&
+                    (selectedStrategy.status !== "DRAFT" || selectedStrategy.backtest_return_pct != null) && (
                     <button onClick={() => handleStatusChange(selectedStrategy, "PAPER_TRADING")}
                       className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-semibold transition-colors focus:outline-none hover:opacity-80"
                       style={{ backgroundColor: "#e6f4ea", color: C.green }}>

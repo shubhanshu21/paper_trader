@@ -236,21 +236,36 @@ def update_strategy_status(strategy_id: int, status_update: StrategyStatusUpdate
     db_strategy = _get_owned_strategy(db, strategy_id, _current_user_id(user))
 
     valid_transitions = {
-        "DRAFT": ["BACKTESTING", "STOPPED"],
+        # DRAFT -> PAPER_TRADING is only actually allowed below (see the
+        # backtest_return_pct check) when a still-valid backtest already
+        # exists — e.g. Stop -> Reactivate (STOPPED -> DRAFT) on an
+        # unedited strategy shouldn't force a redundant re-backtest just
+        # because status literally says DRAFT. update_strategy() (the
+        # rules-edit endpoint) already clears backtest_return_pct back to
+        # None whenever rules actually change, so its presence here is a
+        # reliable "already validated against these exact rules" signal,
+        # not a stale leftover.
+        "DRAFT": ["BACKTESTING", "PAPER_TRADING", "STOPPED"],
         "BACKTESTING": ["PAPER_TRADING", "DRAFT", "STOPPED"],
         "PAPER_TRADING": ["LIVE", "DRAFT", "PAUSED", "STOPPED"],
         "LIVE": ["PAUSED", "STOPPED"],
         "PAUSED": ["PAPER_TRADING", "LIVE", "STOPPED"],
         "STOPPED": ["DRAFT"]
     }
-    
+
     current_status = db_strategy.status
     new_status = status_update.status
-    
+
     if new_status not in valid_transitions.get(current_status, []):
         raise HTTPException(
             status_code=400,
             detail=f"Invalid status transition from {current_status} to {new_status}"
+        )
+
+    if current_status == "DRAFT" and new_status == "PAPER_TRADING" and db_strategy.backtest_return_pct is None:
+        raise HTTPException(
+            status_code=400,
+            detail="This strategy hasn't been backtested yet — run a backtest before paper trading."
         )
 
     # Stopping a strategy must actually square off any open legs — the

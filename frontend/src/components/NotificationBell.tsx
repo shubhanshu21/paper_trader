@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import { Bell, AlertTriangle, Info, AlertCircle, CheckCheck } from "lucide-react";
 import { C } from "./Common";
-import { wsUrl } from "../api";
+import { wsUrl, csrfHeaders } from "../api";
 
 interface NotificationItem {
   id: number;
@@ -112,7 +112,7 @@ export default function NotificationBell() {
     setNotifications((prev) => prev.map((n) => (n.id === id ? { ...n, read: true } : n)));
     setUnreadCount((c) => Math.max(0, c - 1));
     try {
-      await fetch(`/api/notifications/${id}/read`, { method: "POST", credentials: "include" });
+      await fetch(`/api/notifications/${id}/read`, { method: "POST", credentials: "include", headers: csrfHeaders() });
     } catch {
       // WS delta on next poll will resync if this failed silently.
     }
@@ -122,7 +122,7 @@ export default function NotificationBell() {
     setNotifications((prev) => prev.map((n) => ({ ...n, read: true })));
     setUnreadCount(0);
     try {
-      await fetch("/api/notifications/read-all", { method: "POST", credentials: "include" });
+      await fetch("/api/notifications/read-all", { method: "POST", credentials: "include", headers: csrfHeaders() });
     } catch {
       // WS delta on next poll will resync if this failed silently.
     }
