@@ -27,7 +27,7 @@ from automate.api import (
     routes_backtest, routes_logs, routes_dashboard,
     routes_leaderboard, routes_wallet, ws_positions,
     routes_auth, routes_oauth, routes_equity, routes_terminal,
-    routes_watchlist, routes_orders, routes_websocket,
+    routes_watchlist, routes_websocket,
     routes_advanced_orders, routes_multi_leg, routes_performance,
     routes_custom_strategies, routes_health,
     ws_custom_strategy_greeks, routes_notifications, ws_notifications,
@@ -215,7 +215,6 @@ app.include_router(routes_wallet.orders_router)
 app.include_router(routes_equity.router)
 app.include_router(routes_terminal.router)
 app.include_router(routes_watchlist.router)
-app.include_router(routes_orders.router)
 app.include_router(routes_websocket.router)
 app.include_router(routes_advanced_orders.router)
 app.include_router(routes_multi_leg.router)
@@ -239,6 +238,7 @@ async def _start_background_tasks():
     from automate.api.token_refresh_scheduler import token_refresh_scheduler
     from automate.api.advanced_orders_scheduler import advanced_orders_scheduler
     from automate.api.iv_history_scheduler import iv_history_scheduler
+    from automate.api.instrument_sync_scheduler import instrument_sync_scheduler
 
     # run_daemon.py (the old cron/systemd-style CLI daemon) is retired —
     # it only ever ran hand-written strategies (strategies/registry.py,
@@ -253,6 +253,7 @@ async def _start_background_tasks():
     asyncio.create_task(token_refresh_scheduler())
     asyncio.create_task(advanced_orders_scheduler())
     asyncio.create_task(iv_history_scheduler())
+    asyncio.create_task(instrument_sync_scheduler())
 
 
 @app.get("/api/health")

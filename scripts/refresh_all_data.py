@@ -4,9 +4,8 @@ scripts/refresh_all_data.py — ONE command to keep everything current.
 Before this script existed, keeping the data pipeline current meant a
 human remembering to run 3+ separate scripts in the right order:
   1. utils.instrument_cache — refresh today's instrument master
-  2. scripts/fill_bhavcopy_gap.py — extend dataset/fno_bhavcopy.db to today
+  2. scripts/fill_bhavcopy_gap.py — extend MySQL's fno_bhavcopy table to today
   3. scripts/download_real_history.py — refresh live minute candles
-  4. scripts/import_historical_csvs_to_db.py — sync those into the DB
 
 This runs all of them, in order, idempotently (each step already skips
 work that's not needed — cached-today files, dates already in the DB) —
@@ -52,7 +51,7 @@ def refresh_instrument_master() -> bool:
         return False
 
 
-def bhavcopy_gap_range(db_path: str) -> tuple:
+def bhavcopy_gap_range() -> tuple:
     """
     Step 2 prep: find the last date already in MySQL fno_bhavcopy table and
     return (from_date, to_date) to fill — up to yesterday, since a
@@ -80,7 +79,6 @@ def bhavcopy_gap_range(db_path: str) -> tuple:
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--symbols", default=None, help="Comma-separated symbols for live data refresh (default: config.TenPercentOTMStrangleConfig.SYMBOLS)")
-    parser.add_argument("--db", default="dataset/fno_bhavcopy.db")
     parser.add_argument("--skip-live", action="store_true", help="Skip live Upstox candle download (bhavcopy DB refresh only)")
     parser.add_argument("--days", type=int, default=5, help="Trailing days of live candles to (re)download")
     args = parser.parse_args()
@@ -91,14 +89,14 @@ def main():
     results["instrument_master"] = refresh_instrument_master()
 
     # Step 2: bhavcopy gap-fill, auto-detecting the range that's actually missing
-    from_date, to_date = bhavcopy_gap_range(args.db)
+    from_date, to_date = bhavcopy_gap_range()
     if from_date is None:
         print("[refresh_all_data] Bhavcopy DB is already current through yesterday — skipping gap-fill.", file=sys.stderr)
         results["bhavcopy_gap"] = True
     else:
         results["bhavcopy_gap"] = run_step(
             f"Filling bhavcopy gap {from_date} -> {to_date}",
-            [sys.executable, "scripts/fill_bhavcopy_gap.py", "--db", args.db, "--from-date", from_date, "--to-date", to_date],
+            [sys.executable, "scripts/fill_bhavcopy_gap.py", "--from-date", from_date, "--to-date", to_date],
         )
 
     if not args.skip_live:
@@ -110,12 +108,6 @@ def main():
         results["live_candles"] = run_step(
             f"Refreshing live candles for {symbols_arg}",
             [sys.executable, "scripts/download_real_history.py", "--symbols", symbols_arg, "--days", str(args.days)],
-        )
-
-        # Step 4: sync data/historical/*.csv into the candles table
-        results["candles_db_sync"] = run_step(
-            "Syncing data/historical/ into candles table",
-            [sys.executable, "scripts/import_historical_csvs_to_db.py", "--db", args.db],
         )
     else:
         print("[refresh_all_data] --skip-live given — not touching live Upstox data.", file=sys.stderr)

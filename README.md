@@ -55,8 +55,7 @@ automate/
 │   ├── refresh_all_data.py             # ONE command to run the whole data pipeline in order
 │   ├── download_real_history.py        # Downloads real spot + option candles from Upstox
 │   ├── import_bhavcopy_to_db.py        # Bulk raw bhavcopy CSV -> MySQL fno_bhavcopy table
-│   ├── fill_bhavcopy_gap.py            # Downloads NSE's own bhavcopy archive to fill date gaps
-│   └── import_historical_csvs_to_db.py # data/historical/*.csv -> candles table (same MySQL DB)
+│   └── fill_bhavcopy_gap.py            # Downloads NSE's own bhavcopy archive to fill date gaps
 ├── tests/                     # pytest suite — see "Testing" below
 ├── src/automate/              # The actual package — everything below is `automate.X`
 │   ├── config.py               # Centralized configuration (no secrets) — DEFAULTS; runtime-overridable, see below
@@ -470,7 +469,7 @@ Upstox's own history API caps out at 30 days for 1-minute candles and can't disc
 
 **Data-quality reality check (read before trusting any numbers from this path):** bhavcopy is daily EOD settlement data, not intraday ticks — there's no realistic entry timing or slippage model, just the day's official settlement price. Worse: zero-volume days report a theoretical/carried-forward price with **no real trade behind it**, and this is most common at exactly the ~10%-OTM strikes this strategy sells. Every row is tagged with its real trade volume, and every stats report splits **ALL cycles** from **LIQUID-ONLY cycles** (every leg had real volume) — the two give meaningfully different numbers, and "ALL" is optimistic. Transaction costs also use today's rates applied retroactively (STT/GST/exchange fees have all changed multiple times since 2000) — approximate for older cycles, not historically exact.
 
-**Keeping everything current, day to day:** once the database is bootstrapped (step 1 below, one-time), `python3 scripts/refresh_all_data.py` runs steps 2–4 (gap-fill to yesterday, live candle refresh, DB sync) together, idempotently, in the right order — safe to cron daily. `--symbols X,Y,Z` to override which live symbols get refreshed (default: `config.TenPercentOTMStrangleConfig.SYMBOLS`), `--skip-live` to refresh only the bhavcopy DB without touching Upstox.
+**Keeping everything current, day to day:** once the database is bootstrapped (step 1 below, one-time), `python3 scripts/refresh_all_data.py` runs steps 2–3 (gap-fill to yesterday, live candle refresh) together, idempotently, in the right order — safe to cron daily. `--symbols X,Y,Z` to override which live symbols get refreshed (default: `config.TenPercentOTMStrangleConfig.SYMBOLS`), `--skip-live` to refresh only the bhavcopy DB without touching Upstox.
 
 **Building the database from scratch, or running steps individually:**
 1. **Bulk import** a raw bhavcopy archive (e.g. a Kaggle dump — bring your own CSV, place under `dataset/`, gitignored) into MySQL's `fno_bhavcopy` table. Streams the source **one row at a time**, never loading it into pandas/a list, bounded memory regardless of file size (verified: ~20MB peak RAM importing 112M rows / 8.9GB in ~29 minutes):
@@ -480,10 +479,6 @@ Upstox's own history API caps out at 30 days for 1-minute candles and can't disc
 2. **Fill the gap to today** by downloading NSE's own official daily bhavcopy archive directly (verified live: publicly downloadable from ~2021 through a few days ago, no login needed). Handles NSE's old and new "UDiFF" file formats transparently, is rate-limited to be a reasonable citizen of NSE's archive, and is resumable (skips dates already in the DB) — writes into the **same** `fno_bhavcopy` table:
    ```bash
    python3 scripts/fill_bhavcopy_gap.py --from-date 2020-09-01 --to-date 2026-07-24
-   ```
-3. **Import your `data/historical/` CSVs too** (real Upstox downloads + the FUTIDX-proxy daily series below), tagged by symbol/leg, into the `candles` MySQL table — one unified database, not scattered CSVs:
-   ```bash
-   python3 scripts/import_historical_csvs_to_db.py --dir data/historical
    ```
 
 **Running the statistics** directly (this is what `python3 -m automate.backtest` calls for older date ranges):

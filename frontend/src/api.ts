@@ -176,25 +176,6 @@ export interface WatchlistConfig {
   num_shares: number;
 }
 
-export interface OrderExecution {
-  id: number;
-  user_id: number | null;
-  order_id: string;
-  instrument_key: string;
-  direction: string;
-  quantity: number;
-  price: number | null;
-  product: string;
-  mode: string;
-  status: string;
-  status_message: string | null;
-  filled_quantity: number | null;
-  filled_price: number | null;
-  created_at: string;
-  updated_at: string | null;
-  strategy_name: string | null;
-}
-
 export interface OrderLeg {
   instrument_token: string;
   transaction_type: 'BUY' | 'SELL';
@@ -525,30 +506,6 @@ export const api = {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(instrumentKeys),
-    }),
-
-  // Order Tracking
-  getOrderExecutions: (userId?: number, status?: string, limit = 100) =>
-    request<OrderExecution[]>(`/api/orders/tracking${userId ? `?user_id=${userId}` : ''}${status ? `&status=${status}` : ''}&limit=${limit}`),
-  getOrderExecution: (orderId: string) =>
-    request<OrderExecution>(`/api/orders/tracking/${orderId}`),
-  trackOrder: (orderData: {
-    order_id: string;
-    status: string;
-    status_message?: string;
-    filled_quantity?: number;
-    filled_price?: number;
-  }) =>
-    request<{ status: string; order_id: string }>('/api/orders/tracking', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(orderData),
-    }),
-  getPendingOrders: (userId?: number) =>
-    request<OrderExecution[]>(`/api/orders/tracking/pending${userId ? `?user_id=${userId}` : ''}`),
-  cancelOrder: (orderId: string) =>
-    request<{ status: string; order_id: string }>(`/api/orders/tracking/${orderId}/cancel`, {
-      method: 'POST',
     }),
 
   // Advanced Orders (OCO / Trailing Stop / Bracket)

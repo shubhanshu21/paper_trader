@@ -156,29 +156,6 @@ class FnoBhavcopy(Base):
 
 
 # ---------------------------------------------------------------------------
-# Historical dataset: intraday minute candles
-# ---------------------------------------------------------------------------
-class Candle(Base):
-    __tablename__ = "candles"
-
-    id           = Column(BigInteger, primary_key=True, autoincrement=True)
-    symbol       = Column(String(32),  nullable=False)
-    leg          = Column(String(8),   nullable=False)
-    source_file  = Column(String(256), nullable=False)
-    timestamp    = Column(String(26),  nullable=False)   # ISO datetime string
-    open         = Column(Numeric(12, 4), nullable=True)
-    high         = Column(Numeric(12, 4), nullable=True)
-    low          = Column(Numeric(12, 4), nullable=True)
-    close        = Column(Numeric(12, 4), nullable=True)
-    volume       = Column(Numeric(18, 4), nullable=True)
-    open_interest = Column(Numeric(18, 4), nullable=True)
-
-    __table_args__ = (
-        Index("ix_candles_symbol_leg_ts", "symbol", "leg", "timestamp"),
-    )
-
-
-# ---------------------------------------------------------------------------
 # Runtime: paper-trading wallet settings (single row, id=1)
 # ---------------------------------------------------------------------------
 class WalletSettings(Base):
@@ -417,60 +394,6 @@ class UserWatchlist(Base):
             "added_at": self.added_at.isoformat() if self.added_at else None,
             "order_index": self.order_index,
             "page": self.page,
-        }
-
-
-# ---------------------------------------------------------------------------
-# Order execution tracking
-# ---------------------------------------------------------------------------
-class OrderExecution(Base):
-    """
-    Real-time order execution tracking from broker.
-    Stores order status updates from broker for monitoring and reconciliation.
-    """
-    __tablename__ = "order_executions"
-
-    id               = Column(BigInteger, primary_key=True, autoincrement=True)
-    user_id          = Column(BigInteger, nullable=True)  # Optional: track which user placed order
-    order_id         = Column(String(64), nullable=False, unique=True)  # Broker order ID
-    instrument_key   = Column(String(64), nullable=False)
-    direction        = Column(String(8), nullable=False)  # BUY | SELL
-    quantity         = Column(Integer, nullable=False)
-    price            = Column(Numeric(12, 4), nullable=True)  # Limit price or filled price
-    product          = Column(String(8), nullable=False)  # CNC | MIS | NRML
-    mode             = Column(String(8), nullable=False)  # paper | live
-    status           = Column(String(16), nullable=False)  # PENDING | OPEN | COMPLETE | REJECTED | CANCELLED
-    status_message   = Column(String(256), nullable=True)
-    filled_quantity  = Column(Integer, nullable=True)
-    filled_price     = Column(Numeric(12, 4), nullable=True)
-    created_at       = Column(DateTime, nullable=False, server_default=func.now())
-    updated_at       = Column(DateTime, nullable=True, onupdate=func.now())
-    strategy_name    = Column(String(128), nullable=True)  # Strategy that generated order, if any
-
-    __table_args__ = (
-        Index("ix_order_executions_user_id", "user_id"),
-        Index("ix_order_executions_order_id", "order_id"),
-        Index("ix_order_executions_status", "status"),
-        Index("ix_order_executions_instrument", "instrument_key"),
-        Index("ix_order_executions_created_at", "created_at"),
-    )
-
-    def to_dict(self):
-        from datetime import datetime
-        from decimal import Decimal
-
-        def _serialize(v):
-            if isinstance(v, Decimal):
-                return float(v)
-            if isinstance(v, datetime):
-                return v.isoformat()
-            return v
-
-        return {
-            c.name: _serialize(v)
-            for c, v in zip(self.__table__.columns, [
-                getattr(self, c.name) for c in self.__table__.columns
-            ])
         }
 
 

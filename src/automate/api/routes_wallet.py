@@ -58,7 +58,7 @@ def wallet_reset(user: dict = Depends(get_current_user)):
     Wipes THIS ACCOUNT's own paper-trading state (positions, equity
     positions, custom-strategy legs, wallet balance/adjustments) — never
     another user's data, and never shared reference data (BacktestRun
-    history, the Candle/bhavcopy market-data cache), which the reset used
+    history, the bhavcopy market-data cache), which the reset used
     to also delete globally regardless of who asked for it.
     """
     from automate.db.engine import get_session
