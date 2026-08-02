@@ -55,7 +55,7 @@ export function Banner() {
     >
       <AlertTriangle size={15} style={{ color: "#ff9800" }} />
       <span>
-        This is a virtual platform with dum.
+        This is a simulated paper-trading platform — all balances, positions, and P&amp;L here are virtual, with no real money at risk.
       </span>
     </div>
   );

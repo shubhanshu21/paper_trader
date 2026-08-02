@@ -133,7 +133,7 @@ function LegNode({ data }: NodeProps) {
       <Handle type="target" position={Position.Left} />
       <div className="flex items-center justify-between" style={headerStyle(leg.action === "BUY" ? "#e2f2ff" : "#fff1f0", leg.action === "BUY" ? C.buyText : C.sellText)}>
         <span>Leg {idx + 1}</span>
-        {onRemove && <button onClick={onRemove} className="hover:opacity-70"><Trash2 size={12} /></button>}
+        {onRemove && <button onClick={onRemove} className="nodrag hover:opacity-70"><Trash2 size={12} /></button>}
       </div>
       <div className="p-2.5 space-y-2">
         <div>
@@ -141,7 +141,7 @@ function LegNode({ data }: NodeProps) {
           <div className="flex rounded overflow-hidden border" style={{ borderColor: C.border2 }}>
             {(["OPTION", "EQUITY"] as const).map((t) => (
               <button key={t} onClick={() => onUpdate({ instrument_type: t })}
-                className={`flex-1 py-1 text-[11px] font-semibold ${leg.instrument_type === t ? "bg-gray-700 text-white" : "bg-white text-gray-600"}`}>
+                className={`nodrag flex-1 py-1 text-[11px] font-semibold ${leg.instrument_type === t ? "bg-gray-700 text-white" : "bg-white text-gray-600"}`}>
                 {t === "OPTION" ? "Option" : "Equity (cash)"}
               </button>
             ))}
@@ -152,7 +152,7 @@ function LegNode({ data }: NodeProps) {
           <div className="flex rounded overflow-hidden border" style={{ borderColor: C.border2 }}>
             {(["BUY", "SELL"] as const).map((a) => (
               <button key={a} onClick={() => onUpdate({ action: a })}
-                className={`flex-1 py-1 text-[11px] font-semibold ${leg.action === a ? (a === "BUY" ? "bg-blue-500 text-white" : "bg-red-500 text-white") : "bg-white text-gray-600"}`}>
+                className={`nodrag flex-1 py-1 text-[11px] font-semibold ${leg.action === a ? (a === "BUY" ? "bg-blue-500 text-white" : "bg-red-500 text-white") : "bg-white text-gray-600"}`}>
                 {a}
               </button>
             ))}
@@ -161,7 +161,7 @@ function LegNode({ data }: NodeProps) {
             <div className="flex rounded overflow-hidden border" style={{ borderColor: C.border2 }}>
               {(["CE", "PE"] as const).map((o) => (
                 <button key={o} onClick={() => onUpdate({ option_type: o })}
-                  className={`flex-1 py-1 text-[11px] font-semibold ${leg.option_type === o ? "bg-orange-500 text-white" : "bg-white text-gray-600"}`}>
+                  className={`nodrag flex-1 py-1 text-[11px] font-semibold ${leg.option_type === o ? "bg-orange-500 text-white" : "bg-white text-gray-600"}`}>
                   {o}
                 </button>
               ))}
@@ -193,7 +193,7 @@ function LegNode({ data }: NodeProps) {
           <div className="flex rounded overflow-hidden border mb-1" style={{ borderColor: C.border2 }}>
             {(["LOTS", "RISK_PCT"] as const).map((m) => (
               <button key={m} onClick={() => onUpdate({ sizing_mode: m })}
-                className={`flex-1 py-1 text-[11px] font-semibold flex items-center justify-center gap-1 ${leg.sizing_mode === m ? "bg-gray-700 text-white" : "bg-white text-gray-600"}`}>
+                className={`nodrag flex-1 py-1 text-[11px] font-semibold flex items-center justify-center gap-1 ${leg.sizing_mode === m ? "bg-gray-700 text-white" : "bg-white text-gray-600"}`}>
                 {m === "RISK_PCT" && <Percent size={9} />}{m === "LOTS" ? (leg.instrument_type === "EQUITY" ? "Shares" : "Lots") : "Risk %"}
               </button>
             ))}
@@ -226,7 +226,7 @@ function LegNode({ data }: NodeProps) {
             <input type="number" placeholder="SL %" value={leg.leg_stop_loss_pct}
               onChange={(e) => onUpdate({ leg_stop_loss_pct: e.target.value })} className={numInput} />
           </div>
-          <label className="flex items-center gap-1.5 text-[11px] text-gray-600 cursor-pointer">
+          <label className="nodrag flex items-center gap-1.5 text-[11px] text-gray-600 cursor-pointer">
             <input type="checkbox" checked={leg.trailing_enabled} onChange={(e) => onUpdate({ trailing_enabled: e.target.checked })} />
             <TrendingDown size={11} /> Trailing stop
           </label>
@@ -250,7 +250,7 @@ function AddLegNode({ data }: NodeProps) {
   const disabled = data.disabled as boolean;
   return (
     <button onClick={onAdd} disabled={disabled}
-      className="flex items-center gap-1.5 px-3 py-2 rounded-lg border-2 border-dashed text-xs font-semibold disabled:opacity-40"
+      className="nodrag flex items-center gap-1.5 px-3 py-2 rounded-lg border-2 border-dashed text-xs font-semibold disabled:opacity-40"
       style={{ borderColor: C.orange, color: C.orange, background: "#fff7ed", width: 150 }}>
       <Plus size={14} /> Add leg
     </button>

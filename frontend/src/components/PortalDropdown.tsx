@@ -73,7 +73,7 @@ export function PortalDropdown({ value, onChange, options, placeholder = "Select
         type="button"
         disabled={disabled}
         onClick={() => setOpen((o) => !o)}
-        className={`w-full flex items-center justify-between gap-1.5 px-2 py-1.5 border rounded text-xs bg-white transition-colors focus:outline-none disabled:bg-gray-100 disabled:text-gray-400 ${className}`}
+        className={`nodrag w-full flex items-center justify-between gap-1.5 px-2 py-1.5 border rounded text-xs bg-white transition-colors focus:outline-none disabled:bg-gray-100 disabled:text-gray-400 ${className}`}
         style={{ borderColor: open ? C.orange : C.border2 }}
       >
         <span className="text-gray-800 font-medium truncate">{selected?.label ?? placeholder}</span>
