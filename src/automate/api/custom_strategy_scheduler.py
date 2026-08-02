@@ -177,7 +177,14 @@ def _leg_groups(rules: dict) -> dict:
     default_mode = (rules.get("expiry") or {}).get("mode", "WEEKLY")
     groups: dict = defaultdict(list)
     for i, leg in enumerate(rules["legs"]):
-        groups[leg.get("expiry_mode") or default_mode].append(i)
+        if (leg.get("instrument_type") or "OPTION") == "EQUITY":
+            # No expiry concept at all — always its own group (never
+            # inherits the strategy's WEEKLY/MONTHLY default), gated by
+            # calendar day instead of a real listed expiry — see
+            # _resolve_current_expiry's mode="EQUITY" case.
+            groups["EQUITY"].append(i)
+        else:
+            groups[leg.get("expiry_mode") or default_mode].append(i)
     return dict(groups)
 
 
@@ -237,7 +244,16 @@ def _resolve_current_expiry(broker, symbol: str, mode: str) -> Optional[str]:
     internally, rather than sharing code, since this must run BEFORE any
     order can be placed (can't ask "did we already trade this cycle" by
     first running the very thing that would trade it).
+
+    mode="EQUITY" (see _leg_groups) has no real expiry to resolve at
+    all — reuses this same "already traded this cycle?" gate, keyed by
+    TODAY'S DATE instead of a listed expiry, so an equity leg group
+    naturally re-enters at most once per calendar day rather than every
+    tick, without inventing a second gating mechanism.
     """
+    if mode == "EQUITY":
+        return date.today().isoformat()
+
     from automate.utils.option_utils import find_nearest_expiry_by_type
 
     try:

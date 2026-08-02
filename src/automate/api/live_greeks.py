@@ -4,8 +4,18 @@ Black-76 Greeks (see utils/black76.py), used by both the WebSocket push
 (ws_custom_strategy_greeks.py — what the frontend actually uses) and the
 one-off REST endpoint (routes_custom_strategies.py's GET .../greeks, kept
 for manual/curl inspection) so the logic exists in exactly one place.
+
+compute_portfolio_greeks() is the account-wide version — net exposure
+across EVERY open leg of EVERY active (PAPER_TRADING/LIVE) strategy this
+user owns, not just one strategy's own legs. A strangle that looks
+delta-neutral leg-by-leg can still leave the account meaningfully
+directional once combined with a second strategy on a correlated
+underlying — this is the number that actually answers "how exposed am I
+right now," the same portfolio-level view Sensibull's positions dashboard
+gives (aggregate Greeks, not per-leg) instead of Kite's plain per-leg list.
 """
 import json
+from collections import defaultdict
 from datetime import date
 from typing import Dict, Optional
 
@@ -100,6 +110,116 @@ def compute_live_greeks(strategy_id: int, owner_user_id: Optional[int] = None) -
                 "theta": round(net_theta, 2),
                 "vega": round(net_vega, 2),
             },
+        }
+    finally:
+        db.close()
+
+
+def compute_portfolio_greeks(owner_user_id: int) -> dict:
+    """
+    Net Black-76 Greeks across EVERY open leg of EVERY active
+    (PAPER_TRADING/LIVE) strategy `owner_user_id` owns — see module
+    docstring. Always returns a dict (never None — unlike
+    compute_live_greeks, there's no single strategy_id that could be
+    "not found"); "net": None plus a "message" means a normal empty
+    state (no active strategies, or none with open legs right now), not
+    an error.
+    """
+    from automate.api.custom_strategy_scheduler import _get_brokers, _mode_for_status, _is_leg_for_symbol
+
+    db = SessionLocal()
+    try:
+        strategies = db.query(CustomStrategy).filter(
+            CustomStrategy.user_id == owner_user_id,
+            CustomStrategy.status.in_(["PAPER_TRADING", "LIVE"]),
+        ).all()
+        if not strategies:
+            return {"net": None, "by_strategy": [], "open_legs_count": 0, "message": "No active strategies."}
+
+        strategy_by_id = {s.id: s for s in strategies}
+        open_legs = db.query(CustomStrategyPosition).filter(
+            CustomStrategyPosition.strategy_id.in_(list(strategy_by_id.keys())),
+            CustomStrategyPosition.status == "OPEN",
+        ).all()
+        if not open_legs:
+            return {"net": None, "by_strategy": [], "open_legs_count": 0, "message": "No open legs across any active strategy."}
+
+        brokers = _get_brokers()
+        if brokers is None:
+            return {"net": None, "by_strategy": [], "open_legs_count": 0, "message": "Broker connection not ready yet."}
+
+        # Batch the LTP lookup per broker (paper vs live legs need their
+        # own broker) rather than per leg, same reasoning as
+        # compute_live_greeks — this just also spans multiple strategies'
+        # legs in one pass instead of one strategy's.
+        legs_by_mode: Dict[str, list] = defaultdict(list)
+        for leg in open_legs:
+            legs_by_mode[_mode_for_status(strategy_by_id[leg.strategy_id].status)].append(leg)
+
+        now_prices: Dict[str, Optional[float]] = {}
+        for mode, mode_legs in legs_by_mode.items():
+            now_prices.update(brokers[mode].get_ltp_batch([l.instrument_key for l in mode_legs]))
+
+        instrument_cache = InstrumentCache()
+        today = date.today()
+        futures_price_cache: Dict[str, Optional[float]] = {}
+
+        def _futures_price(symbol: str, broker) -> Optional[float]:
+            if symbol not in futures_price_cache:
+                resolved = instrument_cache.resolve_nearest_future_key(symbol)
+                futures_price_cache[symbol] = broker.get_ltp(resolved[0]) if resolved else None
+            return futures_price_cache[symbol]
+
+        net_delta = net_gamma = net_theta = net_vega = 0.0
+        per_strategy: Dict[int, dict] = {}
+        for leg in open_legs:
+            strategy = strategy_by_id[leg.strategy_id]
+            broker = brokers[_mode_for_status(strategy.status)]
+            symbols = json.loads(strategy.symbols)
+            leg_symbol = next((s for s in symbols if _is_leg_for_symbol(leg.instrument_key, s)), None)
+            F = _futures_price(leg_symbol, broker) if leg_symbol else None
+            market_price = now_prices.get(leg.instrument_key)
+            g = None
+            if F is not None and market_price is not None and leg.expiry and leg.option_type:
+                days_to_expiry = (date.fromisoformat(leg.expiry) - today).days
+                T = max(days_to_expiry, 1) / 365.0
+                g = black76.compute_greeks_from_market_price(
+                    F=F, K=float(leg.strike), T=T, r=black76.DEFAULT_RISK_FREE_RATE,
+                    market_price=market_price, option_type=leg.option_type,
+                )
+            sign = -1 if leg.transaction_type == "SELL" else 1
+            leg_delta = leg_gamma = leg_theta = leg_vega = 0.0
+            if g:
+                leg_delta = g["delta"] * leg.quantity * sign
+                leg_gamma = g["gamma"] * leg.quantity * sign
+                leg_theta = g["theta"] * leg.quantity * sign
+                leg_vega = g["vega"] * leg.quantity * sign
+                net_delta += leg_delta
+                net_gamma += leg_gamma
+                net_theta += leg_theta
+                net_vega += leg_vega
+
+            entry = per_strategy.setdefault(strategy.id, {
+                "strategy_id": strategy.id, "name": strategy.name, "status": strategy.status,
+                "delta": 0.0, "gamma": 0.0, "theta": 0.0, "vega": 0.0, "open_legs": 0,
+            })
+            entry["delta"] += leg_delta
+            entry["gamma"] += leg_gamma
+            entry["theta"] += leg_theta
+            entry["vega"] += leg_vega
+            entry["open_legs"] += 1
+
+        return {
+            "net": {
+                "delta": round(net_delta, 2), "gamma": round(net_gamma, 4),
+                "theta": round(net_theta, 2), "vega": round(net_vega, 2),
+            },
+            "by_strategy": [
+                {**v, "delta": round(v["delta"], 2), "gamma": round(v["gamma"], 4),
+                 "theta": round(v["theta"], 2), "vega": round(v["vega"], 2)}
+                for v in per_strategy.values()
+            ],
+            "open_legs_count": len(open_legs),
         }
     finally:
         db.close()

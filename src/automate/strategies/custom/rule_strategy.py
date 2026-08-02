@@ -90,23 +90,35 @@ class RuleBasedStrategy(BaseStrategy):
         self.product = product.upper()
         self.user_id = user_id  # owning CustomStrategy's user_id, for notify() scoping — see utils/notify.py
 
-        if strike_step is not None:
-            self.strike_step = strike_step
-        else:
-            real_step = broker.get_strike_step(self.symbol)
-            if real_step is None:
-                raise RuntimeError(
-                    f"Could not resolve a real strike step for '{self.symbol}' — refusing to guess."
-                )
-            self.strike_step = real_step
+        # OPTION legs need a real strike_step/lot_size resolved up front
+        # (wrong quantity/strike is a real-money risk — never guessed, see
+        # below); an EQUITY-only strategy (no OPTION legs at all) has
+        # neither concept and shouldn't fail __init__ over a lookup it'll
+        # never actually use — e.g. a small-cap with no listed F&O
+        # contracts is still perfectly tradable as a plain equity leg.
+        has_option_legs = any((leg.get("instrument_type") or "OPTION") == "OPTION" for leg in rules["legs"])
 
-        real_lot_size = broker.get_lot_size(self.symbol)
-        if real_lot_size is None:
-            raise RuntimeError(
-                f"Could not resolve a real lot size for '{self.symbol}' from {type(broker).__name__}'s "
-                f"instrument master — refusing to guess (wrong quantity is a real-money risk)."
-            )
-        self.real_lot_size = real_lot_size
+        if not has_option_legs:
+            self.strike_step = None
+            self.real_lot_size = 1  # equity: 1 unit = 1 share, no F&O lot concept
+        else:
+            if strike_step is not None:
+                self.strike_step = strike_step
+            else:
+                real_step = broker.get_strike_step(self.symbol)
+                if real_step is None:
+                    raise RuntimeError(
+                        f"Could not resolve a real strike step for '{self.symbol}' — refusing to guess."
+                    )
+                self.strike_step = real_step
+
+            real_lot_size = broker.get_lot_size(self.symbol)
+            if real_lot_size is None:
+                raise RuntimeError(
+                    f"Could not resolve a real lot size for '{self.symbol}' from {type(broker).__name__}'s "
+                    f"instrument master — refusing to guess (wrong quantity is a real-money risk)."
+                )
+            self.real_lot_size = real_lot_size
 
         self.instrument_key: str = broker.resolve_instrument_key(self.symbol)
 
@@ -152,11 +164,16 @@ class RuleBasedStrategy(BaseStrategy):
         Resolve the nearest expiry for each DISTINCT expiry_mode these legs
         need (usually just one — the strategy default — unless this is a
         calendar spread), and fetch each resulting expiry's option chain
-        once, even if several legs share it.
+        once, even if several legs share it. EQUITY legs need neither (no
+        expiry/chain concept) and are excluded — an all-EQUITY leg set
+        returns ({}, {}) without any broker call at all.
 
         Returns (mode -> resolved expiry date string, expiry date -> chain_data).
         """
-        modes_needed = {self._leg_expiry_mode(leg) for leg in legs}
+        option_legs = [leg for leg in legs if (leg.get("instrument_type") or "OPTION") == "OPTION"]
+        if not option_legs:
+            return {}, {}
+        modes_needed = {self._leg_expiry_mode(leg) for leg in option_legs}
         expiries = self.broker.get_option_contracts(self.instrument_key)
         if not expiries:
             raise RuntimeError(f"No option expiries returned for '{self.symbol}'.")
@@ -178,22 +195,31 @@ class RuleBasedStrategy(BaseStrategy):
 
         return mode_to_expiry, expiry_to_chain
 
-    def _resolve_quantity(self, leg: dict, spot_price: float, token: str, transaction_type: str) -> int:
+    def _resolve_quantity(self, leg: dict, spot_price: float, token: str, transaction_type: str, lot_size: Optional[int] = None) -> int:
         """
-        Today's default: `leg["lots"] * real_lot_size`, fixed. If the leg
-        opts into RISK_PCT sizing (rule_schema.py), size it instead so its
-        capital cost is <= risk_pct% of the account's CURRENT available
-        balance — SELL legs use the same margin estimate
-        utils/margin.py/utils/wallet.py already share elsewhere in this
-        codebase, BUY legs use the actual premium (a debit leg's real
-        capital cost, not a margin figure). Refuses (raises) rather than
-        silently under/oversizing if even 1 lot exceeds the budget — same
-        "wrong quantity is a real-money risk, don't guess" discipline
-        __init__ already applies to lot_size/strike_step above.
+        Today's default: `leg["lots"] * lot_size`, fixed (lot_size defaults
+        to self.real_lot_size — the real F&O lot; an EQUITY leg passes 1,
+        since its "lots" field means raw shares, not an F&O multiple — see
+        rule_schema.py). If the leg opts into RISK_PCT sizing
+        (rule_schema.py), size it instead so its capital cost is <=
+        risk_pct% of the account's CURRENT available balance — SELL legs
+        use the REAL broker-calculated margin when available
+        (utils/margin.py::resolve_required_margin — the same Upstox Margin
+        Calculator figure a live order would actually need, not a
+        flat-percentage guess; for an EQUITY leg, resolve_required_margin
+        naturally falls back to its flat estimate function's spot*qty*rate
+        shape only when the broker has no margin figure — a plain equity
+        BUY/SELL isn't a margin product at all, so RISK_PCT sizing for
+        EQUITY BUY legs instead uses the actual share price like any other
+        BUY below). Refuses (raises) rather than silently under/oversizing
+        if even 1 lot exceeds the budget — same "wrong quantity is a
+        real-money risk, don't guess" discipline __init__ already applies
+        to lot_size/strike_step above.
         """
+        lot_size = self.real_lot_size if lot_size is None else lot_size
         sizing = leg.get("sizing")
         if not sizing or sizing.get("mode") != "RISK_PCT":
-            return leg["lots"] * self.real_lot_size
+            return leg["lots"] * lot_size
 
         if self.user_id is None:
             raise RuntimeError(
@@ -202,18 +228,22 @@ class RuleBasedStrategy(BaseStrategy):
             )
 
         from automate.utils.wallet import get_wallet_summary
-        from automate.utils.margin import estimate_margin_blocked, INDEX_SYMBOLS
+        from automate.utils.margin import resolve_required_margin, is_commodity_instrument_key, INDEX_SYMBOLS
 
         available = get_wallet_summary(self.user_id)["available_balance"]
         budget = available * (sizing["risk_pct"] / 100.0)
 
-        if transaction_type == "SELL":
-            per_lot_cost = estimate_margin_blocked(spot_price, self.real_lot_size, self.symbol in INDEX_SYMBOLS)
+        is_equity_leg = (leg.get("instrument_type") or "OPTION") == "EQUITY"
+        if transaction_type == "SELL" and not is_equity_leg:
+            per_lot_cost = resolve_required_margin(
+                self.broker, token, lot_size, "SELL", spot_price,
+                self.symbol in INDEX_SYMBOLS, is_commodity_instrument_key(self.instrument_key),
+            )
         else:
             premium = self.broker.get_ltp(token)
             if premium is None:
                 raise RuntimeError(f"{self.symbol}: could not fetch a current price for {token} to size this leg by risk %.")
-            per_lot_cost = premium * self.real_lot_size
+            per_lot_cost = premium * lot_size
 
         if per_lot_cost <= 0:
             raise RuntimeError(f"{self.symbol}: computed a non-positive per-lot cost ({per_lot_cost}) — refusing to size this leg.")
@@ -224,10 +254,25 @@ class RuleBasedStrategy(BaseStrategy):
                 f"{self.symbol}: risking {sizing['risk_pct']}% of available capital (₹{budget:,.2f}) isn't enough "
                 f"for even 1 lot (₹{per_lot_cost:,.2f}/lot) — entry refused rather than sized to 0 or oversized."
             )
-        return max_lots * self.real_lot_size
+        return max_lots * lot_size
 
-    def _resolve_leg(self, leg: dict, spot_price: float, expiry: str, chain_data: list) -> dict:
+    def _resolve_equity_leg(self, leg: dict, spot_price: float) -> dict:
+        """Return the resolved-leg dict for a plain cash EQUITY leg — no strike/expiry/option_type, just BUY/SELL N shares of the underlying itself."""
+        quantity = self._resolve_quantity(leg, spot_price, self.instrument_key, leg["action"], lot_size=1)
+        return {
+            "instrument_token": self.instrument_key,
+            "instrument_type": "EQUITY",
+            "option_type": None,
+            "strike": None,
+            "expiry": None,
+            "quantity": quantity,
+            "transaction_type": leg["action"],
+        }
+
+    def _resolve_leg(self, leg: dict, spot_price: float, expiry: Optional[str], chain_data: Optional[list]) -> dict:
         """Return {instrument_token, strike, quantity, transaction_type, tag, ...leg metadata}."""
+        if (leg.get("instrument_type") or "OPTION") == "EQUITY":
+            return self._resolve_equity_leg(leg, spot_price)
         strike = resolve_leg_strike(leg, spot_price, self.strike_step)
         token = find_instrument_token(chain_data, strike, leg["option_type"])
         if not token:
@@ -244,6 +289,27 @@ class RuleBasedStrategy(BaseStrategy):
             "quantity": quantity,
             "transaction_type": leg["action"],
         }
+
+    def _run_pre_trade_checks(self, resolved_pairs: List[Tuple[int, dict]], spot_price: float) -> None:
+        """
+        SEBI pre-trade compliance for every leg about to be placed —
+        ±20% circuit price-band check (options only, a strike has no
+        meaning for an equity leg) and NSE freeze-quantity check, via
+        compliance/sebi_rules.py. Raises ComplianceError on a price-band
+        breach; the freeze-quantity check only logs (Upstox's
+        place_*_order already sets slice=True, auto-splitting a
+        freeze-exceeding order at the broker level — see
+        validate_order_quantity's own docstring).
+        """
+        from automate.compliance.sebi_rules import validate_price_band, validate_order_quantity
+
+        for _, resolved in resolved_pairs:
+            if resolved["instrument_type"] == "OPTION" and resolved.get("strike") is not None:
+                try:
+                    validate_price_band(resolved["strike"], spot_price)
+                except ValueError as exc:
+                    raise ComplianceError(str(exc)) from exc
+            validate_order_quantity(self.symbol, resolved["quantity"])
 
     def _place_leg(self, resolved: dict, idx: int) -> Optional[str]:
         self.rate_limiter.acquire()
@@ -422,8 +488,11 @@ class RuleBasedStrategy(BaseStrategy):
 
         resolved_legs = []
         for _, leg in active:
-            expiry = mode_to_expiry[self._leg_expiry_mode(leg)]
-            resolved = self._resolve_leg(leg, spot_price, expiry, expiry_to_chain[expiry])
+            if (leg.get("instrument_type") or "OPTION") == "EQUITY":
+                resolved = self._resolve_leg(leg, spot_price, None, None)
+            else:
+                expiry = mode_to_expiry[self._leg_expiry_mode(leg)]
+                resolved = self._resolve_leg(leg, spot_price, expiry, expiry_to_chain[expiry])
             resolved["current_price"] = self.broker.get_ltp(resolved["instrument_token"])
             resolved_legs.append(resolved)
 
@@ -457,9 +526,23 @@ class RuleBasedStrategy(BaseStrategy):
         # is being (re)entered this call.
         resolved_pairs: list[tuple[int, dict]] = []
         for original_idx, leg in active:
-            expiry = mode_to_expiry[self._leg_expiry_mode(leg)]
-            resolved = self._resolve_leg(leg, spot_price, expiry, expiry_to_chain[expiry])
+            if (leg.get("instrument_type") or "OPTION") == "EQUITY":
+                resolved = self._resolve_leg(leg, spot_price, None, None)
+            else:
+                expiry = mode_to_expiry[self._leg_expiry_mode(leg)]
+                resolved = self._resolve_leg(leg, spot_price, expiry, expiry_to_chain[expiry])
             resolved_pairs.append((original_idx, resolved))
+
+        # SEBI pre-trade checks — BEFORE any order is placed, so a failing
+        # leg aborts the whole basket instead of triggering an auto-unwind
+        # of already-filled legs for something that should never have been
+        # attempted at all. This used to only ever run for the retired
+        # hand-written TenPercentOTMStrangle strategy (hardcoded to its
+        # exact 2-leg shape) — every custom-builder strategy (paper AND
+        # live) skipped both checks entirely. warn_position_limits() only
+        # logs (never raises) so it isn't called here — it's advisory, not
+        # a hard gate, same as its own docstring says.
+        self._run_pre_trade_checks(resolved_pairs, spot_price)
 
         # SELL legs first — collected premium is available as margin before any BUY legs need it.
         order = sorted(range(len(resolved_pairs)), key=lambda pos: 0 if resolved_pairs[pos][1]["transaction_type"] == "SELL" else 1)

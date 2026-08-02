@@ -64,6 +64,18 @@ class PaperBroker(BaseBroker):
     def get_strike_step(self, symbol: str) -> Optional[float]:
         return self.real_broker.get_strike_step(symbol)
 
+    def get_required_margin(
+        self, instrument_key: str, quantity: int, transaction_type: str, product: str = "D",
+    ) -> Optional[float]:
+        # Paper trading should validate against the SAME real margin
+        # numbers a live order would need — delegates to the wrapped real
+        # broker's Margin Calculator call, same "real quotes, simulated
+        # fills" split get_ltp()/get_market_depth() already use.
+        return self.real_broker.get_required_margin(instrument_key, quantity, transaction_type, product)
+
+    def get_basket_required_margin(self, instruments: List[dict]) -> Optional[float]:
+        return self.real_broker.get_basket_required_margin(instruments)
+
     def _place_order(
         self,
         transaction_type: str,
@@ -84,28 +96,39 @@ class PaperBroker(BaseBroker):
             return None
 
         # --- Real broker simulation: balance and margin validations ---
-        from automate.utils.margin import estimate_margin_blocked, INDEX_SYMBOLS
+        from automate.utils.margin import resolve_required_margin, is_commodity_instrument_key, INDEX_SYMBOLS
         from automate.utils.wallet import get_wallet_summary
         import re
 
-        # 1. Resolve instrument details from master cache
-        base_symbol = "RELIANCE"
-        inst_type = "EQUITY"
-        try:
-            if hasattr(self.real_broker, "_cache"):
+        # 1. Resolve instrument details from master cache — REFUSE the
+        # order (never a fabricated guess) if this lookup fails. This used
+        # to silently default to base_symbol="RELIANCE"/inst_type="EQUITY"
+        # on any failure, which is a real-money-adjacent correctness bug
+        # even in paper mode: a resolution glitch on, say, a NIFTY option
+        # SELL would silently fall into the (checked-only-for-BUY) equity
+        # branch below and skip margin validation ENTIRELY, or compute
+        # margin/index-rate off the wrong underlying's price entirely.
+        # "Refuse rather than guess" is this codebase's standing rule for
+        # exactly this class of lookup (see lot_size/strike_step).
+        base_symbol: Optional[str] = None
+        inst_type: Optional[str] = None
+        if hasattr(self.real_broker, "_cache"):
+            try:
                 df = self.real_broker._cache.get_or_refresh()
                 matches = df[df["instrument_key"] == instrument_token]
                 if not matches.empty:
-                    inst_type = matches.iloc[0].get("instrument_type", "EQUITY").upper()
+                    inst_type = str(matches.iloc[0].get("instrument_type", "")).upper()
                     trading_symbol = matches.iloc[0]["symbol"]
-                    # If option/future, extract base ticker
                     m = re.match(r"^([A-Z0-9\-&]+?)\d{2}[A-Z]{3}", trading_symbol)
-                    if m:
-                        base_symbol = m.group(1)
-                    else:
-                        base_symbol = trading_symbol
-        except Exception as exc:
-            log.warning("PaperBroker: could not resolve instrument details for balance check: %s", exc)
+                    base_symbol = m.group(1) if m else trading_symbol
+            except Exception as exc:
+                log.error("PaperBroker: instrument lookup failed for %s: %s", instrument_token, exc)
+        if not base_symbol or not inst_type:
+            raise RuntimeError(
+                f"PaperBroker: could not resolve instrument details for '{instrument_token}' — "
+                f"refusing to place this order rather than guess its margin/balance requirement. "
+                f"Try refreshing the instrument master (refresh_instrument_master(force=True))."
+            )
 
         # 2. Query THIS order's own account's available virtual balance —
         # each user has their own paper wallet (see utils/wallet.py,
@@ -144,18 +167,28 @@ class PaperBroker(BaseBroker):
         else:
             # F&O segment (options/futures)
             if transaction_type.upper() == "SELL":
-                # Margin requirements for writing options
-                underlying_spot = 2000.0
+                # Margin requirements for writing options — real
+                # Upstox-calculated margin when available, else the
+                # flat-rate estimate off a real underlying spot price
+                # (never a fabricated fallback — resolve_required_margin
+                # raises rather than guess if BOTH are unavailable; the
+                # old ₹2000 hardcoded default here was wildly wrong for,
+                # say, BANKNIFTY at ~₹57,000, silently under-margining a
+                # short by ~28x).
+                underlying_spot = None
                 try:
                     if hasattr(self.real_broker, "_cache"):
                         underlying_key = self.real_broker._cache.resolve_key(base_symbol)
                         if underlying_key:
-                            underlying_spot = self.real_broker.get_ltp(underlying_key) or 2000.0
+                            underlying_spot = self.real_broker.get_ltp(underlying_key)
                 except Exception as exc:
                     log.warning("PaperBroker: could not fetch underlying spot for margin check: %s", exc)
 
                 is_index = base_symbol.upper() in INDEX_SYMBOLS
-                margin_required = estimate_margin_blocked(underlying_spot, quantity, is_index)
+                is_commodity = is_commodity_instrument_key(instrument_token)
+                margin_required = resolve_required_margin(
+                    self, instrument_token, quantity, "SELL", underlying_spot, is_index, is_commodity, product,
+                )
 
                 if margin_required > available:
                     log.error(

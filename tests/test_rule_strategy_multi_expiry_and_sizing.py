@@ -128,6 +128,19 @@ class TestRiskBasedSizing:
         # budget = 500,000; per-lot margin = 100,000 -> 5 lots * 50 (lot size) = 250 quantity
         assert result["legs"][0]["quantity"] == 250
 
+    def test_prefers_real_broker_margin_over_the_flat_estimate(self):
+        """resolve_required_margin() tries broker.get_required_margin() first — a real per-lot figure from the broker must win over the flat-rate guess."""
+        feed, weekly_token, _ = _build_feed()
+        strategy, broker = _build_strategy(feed, self._rules(risk_pct=50.0), user_id=1)
+        with patch("automate.utils.wallet.get_wallet_summary", return_value={"available_balance": 1_000_000.0}), \
+             patch.object(type(broker), "get_required_margin", return_value=250_000.0), \
+             patch("automate.utils.margin.estimate_margin_blocked", return_value=999_999.0) as flat_estimate:
+            result = strategy.preview()
+        assert result["status"] == "success"
+        # budget = 500,000; REAL per-lot margin = 250,000 -> 2 lots * 50 = 100 quantity (not the flat estimate's number)
+        assert result["legs"][0]["quantity"] == 100
+        flat_estimate.assert_not_called()
+
     def test_refuses_entry_rather_than_undersizing_below_one_lot(self):
         feed, weekly_token, _ = _build_feed()
         strategy, _ = _build_strategy(feed, self._rules(risk_pct=1.0), user_id=1)

@@ -21,7 +21,7 @@ from typing import List, Optional
 
 from automate.db.engine import get_session
 from automate.db.models import WalletSettings
-from automate.utils.margin import INDEX_SYMBOLS, estimate_margin_blocked
+from automate.utils.margin import INDEX_SYMBOLS, estimate_margin_blocked, is_commodity_instrument_key
 from automate.utils.pnl import compute_strangle_pnl, entry_charges_only
 from automate.utils.position_tracker import get_closed_positions, get_open_positions
 from automate.utils.wallet_adjustments import load_adjustments, total_adjustments
@@ -87,6 +87,24 @@ def _margin_for(pos: dict) -> float:
     return estimate_margin_blocked(spot_proxy, pos["quantity"], is_index)
 
 
+def _paper_broker():
+    """
+    The shared paper broker singleton, if the broker connection is ready
+    — None otherwise (e.g. Upstox token not yet refreshed on this
+    process's first tick). Used to prefer REAL Upstox-calculated margin
+    for the wallet's margin_blocked figure, same policy order-time
+    sizing/validation already use (utils/margin.py::resolve_required_margin)
+    — callers here must fall back to the flat-rate estimate when this is
+    None, same as everywhere else that calls it.
+    """
+    try:
+        from automate.api.custom_strategy_scheduler import _get_brokers
+        brokers = _get_brokers()
+        return brokers["paper"] if brokers else None
+    except Exception:
+        return None
+
+
 def _custom_strategy_wallet_stats(user_id: int, mode: str = "paper") -> dict:
     """
     Margin/charges/realized-P&L contribution from this user's OWN Custom
@@ -141,15 +159,40 @@ def _custom_strategy_wallet_stats(user_id: int, mode: str = "paper") -> dict:
 
     margin_blocked = 0.0
     entry_charges_open = 0.0
+    broker = _paper_broker()
     for basket_legs in open_baskets.values():
         legs_only = [l for l, _ in basket_legs]
         symbol = basket_legs[0][1]
-        strikes = [float(l.strike) for l in legs_only if l.strike is not None]
-        spot_proxy = sum(strikes) / len(strikes) if strikes else 0.0
-        is_index = symbol.upper() in INDEX_SYMBOLS
-        short_qty = max((l.quantity for l in legs_only if l.transaction_type == "SELL"), default=0)
-        if short_qty > 0 and spot_proxy > 0:
-            margin_blocked += estimate_margin_blocked(spot_proxy, short_qty, is_index)
+        sell_legs = [l for l in legs_only if l.transaction_type == "SELL"]
+
+        # Prefer the REAL Upstox-calculated NETTED margin for this whole
+        # basket (a strangle's two SELL legs together need meaningfully
+        # less than each summed independently) — falls back to the old
+        # flat-rate estimate if the broker isn't ready or the call fails,
+        # same tiered policy order-time sizing already uses (see
+        # utils/margin.py::resolve_required_margin).
+        real_margin = None
+        if broker is not None and sell_legs:
+            try:
+                instruments = [
+                    {"instrument_key": l.instrument_key, "quantity": l.quantity, "transaction_type": "SELL", "product": "D"}
+                    for l in sell_legs
+                ]
+                real_margin = broker.get_basket_required_margin(instruments)
+            except Exception:
+                real_margin = None
+
+        if real_margin is not None and real_margin > 0:
+            margin_blocked += real_margin
+        else:
+            strikes = [float(l.strike) for l in legs_only if l.strike is not None]
+            spot_proxy = sum(strikes) / len(strikes) if strikes else 0.0
+            is_index = symbol.upper() in INDEX_SYMBOLS
+            is_commodity = is_commodity_instrument_key(sell_legs[0].instrument_key) if sell_legs else False
+            short_qty = max((l.quantity for l in sell_legs), default=0)
+            if short_qty > 0 and spot_proxy > 0:
+                margin_blocked += estimate_margin_blocked(spot_proxy, short_qty, is_index, is_commodity)
+
         for leg in legs_only:
             entry_charges_open += calculate_options_transaction_cost_breakdown(
                 float(leg.entry_price), leg.quantity, leg.transaction_type

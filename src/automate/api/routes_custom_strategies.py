@@ -108,8 +108,8 @@ def create_strategy(strategy: CustomStrategyCreate, db: Session = Depends(get_db
     """Create a new custom strategy."""
     if not strategy.symbols:
         raise HTTPException(status_code=422, detail="At least one symbol is required.")
-    if strategy.instrument_type not in ("INDEX", "STOCK"):
-        raise HTTPException(status_code=422, detail="This strategy builder only supports INDEX and STOCK options.")
+    if strategy.instrument_type not in ("INDEX", "STOCK", "COMMODITY"):
+        raise HTTPException(status_code=422, detail="This strategy builder only supports INDEX, STOCK, and COMMODITY.")
     errors = validate_rules(strategy.rules)
     if errors:
         raise HTTPException(status_code=422, detail=errors)
@@ -500,6 +500,15 @@ async def backtest_strategy(strategy_id: int, request: BacktestRequest, db: Sess
                    "only covers NSE F&O (index/stock). Paper/live trading works for commodities; "
                    "backtest is scoped to INDEX/STOCK for now.",
         )
+    rules_for_check = json.loads(db_strategy.rules_json)
+    if rules_for_check.get("legs") and all((leg.get("instrument_type") or "OPTION") == "EQUITY" for leg in rules_for_check["legs"]):
+        raise HTTPException(
+            status_code=400,
+            detail="Backtesting isn't available for an all-EQUITY strategy — the backtest engine's cycle "
+                   "model is expiry-driven (options only); a plain equity leg has no expiry to anchor a "
+                   "cycle to. Paper/live trading works for equity legs; add at least one OPTION leg to "
+                   "backtest, or paper-trade this strategy directly.",
+        )
 
     run = CustomBacktestRun(
         strategy_id=strategy_id, user_id=_current_user_id(user), status="QUEUED",
@@ -621,6 +630,7 @@ def get_instrument_types():
         "instrument_types": [
             {"type": "INDEX", "description": "Index options (NIFTY, BANKNIFTY, etc.)"},
             {"type": "STOCK", "description": "Stock options"},
+            {"type": "COMMODITY", "description": "MCX commodity options (GOLD, CRUDEOIL, etc.) — live/paper trading only, no backtesting yet"},
         ]
     }
 
@@ -661,7 +671,7 @@ def get_expiries(symbol: str):
     # custom_strategy_scheduler._is_leg_for_symbol / InstrumentCache.
     # resolve_nearest_future_key), which works identically for both.
     pattern = re.compile(rf"^{re.escape(symbol)}\d{{2}}")
-    opt = df[(df["instrument_type"].isin(["OPTIDX", "OPTSTK"])) & (df["symbol"].astype(str).str.match(pattern))]
+    opt = df[(df["instrument_type"].isin(["OPTIDX", "OPTSTK", "OPTFUT"])) & (df["symbol"].astype(str).str.match(pattern))]
     expiries = sorted(set(opt["expiry"].astype(str)))
     if not expiries:
         raise HTTPException(status_code=404, detail=f"No listed option expiries found for '{symbol}'.")
@@ -678,6 +688,21 @@ def get_expiries(symbol: str):
         "symbol": symbol,
         "expiries": [{"date": exp, "label": "Monthly" if exp in monthly_set else "Weekly"} for exp in expiries],
     }
+
+
+@router.get("/portfolio/greeks")
+def get_portfolio_greeks(user: dict = Depends(get_current_user)):
+    """
+    Net Black-76 Greeks across EVERY open leg of EVERY active strategy
+    this user owns — see api/live_greeks.py::compute_portfolio_greeks for
+    why this is a materially different (and more useful) number than any
+    single strategy's own combined Greeks. Registered ABOVE
+    /{strategy_id}/greeks below — Starlette matches routes in
+    registration order, so "portfolio" would otherwise be swallowed by
+    that route's int strategy_id path param and 422.
+    """
+    from automate.api.live_greeks import compute_portfolio_greeks
+    return compute_portfolio_greeks(_current_user_id(user))
 
 
 @router.get("/{strategy_id}/greeks")

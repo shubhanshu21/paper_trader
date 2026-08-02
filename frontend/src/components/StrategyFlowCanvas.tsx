@@ -1,17 +1,17 @@
 import { useCallback, useMemo, useState } from "react";
 import {
-  ReactFlow, ReactFlowProvider, Background, Controls, Handle, Position,
+  ReactFlow, ReactFlowProvider, Background, Controls, ControlButton, Handle, Position,
   type Node, type Edge, type NodeProps, type OnNodesChange, type NodeChange,
   BackgroundVariant,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import { Trash2, Plus, Zap, TrendingDown, Percent } from "lucide-react";
+import { Trash2, Plus, Zap, TrendingDown, Percent, Maximize2, Minimize2 } from "lucide-react";
 import { C } from "./Common";
 import { PortalDropdown } from "./PortalDropdown";
 import {
   type StrikeMode, type ExpiryModeOverride, type EntryMode, type ConditionType,
   type LegForm, type ConditionForm, strikeLabel,
-} from "./strategyBuilderTypes";
+} from "../types/strategyBuilder";
 
 // ---------------------------------------------------------------------------
 // Node components
@@ -136,7 +136,19 @@ function LegNode({ data }: NodeProps) {
         {onRemove && <button onClick={onRemove} className="hover:opacity-70"><Trash2 size={12} /></button>}
       </div>
       <div className="p-2.5 space-y-2">
-        <div className="grid grid-cols-2 gap-1.5">
+        <div>
+          <label style={fieldLabel}>Instrument</label>
+          <div className="flex rounded overflow-hidden border" style={{ borderColor: C.border2 }}>
+            {(["OPTION", "EQUITY"] as const).map((t) => (
+              <button key={t} onClick={() => onUpdate({ instrument_type: t })}
+                className={`flex-1 py-1 text-[11px] font-semibold ${leg.instrument_type === t ? "bg-gray-700 text-white" : "bg-white text-gray-600"}`}>
+                {t === "OPTION" ? "Option" : "Equity (cash)"}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className={leg.instrument_type === "EQUITY" ? "" : "grid grid-cols-2 gap-1.5"}>
           <div className="flex rounded overflow-hidden border" style={{ borderColor: C.border2 }}>
             {(["BUY", "SELL"] as const).map((a) => (
               <button key={a} onClick={() => onUpdate({ action: a })}
@@ -145,32 +157,36 @@ function LegNode({ data }: NodeProps) {
               </button>
             ))}
           </div>
-          <div className="flex rounded overflow-hidden border" style={{ borderColor: C.border2 }}>
-            {(["CE", "PE"] as const).map((o) => (
-              <button key={o} onClick={() => onUpdate({ option_type: o })}
-                className={`flex-1 py-1 text-[11px] font-semibold ${leg.option_type === o ? "bg-orange-500 text-white" : "bg-white text-gray-600"}`}>
-                {o}
-              </button>
-            ))}
-          </div>
+          {leg.instrument_type === "OPTION" && (
+            <div className="flex rounded overflow-hidden border" style={{ borderColor: C.border2 }}>
+              {(["CE", "PE"] as const).map((o) => (
+                <button key={o} onClick={() => onUpdate({ option_type: o })}
+                  className={`flex-1 py-1 text-[11px] font-semibold ${leg.option_type === o ? "bg-orange-500 text-white" : "bg-white text-gray-600"}`}>
+                  {o}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
 
-        <div className="grid grid-cols-2 gap-1.5">
-          <div>
-            <label style={fieldLabel}>Strike</label>
-            <PortalDropdown value={leg.strike_mode} onChange={(v) => onUpdate({ strike_mode: v as StrikeMode })}
-              options={[
-                { value: "ATM", label: "ATM" }, { value: "OTM_PERCENT", label: "% OTM" },
-                { value: "OTM_POINTS", label: "Points OTM" }, { value: "FIXED", label: "Exact strike" },
-              ]} />
-          </div>
-          {leg.strike_mode !== "ATM" ? (
+        {leg.instrument_type === "OPTION" && (
+          <div className="grid grid-cols-2 gap-1.5">
             <div>
-              <label style={fieldLabel}>{leg.strike_mode === "FIXED" ? "Strike price" : "Distance"}</label>
-              <input type="number" value={leg.strike_value} onChange={(e) => onUpdate({ strike_value: e.target.value })} className={numInput} />
+              <label style={fieldLabel}>Strike</label>
+              <PortalDropdown value={leg.strike_mode} onChange={(v) => onUpdate({ strike_mode: v as StrikeMode })}
+                options={[
+                  { value: "ATM", label: "ATM" }, { value: "OTM_PERCENT", label: "% OTM" },
+                  { value: "OTM_POINTS", label: "Points OTM" }, { value: "FIXED", label: "Exact strike" },
+                ]} />
             </div>
-          ) : <div className="flex items-end pb-1 text-[10px] text-gray-400 italic">{strikeLabel(leg)}</div>}
-        </div>
+            {leg.strike_mode !== "ATM" ? (
+              <div>
+                <label style={fieldLabel}>{leg.strike_mode === "FIXED" ? "Strike price" : "Distance"}</label>
+                <input type="number" value={leg.strike_value} onChange={(e) => onUpdate({ strike_value: e.target.value })} className={numInput} />
+              </div>
+            ) : <div className="flex items-end pb-1 text-[10px] text-gray-400 italic">{strikeLabel(leg)}</div>}
+          </div>
+        )}
 
         <div>
           <label style={fieldLabel}>Sizing</label>
@@ -178,7 +194,7 @@ function LegNode({ data }: NodeProps) {
             {(["LOTS", "RISK_PCT"] as const).map((m) => (
               <button key={m} onClick={() => onUpdate({ sizing_mode: m })}
                 className={`flex-1 py-1 text-[11px] font-semibold flex items-center justify-center gap-1 ${leg.sizing_mode === m ? "bg-gray-700 text-white" : "bg-white text-gray-600"}`}>
-                {m === "RISK_PCT" && <Percent size={9} />}{m === "LOTS" ? "Lots" : "Risk %"}
+                {m === "RISK_PCT" && <Percent size={9} />}{m === "LOTS" ? (leg.instrument_type === "EQUITY" ? "Shares" : "Lots") : "Risk %"}
               </button>
             ))}
           </div>
@@ -190,7 +206,7 @@ function LegNode({ data }: NodeProps) {
           )}
         </div>
 
-        {hasCalendarSpread && (
+        {hasCalendarSpread && leg.instrument_type === "OPTION" && (
           <div>
             <label style={fieldLabel}>This leg's expiry</label>
             <PortalDropdown value={leg.expiry_mode || "__default"} onChange={(v) => onUpdate({ expiry_mode: (v === "__default" ? "" : v) as ExpiryModeOverride })}
@@ -298,6 +314,8 @@ interface StrategyFlowCanvasProps {
   exitTime: string;
   exitDaysBeforeExpiry: number;
   onExitChange: (patch: { takeProfitPct?: string; stopLossPct?: string; exitTime?: string; exitDaysBeforeExpiry?: number }) => void;
+  fullscreen?: boolean;
+  onToggleFullscreen?: () => void;
 }
 
 const LEG_ROW_HEIGHT = 420;
@@ -316,7 +334,7 @@ function defaultLayout(legCount: number): Record<string, { x: number; y: number 
 function StrategyFlowCanvasInner(props: StrategyFlowCanvasProps) {
   const { symbols, legs, onUpdateLeg, onRemoveLeg, onAddLeg, entryMode, onEntryModeChange, entryTime,
     onEntryTimeChange, condition, onConditionChange, takeProfitPct, stopLossPct, exitTime,
-    exitDaysBeforeExpiry, onExitChange } = props;
+    exitDaysBeforeExpiry, onExitChange, fullscreen, onToggleFullscreen } = props;
 
   const [dragPositions, setDragPositions] = useState<Record<string, { x: number; y: number }>>({});
   const hasCalendarSpread = legs.length > 1;
@@ -380,7 +398,7 @@ function StrategyFlowCanvasInner(props: StrategyFlowCanvasProps) {
   }, []);
 
   return (
-    <div style={{ height: 560, background: "#fafafa", borderRadius: 12, border: `1px solid ${C.border2}` }}>
+    <div style={{ height: "100%", background: "#fafafa", borderRadius: 12, border: `1px solid ${C.border2}` }}>
       <ReactFlow
         nodes={nodes}
         edges={edges}
@@ -392,7 +410,13 @@ function StrategyFlowCanvasInner(props: StrategyFlowCanvasProps) {
         proOptions={{ hideAttribution: true }}
       >
         <Background variant={BackgroundVariant.Dots} gap={16} size={1} color={C.border2} />
-        <Controls showInteractive={false} />
+        <Controls showInteractive={false}>
+          {onToggleFullscreen && (
+            <ControlButton onClick={onToggleFullscreen} title={fullscreen ? "Exit full screen" : "Full screen"}>
+              {fullscreen ? <Minimize2 /> : <Maximize2 />}
+            </ControlButton>
+          )}
+        </Controls>
       </ReactFlow>
     </div>
   );

@@ -6,7 +6,8 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { C, FONT, useToast, DatePicker, fmtDate, fmtDateTime, formatTime12h, inr } from "./Common";
-import { wsUrl, type CustomStrategy, type CustomStrategyRules } from "../api";
+import { api, wsUrl } from "../api";
+import type { CustomStrategy, CustomStrategyRules, PortfolioGreeksResponse } from "../types/customStrategy";
 import { useCustomStrategyPositions } from "../hooks/useCustomStrategyPositions";
 import StrategyBuilderModal from "./StrategyBuilderModal";
 import BacktestEquityChart from "./BacktestEquityChart";
@@ -712,6 +713,28 @@ export default function StrategiesView({
   const STRATEGIES_PER_PAGE = 5;
   const [liveGreeks, setLiveGreeks] = useState<LiveGreeksResponse | null>(null);
   const [expiryDatePreview, setExpiryDatePreview] = useState<string | null>(null);
+  const [portfolioGreeks, setPortfolioGreeks] = useState<PortfolioGreeksResponse | null>(null);
+
+  // Account-wide Greeks — net exposure across EVERY open leg of EVERY
+  // active strategy, not just the currently-selected one (see
+  // liveGreeks above, and api/live_greeks.py::compute_portfolio_greeks
+  // for why this is a materially different, more useful number). A
+  // plain interval poll, not a WebSocket — this is a summary card, not
+  // something that needs sub-second freshness.
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const data = await api.getPortfolioGreeks();
+        if (!cancelled) setPortfolioGreeks(data);
+      } catch {
+        // Supplementary widget — silently leave the last-known value on a transient failure.
+      }
+    };
+    load();
+    const interval = setInterval(load, 15000);
+    return () => { cancelled = true; clearInterval(interval); };
+  }, []);
 
   // Keep the selection valid whenever the redux-backed `strategies` list
   // changes (initial load, create, update, status change, delete) — same
@@ -1017,6 +1040,32 @@ export default function StrategiesView({
           <Plus size={16} /> Build Strategy
         </button>
       </div>
+
+      {portfolioGreeks && portfolioGreeks.net && (
+        <div className="bg-white border rounded-xl overflow-hidden shadow-sm mb-6" style={{ borderColor: C.border2 }}>
+          <div className="px-5 py-3.5 flex items-center gap-6 flex-wrap">
+            <h3 className="text-xs font-semibold uppercase tracking-wide text-gray-500 flex items-center gap-2 shrink-0">
+              <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse" /> Portfolio Greeks
+            </h3>
+            <div className="flex items-center gap-5 flex-wrap">
+              {([
+                ["Delta", portfolioGreeks.net.delta],
+                ["Gamma", portfolioGreeks.net.gamma],
+                ["Theta", portfolioGreeks.net.theta],
+                ["Vega", portfolioGreeks.net.vega],
+              ] as [string, number][]).map(([label, val]) => (
+                <div key={label} className="text-xs">
+                  <span className="text-gray-400">Net {label}</span>{" "}
+                  <span className="font-semibold" style={{ color: val > 0 ? C.green : val < 0 ? C.red : C.text }}>{val}</span>
+                </div>
+              ))}
+            </div>
+            <div className="text-[11px] text-gray-400 ml-auto shrink-0">
+              {portfolioGreeks.open_legs_count} open leg{portfolioGreeks.open_legs_count === 1 ? "" : "s"} across {portfolioGreeks.by_strategy.length} strateg{portfolioGreeks.by_strategy.length === 1 ? "y" : "ies"}
+            </div>
+          </div>
+        </div>
+      )}
 
       {strategies.length > 0 && (
         <div className="flex items-center gap-2 mb-6 flex-wrap">
@@ -1360,10 +1409,16 @@ export default function StrategiesView({
                                 </span>
                               </td>
                               <td className="px-4 py-2.5">
-                                <span className="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-bold" style={{ background: C.hover, color: C.text }}>{leg.option_type}</span>
+                                <span className="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-bold" style={{ background: C.hover, color: C.text }}>
+                                  {(leg.instrument_type ?? "OPTION") === "EQUITY" ? "EQ" : leg.option_type}
+                                </span>
                               </td>
-                              <td className="px-4 py-2.5 text-gray-600">{strikeLabel(leg.strike_selection)}</td>
-                              <td className="px-4 py-2.5 text-right font-medium text-gray-700">{leg.lots}</td>
+                              <td className="px-4 py-2.5 text-gray-600">
+                                {(leg.instrument_type ?? "OPTION") === "EQUITY" ? "Equity (no strike)" : strikeLabel(leg.strike_selection!)}
+                              </td>
+                              <td className="px-4 py-2.5 text-right font-medium text-gray-700">
+                                {leg.lots}{(leg.instrument_type ?? "OPTION") === "EQUITY" ? " sh" : ""}
+                              </td>
                             </tr>
                           ))}
                         </tbody>

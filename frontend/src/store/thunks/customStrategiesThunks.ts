@@ -1,5 +1,6 @@
 import { createAsyncThunk } from '@reduxjs/toolkit';
-import { api, ApiError, CustomStrategyRules } from '../../api';
+import { api, ApiError } from '../../api';
+import type { CustomStrategyRules } from '../../types/customStrategy';
 
 // Redux Toolkit serializes a thrown Error down to {name, message, stack}
 // before it reaches `.rejected`/`.unwrap()` — that would silently drop

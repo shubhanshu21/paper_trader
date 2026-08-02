@@ -1,16 +1,16 @@
 import { useState, useEffect, useRef, lazy, Suspense } from "react";
 import { X, ChevronRight, Check, Search, LayoutTemplate, AlertTriangle, RefreshCw } from "lucide-react";
 import { C, FONT, formatTime12h, fmtDate, Select } from "./Common";
-import { type CustomStrategy, type CustomStrategyRules } from "../api";
+import type { CustomStrategy, CustomStrategyRules } from "../types/customStrategy";
 import {
   type LegForm, newLeg, type ConditionForm, newCondition, type EntryMode, type StrikeMode,
-} from "./strategyBuilderTypes";
+} from "../types/strategyBuilder";
 
 // @xyflow/react (the node canvas) is a sizeable dependency only needed
 // once a user actually reaches Step 2 of the builder — code-split so it's
 // not in the app's main bundle for every page load (dashboard, orders,
 // etc. never touch it). Types/constructors above come from
-// strategyBuilderTypes.ts, NOT this lazy import, so initial form state
+// types/strategyBuilder.ts, NOT this lazy import, so initial form state
 // doesn't have to wait on the chunk loading.
 const StrategyFlowCanvas = lazy(() => import("./StrategyFlowCanvas"));
 
@@ -20,7 +20,7 @@ interface StrategyBuilderModalProps {
   onClose: () => void;
   onSuccess: () => void;
   editStrategy?: EditableStrategy | null;
-  // Dispatch the redux thunk (see router/index.tsx's StrategiesConnected) —
+  // Dispatch the redux thunk (see router/routes/StrategiesRoute.tsx) —
   // this modal never touches fetch()/the store directly, same boundary
   // Advanced Orders draws (AdvancedOrdersView's onCreateOco/etc. props).
   // Rejects with the server's per-field validation messages (string[]) via
@@ -32,9 +32,13 @@ interface StrategyBuilderModalProps {
 function legFromEditable(l: NonNullable<EditableStrategy["rules"]>["legs"][number]): LegForm {
   const exit = l.exit;
   const trailing = exit?.trailing;
+  const isEquity = (l.instrument_type ?? "OPTION") === "EQUITY";
   return {
-    action: l.action, option_type: l.option_type, strike_mode: l.strike_selection.mode,
-    strike_value: l.strike_selection.value != null ? String(l.strike_selection.value) : "",
+    instrument_type: isEquity ? "EQUITY" : "OPTION",
+    action: l.action,
+    option_type: l.option_type ?? "CE",
+    strike_mode: l.strike_selection?.mode ?? "ATM",
+    strike_value: l.strike_selection?.value != null ? String(l.strike_selection.value) : "",
     lots: l.lots,
     expiry_mode: l.expiry_mode ?? "",
     sizing_mode: l.sizing?.mode === "RISK_PCT" ? "RISK_PCT" : "LOTS",
@@ -85,6 +89,13 @@ function findDuplicateLegPairs(legs: LegForm[]): [number, number][] {
   for (let i = 0; i < legs.length; i++) {
     for (let j = i + 1; j < legs.length; j++) {
       const a = legs[i], b = legs[j];
+      if (a.instrument_type !== b.instrument_type) continue;
+      if (a.instrument_type === "EQUITY") {
+        // Matches rule_schema.py: two EQUITY legs are the same instruction
+        // once their action matches — no strike to disambiguate.
+        if (a.action === b.action) pairs.push([i, j]);
+        continue;
+      }
       const sameStrike = a.strike_mode === "ATM"
         ? b.strike_mode === "ATM"
         : b.strike_mode === a.strike_mode && parseFloat(a.strike_value || "0") === parseFloat(b.strike_value || "0");
@@ -95,13 +106,21 @@ function findDuplicateLegPairs(legs: LegForm[]): [number, number][] {
 }
 
 function legPhrase(leg: LegForm): string {
-  let strike = "ATM (at-the-money)";
-  if (leg.strike_mode === "OTM_PERCENT") strike = `${leg.strike_value || "?"}% OTM`;
-  else if (leg.strike_mode === "OTM_POINTS") strike = `${leg.strike_value || "?"} points OTM`;
-  else if (leg.strike_mode === "FIXED") strike = `strike ${leg.strike_value || "?"}`;
-  const size = leg.sizing_mode === "RISK_PCT" ? `sized to risk ${leg.risk_pct || "?"}% of capital` : `${leg.lots} ${leg.lots === 1 ? "lot" : "lots"}`;
-  let phrase = `${leg.action} ${size} ${strike} ${leg.option_type}`;
-  if (leg.expiry_mode) phrase += ` (${leg.expiry_mode.toLowerCase()} expiry, own cycle)`;
+  const isEquity = leg.instrument_type === "EQUITY";
+  const size = leg.sizing_mode === "RISK_PCT"
+    ? `sized to risk ${leg.risk_pct || "?"}% of capital`
+    : isEquity ? `${leg.lots} share${leg.lots === 1 ? "" : "s"}` : `${leg.lots} ${leg.lots === 1 ? "lot" : "lots"}`;
+  let phrase: string;
+  if (isEquity) {
+    phrase = `${leg.action} ${size} of the underlying (equity)`;
+  } else {
+    let strike = "ATM (at-the-money)";
+    if (leg.strike_mode === "OTM_PERCENT") strike = `${leg.strike_value || "?"}% OTM`;
+    else if (leg.strike_mode === "OTM_POINTS") strike = `${leg.strike_value || "?"} points OTM`;
+    else if (leg.strike_mode === "FIXED") strike = `strike ${leg.strike_value || "?"}`;
+    phrase = `${leg.action} ${size} ${strike} ${leg.option_type}`;
+    if (leg.expiry_mode) phrase += ` (${leg.expiry_mode.toLowerCase()} expiry, own cycle)`;
+  }
   const exitBits: string[] = [];
   if (leg.leg_take_profit_pct) exitBits.push(`+${leg.leg_take_profit_pct}%`);
   if (leg.leg_stop_loss_pct) exitBits.push(`-${leg.leg_stop_loss_pct}%`);
@@ -120,6 +139,40 @@ function conditionPhrase(condition: ConditionForm): string {
 export default function StrategyBuilderModal({ onClose, onSuccess, editStrategy, onCreate, onUpdate }: StrategyBuilderModalProps) {
   const isEditing = !!editStrategy;
   const [step, setStep] = useState(1);
+  const [canvasFullscreen, setCanvasFullscreen] = useState(false);
+  const modalRef = useRef<HTMLDivElement>(null);
+
+  // Real browser Fullscreen API (hides the tab/address bar too — CSS
+  // 100vh/100vw alone only fills the browser's own viewport, leaving the
+  // chrome visible) rather than a CSS-only "fullscreen". Synced back from
+  // the OS/browser side too (e.g. the user presses Esc, or a browser
+  // fullscreen indicator) so our toggle button's icon never drifts out of
+  // sync with the real state.
+  useEffect(() => {
+    const onFullscreenChange = () => setCanvasFullscreen(!!document.fullscreenElement);
+    document.addEventListener("fullscreenchange", onFullscreenChange);
+    return () => {
+      document.removeEventListener("fullscreenchange", onFullscreenChange);
+      // Closing/unmounting the modal (e.g. clicking away or submitting)
+      // while still browser-fullscreened must not leave the whole tab
+      // stuck fullscreen behind it.
+      if (document.fullscreenElement) document.exitFullscreen();
+    };
+  }, []);
+
+  const toggleCanvasFullscreen = () => {
+    if (document.fullscreenElement) {
+      document.exitFullscreen();
+    } else if (canvasFullscreen) {
+      // Was in the CSS-only fallback (Fullscreen API unavailable) — just collapse it back.
+      setCanvasFullscreen(false);
+    } else if (modalRef.current?.requestFullscreen) {
+      modalRef.current.requestFullscreen();
+    } else {
+      // Fullscreen API unavailable (e.g. iframe without allow="fullscreen") — fall back to the CSS-only expand.
+      setCanvasFullscreen(true);
+    }
+  };
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string[]>([]);
 
@@ -139,10 +192,10 @@ export default function StrategyBuilderModal({ onClose, onSuccess, editStrategy,
   }, [showTemplatePicker]);
 
   const [name, setName] = useState(editStrategy?.name ?? "");
-  const [instrumentType, setInstrumentType] = useState<"INDEX" | "STOCK">((editStrategy?.instrument_type as "INDEX" | "STOCK") ?? "INDEX");
+  const [instrumentType, setInstrumentType] = useState<"INDEX" | "STOCK" | "COMMODITY">((editStrategy?.instrument_type as "INDEX" | "STOCK" | "COMMODITY") ?? "INDEX");
   const [selectedSymbols, setSelectedSymbols] = useState<string[]>(editStrategy?.symbols ?? []);
   const [searchQuery, setSearchQuery] = useState("");
-  const [symbolsList, setSymbolsList] = useState<{ stocks: string[]; indices: string[] }>({ stocks: [], indices: [] });
+  const [symbolsList, setSymbolsList] = useState<{ stocks: string[]; indices: string[]; commodities: string[] }>({ stocks: [], indices: [], commodities: [] });
   const [showDropdown, setShowDropdown] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
 
@@ -224,14 +277,19 @@ export default function StrategyBuilderModal({ onClose, onSuccess, editStrategy,
 
   const buildRules = () => ({
     legs: legs.map((l) => ({
+      instrument_type: l.instrument_type,
       action: l.action,
-      option_type: l.option_type,
-      strike_selection: {
-        mode: l.strike_mode,
-        value: l.strike_mode === "ATM" ? null : parseFloat(l.strike_value) || 0,
-      },
       lots: l.lots,
-      ...(l.expiry_mode ? { expiry_mode: l.expiry_mode } : {}),
+      ...(l.instrument_type === "EQUITY"
+        ? {}
+        : {
+            option_type: l.option_type,
+            strike_selection: {
+              mode: l.strike_mode,
+              value: l.strike_mode === "ATM" ? null : parseFloat(l.strike_value) || 0,
+            },
+            ...(l.expiry_mode ? { expiry_mode: l.expiry_mode } : {}),
+          }),
       ...(l.sizing_mode === "RISK_PCT" && l.risk_pct
         ? { sizing: { mode: "RISK_PCT", risk_pct: parseFloat(l.risk_pct) || 0 } }
         : {}),
@@ -286,7 +344,7 @@ export default function StrategyBuilderModal({ onClose, onSuccess, editStrategy,
       case 1: return name.trim() && instrumentType && selectedSymbols.length > 0;
       case 2:
         return legs.length > 0 && legs.every((l) =>
-          (l.strike_mode === "ATM" || l.strike_value !== "") &&
+          (l.instrument_type === "EQUITY" || l.strike_mode === "ATM" || l.strike_value !== "") &&
           (l.sizing_mode === "LOTS" || l.risk_pct !== "") &&
           (!l.trailing_enabled || l.trail_amount !== "")
         );
@@ -318,16 +376,21 @@ export default function StrategyBuilderModal({ onClose, onSuccess, editStrategy,
     }
   };
 
-  const availableOptions = instrumentType === "INDEX" ? symbolsList.indices : symbolsList.stocks;
+  const availableOptions = instrumentType === "INDEX" ? symbolsList.indices : instrumentType === "COMMODITY" ? symbolsList.commodities : symbolsList.stocks;
+  const instrumentTypeNoun = instrumentType === "INDEX" ? "Indices" : instrumentType === "COMMODITY" ? "Commodities" : "Stocks";
   const filteredOptions = availableOptions.filter(
     (s) =>
       s.toLowerCase().includes(searchQuery.toLowerCase()) &&
       !selectedSymbols.includes(s)
   ).slice(0, 10);
 
+  const canvasIsFullscreen = step === 2 && canvasFullscreen;
+
   return (
-    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-      <div className={`bg-white rounded-lg w-full ${step === 2 ? "max-w-5xl" : "max-w-2xl"} max-h-[90vh] overflow-hidden flex flex-col transition-[max-width]`} style={FONT}>
+    <div className={`fixed inset-0 bg-black flex items-center justify-center z-50 ${canvasIsFullscreen ? "bg-opacity-100 p-0" : "bg-opacity-50"}`}>
+      <div ref={modalRef} className={`bg-white w-full overflow-hidden flex flex-col ${
+        canvasIsFullscreen ? "h-screen max-w-none rounded-none" : step === 2 ? "rounded-lg max-w-[96vw] h-[92vh]" : "rounded-lg max-w-2xl max-h-[90vh]"
+      }`} style={FONT}>
         <div className="px-6 py-4 border-b flex items-center justify-between shrink-0" style={{ borderColor: C.border2 }}>
           <div>
             <h2 className="text-lg font-semibold text-gray-800">{showTemplatePicker ? "Choose a Starting Point" : isEditing ? "Edit Strategy" : "Build an Options Strategy"}</h2>
@@ -375,9 +438,9 @@ export default function StrategyBuilderModal({ onClose, onSuccess, editStrategy,
             </button>
           </div>
         ) : (
-        <div className="p-6 overflow-y-auto flex-1">
+        <div className={step === 2 ? "p-4 flex-1 flex flex-col overflow-hidden min-h-0" : "p-6 overflow-y-auto flex-1"}>
           {error.length > 0 && (
-            <div className="mb-4 px-4 py-3 rounded bg-red-50 border border-red-200 text-red-600 text-xs space-y-1">
+            <div className="mb-4 px-4 py-3 rounded bg-red-50 border border-red-200 text-red-600 text-xs space-y-1 shrink-0">
               {error.map((e, i) => <div key={i}>{e}</div>)}
             </div>
           )}
@@ -397,13 +460,14 @@ export default function StrategyBuilderModal({ onClose, onSuccess, editStrategy,
                   value={instrumentType}
                   disabled={isEditing}
                   onChange={(v) => {
-                    setInstrumentType(v as "INDEX" | "STOCK");
+                    setInstrumentType(v as "INDEX" | "STOCK" | "COMMODITY");
                     setSelectedSymbols([]);
                     setSearchQuery("");
                   }}
                   options={[
                     { value: "INDEX", label: "Index Options" },
                     { value: "STOCK", label: "Stock Options" },
+                    { value: "COMMODITY", label: "Commodity Options (MCX)", description: "Live/paper trading only — backtesting isn't available yet" },
                   ]}
                 />
                 {isEditing && <p className="text-xs text-gray-500 mt-1">Instrument type can't be changed after creation — delete and rebuild if you need a different type.</p>}
@@ -411,7 +475,7 @@ export default function StrategyBuilderModal({ onClose, onSuccess, editStrategy,
 
               <div className="relative" ref={dropdownRef}>
                 <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Select {instrumentType === "INDEX" ? "Indices" : "Stocks"} (Multiple Allowed)
+                  Select {instrumentTypeNoun} (Multiple Allowed)
                 </label>
                 <div className="relative">
                   <span className="absolute inset-y-0 left-0 pl-3 flex items-center text-gray-400 pointer-events-none">
@@ -425,7 +489,7 @@ export default function StrategyBuilderModal({ onClose, onSuccess, editStrategy,
                       setSearchQuery(e.target.value);
                       setShowDropdown(true);
                     }}
-                    placeholder={`Search and select ${instrumentType === "INDEX" ? "indices" : "stocks"}...`}
+                    placeholder={`Search and select ${instrumentTypeNoun.toLowerCase()}...`}
                     className="w-full pl-9 pr-3 py-2 border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-orange-500"
                     style={{ borderColor: C.border2 }}
                   />
@@ -435,7 +499,7 @@ export default function StrategyBuilderModal({ onClose, onSuccess, editStrategy,
                   <p className="text-xs text-red-500 mt-1">{symbolsError}</p>
                 )}
                 {!symbolsError && showDropdown && searchQuery && filteredOptions.length === 0 && (
-                  <p className="text-xs text-gray-400 mt-1">No {instrumentType === "INDEX" ? "indices" : "stocks"} match "{searchQuery}".</p>
+                  <p className="text-xs text-gray-400 mt-1">No {instrumentTypeNoun.toLowerCase()} match "{searchQuery}".</p>
                 )}
 
                 {showDropdown && searchQuery && filteredOptions.length > 0 && (
@@ -480,8 +544,8 @@ export default function StrategyBuilderModal({ onClose, onSuccess, editStrategy,
           )}
 
           {step === 2 && (
-            <div className="space-y-3">
-              <div className="flex items-start justify-between gap-4">
+            <div className="flex flex-col h-full min-h-0">
+              <div className="flex items-start justify-between gap-4 shrink-0 pb-3">
                 <div>
                   <h3 className="text-sm font-semibold text-gray-700">Step 2 — Design your strategy</h3>
                   <p className="text-xs text-gray-500 mt-0.5">Drag nodes around, add legs, and edit any field inline. Symbol → Entry → each Leg → Combined exit. A leg's own exit/trailing overrides the combined exit for that leg only.</p>
@@ -500,42 +564,50 @@ export default function StrategyBuilderModal({ onClose, onSuccess, editStrategy,
                 </div>
               </div>
 
-              <Suspense fallback={
-                <div className="flex items-center justify-center" style={{ height: 560, background: "#fafafa", borderRadius: 12, border: `1px solid ${C.border2}` }}>
-                  <RefreshCw size={20} className="animate-spin" style={{ color: C.orange }} />
-                </div>
-              }>
-                <StrategyFlowCanvas
-                  symbols={selectedSymbols}
-                  legs={legs}
-                  onUpdateLeg={updateLeg}
-                  onRemoveLeg={removeLeg}
-                  onAddLeg={addLeg}
-                  entryMode={entryMode}
-                  onEntryModeChange={setEntryMode}
-                  entryTime={entryTime}
-                  onEntryTimeChange={setEntryTime}
-                  condition={condition}
-                  onConditionChange={(patch) => setCondition((c) => ({ ...c, ...patch }))}
-                  takeProfitPct={takeProfitPct}
-                  stopLossPct={stopLossPct}
-                  exitTime={exitTime}
-                  exitDaysBeforeExpiry={exitDaysBeforeExpiry}
-                  onExitChange={(patch) => {
-                    if (patch.takeProfitPct !== undefined) setTakeProfitPct(patch.takeProfitPct);
-                    if (patch.stopLossPct !== undefined) setStopLossPct(patch.stopLossPct);
-                    if (patch.exitTime !== undefined) setExitTime(patch.exitTime);
-                    if (patch.exitDaysBeforeExpiry !== undefined) setExitDaysBeforeExpiry(patch.exitDaysBeforeExpiry);
-                  }}
-                />
-              </Suspense>
+              <div className="flex-1 min-h-0">
+                <Suspense fallback={
+                  <div className="flex items-center justify-center h-full" style={{ background: "#fafafa", borderRadius: 12, border: `1px solid ${C.border2}` }}>
+                    <RefreshCw size={20} className="animate-spin" style={{ color: C.orange }} />
+                  </div>
+                }>
+                  <StrategyFlowCanvas
+                    symbols={selectedSymbols}
+                    legs={legs}
+                    onUpdateLeg={updateLeg}
+                    onRemoveLeg={removeLeg}
+                    onAddLeg={addLeg}
+                    entryMode={entryMode}
+                    onEntryModeChange={setEntryMode}
+                    entryTime={entryTime}
+                    onEntryTimeChange={setEntryTime}
+                    condition={condition}
+                    onConditionChange={(patch) => setCondition((c) => ({ ...c, ...patch }))}
+                    takeProfitPct={takeProfitPct}
+                    stopLossPct={stopLossPct}
+                    exitTime={exitTime}
+                    exitDaysBeforeExpiry={exitDaysBeforeExpiry}
+                    onExitChange={(patch) => {
+                      if (patch.takeProfitPct !== undefined) setTakeProfitPct(patch.takeProfitPct);
+                      if (patch.stopLossPct !== undefined) setStopLossPct(patch.stopLossPct);
+                      if (patch.exitTime !== undefined) setExitTime(patch.exitTime);
+                      if (patch.exitDaysBeforeExpiry !== undefined) setExitDaysBeforeExpiry(patch.exitDaysBeforeExpiry);
+                    }}
+                    fullscreen={canvasFullscreen}
+                    onToggleFullscreen={toggleCanvasFullscreen}
+                  />
+                </Suspense>
+              </div>
 
-              {findDuplicateLegPairs(legs).map(([i, j]) => (
-                <div key={`${i}-${j}`} className="flex items-start gap-2 px-3 py-2 rounded-lg text-xs" style={{ background: "#fff9e6", color: "#a16a00" }}>
-                  <AlertTriangle size={13} className="shrink-0 mt-0.5" />
-                  <span>Leg {i + 1} and Leg {j + 1} are identical — combine them into one leg with a higher lot count instead of two separate legs.</span>
+              {findDuplicateLegPairs(legs).length > 0 && (
+                <div className="shrink-0 pt-3 space-y-1.5">
+                  {findDuplicateLegPairs(legs).map(([i, j]) => (
+                    <div key={`${i}-${j}`} className="flex items-start gap-2 px-3 py-2 rounded-lg text-xs" style={{ background: "#fff9e6", color: "#a16a00" }}>
+                      <AlertTriangle size={13} className="shrink-0 mt-0.5" />
+                      <span>Leg {i + 1} and Leg {j + 1} are identical — combine them into one leg with a higher lot count instead of two separate legs.</span>
+                    </div>
+                  ))}
                 </div>
-              ))}
+              )}
             </div>
           )}
 

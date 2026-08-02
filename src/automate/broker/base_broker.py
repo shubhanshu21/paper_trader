@@ -58,6 +58,44 @@ class BaseBroker(ABC):
         """
         return None
 
+    def get_required_margin(
+        self, instrument_key: str, quantity: int, transaction_type: str, product: str = "D",
+    ) -> Optional[float]:
+        """
+        Real broker-calculated SPAN + exposure margin (₹) required for ONE
+        order — via Upstox's actual Margin Calculator API
+        (ChargeApi.post_margin), not a flat-percentage guess. Default is
+        None, meaning "no real margin figure available" — every caller
+        (utils/margin.py::resolve_required_margin, the one place this
+        should ever be called from) MUST fall back to the flat-rate
+        estimate (estimate_margin_blocked) in that case, never treat None
+        as "no margin needed."
+
+        MockBroker (backtest) has no live broker to call and can't ask
+        Upstox for a margin figure on a historical date — inherits this
+        default (always None), so backtests keep using the documented
+        flat-rate approximation, same as before. UpstoxBroker overrides
+        this with the real API call; PaperBroker delegates to its wrapped
+        real_broker so paper trading validates against the SAME real
+        margin numbers a live order would.
+        """
+        return None
+
+    def get_basket_required_margin(self, instruments: list[dict]) -> Optional[float]:
+        """
+        Real broker-calculated NETTED margin for a whole basket of legs in
+        ONE call — e.g. a short strangle's CE+PE together — via the same
+        Upstox Margin Calculator API as get_required_margin(), but passing
+        every instrument in a single request so the exchange's own
+        hedge-benefit netting applies (a strangle needs meaningfully less
+        combined margin than its two legs summed independently). Each
+        dict: {instrument_key, quantity, transaction_type, product}.
+
+        Default None (same unavailable-means-fall-back contract as
+        get_required_margin) — MockBroker/backtest never overrides this.
+        """
+        return None
+
     @abstractmethod
     def get_option_contracts(self, instrument_key: str) -> list[str]:
         """

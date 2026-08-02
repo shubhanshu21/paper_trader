@@ -1,13 +1,19 @@
-// strategyBuilderTypes.ts — the strategy builder's per-leg/entry/exit form
+// types/strategyBuilder.ts — the strategy builder's per-leg/entry/exit FORM
 // shape (Phase 3: per-leg exit/trailing, per-leg expiry_mode calendar
 // spreads, risk-based sizing, conditional MA-crossover/IV-rank entry).
-// Deliberately its own module, separate from StrategyFlowCanvas.tsx: that
-// file statically imports @xyflow/react (a sizeable dependency only ever
-// needed once a user opens the canvas step of the builder), while
+// Distinct from types/customStrategy.ts's CustomStrategyRules: these are
+// flat, string-valued React form fields (e.g. "10" not 10, "" meaning
+// unset) that StrategyBuilderModal.tsx's buildRules() converts INTO a
+// CustomStrategyRules on submit — never sent to the API directly.
+//
+// Deliberately its own module, separate from components/StrategyFlowCanvas.tsx:
+// that file statically imports @xyflow/react (a sizeable dependency only
+// ever needed once a user opens the canvas step of the builder), while
 // StrategyBuilderModal.tsx needs these types/constructors immediately on
 // render (initial useState values) — importing them from the xyflow-heavy
 // module would defeat StrategyBuilderModal's React.lazy() split of
 // StrategyFlowCanvas and pull xyflow back into the main bundle.
+export type LegInstrumentType = "OPTION" | "EQUITY";
 export type StrikeMode = "ATM" | "OTM_PERCENT" | "OTM_POINTS" | "FIXED";
 export type ExpiryModeOverride = "" | "WEEKLY" | "MONTHLY"; // "" = inherit the strategy default
 export type SizingMode = "LOTS" | "RISK_PCT";
@@ -15,6 +21,7 @@ export type EntryMode = "IMMEDIATE" | "AT_TIME" | "CONDITIONAL";
 export type ConditionType = "MA_CROSSOVER" | "IV_RANK";
 
 export interface LegForm {
+  instrument_type: LegInstrumentType;
   action: "BUY" | "SELL";
   option_type: "CE" | "PE";
   strike_mode: StrikeMode;
@@ -31,6 +38,7 @@ export interface LegForm {
 }
 
 export const newLeg = (): LegForm => ({
+  instrument_type: "OPTION",
   action: "SELL", option_type: "CE", strike_mode: "ATM", strike_value: "", lots: 1,
   expiry_mode: "", sizing_mode: "LOTS", risk_pct: "",
   leg_take_profit_pct: "", leg_stop_loss_pct: "", trailing_enabled: false, trail_amount: "", trail_type: "points",

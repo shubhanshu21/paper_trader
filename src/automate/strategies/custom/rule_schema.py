@@ -2,15 +2,17 @@
 strategies/custom/rule_schema.py — the composable rule contract that backs
 every user-built custom strategy.
 
-Scope: OPTIONS strategies only (index/stock/commodity options — no
-equity/future legs). A strategy is not a fixed template (STRADDLE/
-STRANGLE/...) — it is any number of option "legs" (buy/sell, CE/PE, how
-to pick the strike) plus one entry rule and one exit rule. Any options
-strategy a user can describe in Streak-style plain English (e.g. "Sell 1
-lot NIFTY 5% OTM CE and 1 lot NIFTY 5% OTM PE, enter at 9:20am, exit at
-20% loss or 40% profit, always square off 1 day before expiry") is just
-one value of this shape — that's what makes this genuinely general
-instead of a menu of five presets.
+Every leg is either an OPTION (index/stock/commodity options — the
+original, still-default scope) or an EQUITY (cash BUY/SELL of the
+underlying itself, no strike/expiry/option_type) — see leg.instrument_type
+below. A strategy is not a fixed template (STRADDLE/STRANGLE/...) — it is
+any number of legs (buy/sell, CE/PE, how to pick the strike, or a plain
+equity leg) plus one entry rule and one exit rule. Any options strategy a
+user can describe in Streak-style plain English (e.g. "Sell 1 lot NIFTY
+5% OTM CE and 1 lot NIFTY 5% OTM PE, enter at 9:20am, exit at 20% loss or
+40% profit, always square off 1 day before expiry") is just one value of
+this shape — that's what makes this genuinely general instead of a menu
+of five presets.
 
 Every strategy a user actually builds is stored as a row in the
 custom_strategies table (rules_json column, see db/models.py) — nothing
@@ -26,13 +28,15 @@ Rules JSON shape::
     {
       "legs": [
         {
+          "instrument_type": "OPTION" | "EQUITY" | null,  # optional, defaults to OPTION (backward compat)
           "action": "BUY" | "SELL",
-          "option_type": "CE" | "PE",
-          "strike_selection": {
+          "option_type": "CE" | "PE",                # required iff instrument_type == OPTION
+          "strike_selection": {                       # required iff instrument_type == OPTION
             "mode": "ATM" | "OTM_PERCENT" | "OTM_POINTS" | "FIXED",
             "value": <number> | null                # null only for ATM
           },
-          "lots": <int> >= 1,
+          "lots": <int> >= 1,                        # for EQUITY: raw share quantity, not an F&O lot count
+                                                       # (see rule_strategy.py's real_lot_size=1 for equity legs)
           "sizing": {                                # optional — omitted/LOTS = today's fixed-lots behavior
             "mode": "LOTS" | "RISK_PCT",
             "risk_pct": <number> 0 < x <= 100         # required iff RISK_PCT — size this leg so its
@@ -89,6 +93,7 @@ see custom_strategy_scheduler.py::_try_exit / backtest/custom_engine.py.
 from typing import List, Optional
 
 _ACTIONS = {"BUY", "SELL"}
+_LEG_INSTRUMENT_TYPES = {"OPTION", "EQUITY"}
 _OPTION_TYPES = {"CE", "PE"}
 _STRIKE_MODES = {"ATM", "OTM_PERCENT", "OTM_POINTS", "FIXED"}
 _ENTRY_MODES = {"IMMEDIATE", "AT_TIME", "CONDITIONAL"}
@@ -193,21 +198,36 @@ def validate_rules(rules: dict) -> List[str]:
             lots = leg.get("lots", 1)
             if not isinstance(lots, int) or lots < 1:
                 errors.append(f"{prefix} lots must be a positive whole number.")
-            if leg.get("option_type") not in _OPTION_TYPES:
-                errors.append(f"{prefix} option type must be CE or PE.")
-            sel = leg.get("strike_selection")
-            if not isinstance(sel, dict) or sel.get("mode") not in _STRIKE_MODES:
-                errors.append(f"{prefix} strike selection must be one of {sorted(_STRIKE_MODES)}.")
-            elif sel["mode"] != "ATM":
-                val = sel.get("value")
-                if not isinstance(val, (int, float)):
-                    errors.append(f"{prefix} strike selection '{sel['mode']}' needs a numeric value.")
-                elif sel["mode"] in ("OTM_PERCENT", "OTM_POINTS") and val < 0:
-                    errors.append(f"{prefix} OTM distance can't be negative.")
+
+            leg_instrument_type = leg.get("instrument_type") or "OPTION"
+            if leg_instrument_type not in _LEG_INSTRUMENT_TYPES:
+                errors.append(f"{prefix} instrument_type must be one of {sorted(_LEG_INSTRUMENT_TYPES)}, or omitted.")
 
             expiry_mode = leg.get("expiry_mode")
-            if expiry_mode is not None and expiry_mode not in _EXPIRY_MODES:
-                errors.append(f"{prefix} expiry_mode must be one of {sorted(_EXPIRY_MODES)}, or omitted.")
+            sel = None
+            if leg_instrument_type == "EQUITY":
+                # No option_type/strike/expiry — a cash equity leg is just
+                # BUY/SELL N shares of the underlying itself.
+                if leg.get("option_type") is not None:
+                    errors.append(f"{prefix} EQUITY legs cannot have an option_type.")
+                if leg.get("strike_selection") is not None:
+                    errors.append(f"{prefix} EQUITY legs cannot have a strike_selection.")
+                if expiry_mode is not None:
+                    errors.append(f"{prefix} EQUITY legs cannot have an expiry_mode (equity has no expiry).")
+            else:
+                if leg.get("option_type") not in _OPTION_TYPES:
+                    errors.append(f"{prefix} option type must be CE or PE.")
+                sel = leg.get("strike_selection")
+                if not isinstance(sel, dict) or sel.get("mode") not in _STRIKE_MODES:
+                    errors.append(f"{prefix} strike selection must be one of {sorted(_STRIKE_MODES)}.")
+                elif sel["mode"] != "ATM":
+                    val = sel.get("value")
+                    if not isinstance(val, (int, float)):
+                        errors.append(f"{prefix} strike selection '{sel['mode']}' needs a numeric value.")
+                    elif sel["mode"] in ("OTM_PERCENT", "OTM_POINTS") and val < 0:
+                        errors.append(f"{prefix} OTM distance can't be negative.")
+                if expiry_mode is not None and expiry_mode not in _EXPIRY_MODES:
+                    errors.append(f"{prefix} expiry_mode must be one of {sorted(_EXPIRY_MODES)}, or omitted.")
 
             errors.extend(_validate_leg_exit(leg.get("exit"), prefix))
             errors.extend(_validate_leg_sizing(leg.get("sizing"), prefix))
@@ -220,8 +240,16 @@ def validate_rules(rules: dict) -> List[str]:
             # malformed data. expiry_mode is part of the signature now —
             # two legs at the SAME strike but DIFFERENT expiries (a
             # calendar spread) are legitimately different instruments,
-            # not a duplicate.
-            if action in _ACTIONS and leg.get("option_type") in _OPTION_TYPES and isinstance(sel, dict) and sel.get("mode") in _STRIKE_MODES:
+            # not a duplicate. EQUITY legs are matched on (action,
+            # "EQUITY") only — two EQUITY BUY legs on the same underlying
+            # are always the same instruction, no strike to disambiguate.
+            if leg_instrument_type == "EQUITY" and action in _ACTIONS:
+                signature = (action, "EQUITY", None, None, None)
+                if signature in seen_leg_signatures:
+                    errors.append(f"{prefix} identical to Leg {seen_leg_signatures[signature]} — combine them into one leg with a higher lot/share count instead.")
+                else:
+                    seen_leg_signatures[signature] = i
+            elif action in _ACTIONS and leg.get("option_type") in _OPTION_TYPES and isinstance(sel, dict) and sel.get("mode") in _STRIKE_MODES:
                 value = sel.get("value")
                 signature = (action, leg["option_type"], sel["mode"], float(value) if isinstance(value, (int, float)) else None, expiry_mode)
                 if signature in seen_leg_signatures:
@@ -277,6 +305,9 @@ def _leg_phrase(leg: dict) -> str:
     action = leg.get("action", "?")
     lots = leg.get("lots", 1)
     sizing = leg.get("sizing") or {}
+    if (leg.get("instrument_type") or "OPTION") == "EQUITY":
+        size_txt = f"risking {sizing['risk_pct']}% of capital" if sizing.get("mode") == "RISK_PCT" else f"{lots} share{'s' if lots != 1 else ''}"
+        return f"{action} {size_txt} of the underlying (equity)"
     size_txt = f"risking {sizing['risk_pct']}% of capital" if sizing.get("mode") == "RISK_PCT" else f"{lots} {'lot' if lots == 1 else 'lots'}"
     phrase = f"{action} {size_txt} {_strike_phrase(leg)} {leg.get('option_type')}"
     if leg.get("expiry_mode"):

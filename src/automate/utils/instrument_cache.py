@@ -169,21 +169,54 @@ class InstrumentCache:
 
     def resolve_key(self, symbol: str) -> Optional[str]:
         """
-        Resolve `symbol` as either an equity OR an index — tries the equity
-        segment first (resolve_equity_key), then falls back to the INDEX
-        segment. Lets callers pass a plain ticker ('RELIANCE' or 'NIFTY')
+        Resolve `symbol` as an equity, an index, OR an MCX commodity —
+        tries the equity segment first (resolve_equity_key), then the
+        INDEX segment, then falls back to the nearest MCX commodity
+        future (see resolve_commodity_key — MCX has no separate "spot"
+        instrument at all, only futures/options-on-futures, so the
+        nearest future IS the underlying's tradable instrument_key).
+        Lets callers pass a plain ticker ('RELIANCE', 'NIFTY', or 'GOLD')
         without needing to know in advance which segment it's in.
 
         Index rows carry a matching `tradingsymbol` (e.g. 'NIFTY' →
         'NSE_INDEX|Nifty 50', 'BANKNIFTY' → 'NSE_INDEX|Nifty Bank').
 
         Returns:
-            Instrument key string, or None if not found in either segment.
+            Instrument key string, or None if not found in any segment.
         """
         key = self.resolve_equity_key(symbol)
         if key:
             return key
-        return self._resolve_index(symbol.upper().strip())
+        key = self._resolve_index(symbol.upper().strip())
+        if key:
+            return key
+        commodity = self.resolve_commodity_key(symbol)
+        return commodity[0] if commodity else None
+
+    def resolve_commodity_key(self, symbol: str) -> Optional[tuple]:
+        """
+        Return (instrument_key, expiry) of the nearest-dated MCX future
+        for `symbol` (e.g. 'GOLD', 'CRUDEOIL', 'SILVERM'), or None if it
+        has no listed MCX contract. MCX commodities have no cash-spot
+        instrument in Upstox's model at all — every price (for ATM-strike
+        calc, Black-76 F, live LTP) comes from this nearest future, same
+        role NSE's resolve_nearest_future_key() plays for Greeks there
+        (the difference: for MCX this IS the underlying's own tradable
+        key, not just a Greeks input — MCX options are ALREADY
+        futures-struck, so Black-76 needs no separate spot-vs-futures
+        distinction for commodities).
+        """
+        import re
+        df = self.get_or_refresh()
+        symbol = symbol.upper().strip()
+        fut = df[(df["exchange"] == "MCX_FO") & (df["instrument_type"] == "FUTCOM")]
+        pattern = re.compile(rf"^{re.escape(symbol)}\d{{2}}[A-Z]{{3}}FUT$")
+        matches = fut[fut["symbol"].astype(str).str.match(pattern)]
+        if matches.empty:
+            return None
+        matches = matches.sort_values("expiry")
+        row = matches.iloc[0]
+        return str(row["instrument_key"]), str(row["expiry"])
 
     def resolve_lot_size(self, symbol: str) -> Optional[int]:
         """
@@ -210,7 +243,7 @@ class InstrumentCache:
         try:
             import re
             pattern = re.compile(rf"^{re.escape(symbol)}\d{{2}}[A-Z]{{3}}")
-            fo = df[df["exchange"] == "NSE_FO"]
+            fo = df[df["exchange"].isin(("NSE_FO", "MCX_FO"))]
             matches = fo[fo["symbol"].astype(str).str.match(pattern)]
             if matches.empty:
                 log.warning("No F&O contracts found for '%s' to resolve lot size from.", symbol)
@@ -256,7 +289,7 @@ class InstrumentCache:
         try:
             import re
             pattern = re.compile(rf"^{re.escape(symbol)}\d{{2}}[A-Z]{{3}}")
-            fo = df[df["exchange"] == "NSE_FO"]
+            fo = df[df["exchange"].isin(("NSE_FO", "MCX_FO"))]
             matches = fo[fo["symbol"].astype(str).str.match(pattern)]
             matches = matches[matches["option_type"].isin(["CE", "PE"])]
             if matches.empty:
@@ -284,20 +317,23 @@ class InstrumentCache:
     def list_tradable_symbols(self) -> dict:
         """
         Every underlying that actually has listed F&O contracts today,
-        split into stocks vs indices — sourced from the real downloaded
-        instrument master (NSE_FO futures rows), not any hardcoded
-        convenience list. Used by the control-panel API so a user can pick
-        from what's genuinely tradable right now, not just the ~11 stocks
-        config.py happens to mention for --all bulk-download purposes.
+        split into stocks/indices/commodities — sourced from the real
+        downloaded instrument master (NSE_FO + MCX_FO futures rows), not
+        any hardcoded convenience list. Used by the control-panel API so a
+        user can pick from what's genuinely tradable right now, not just
+        the ~11 stocks config.py happens to mention for --all bulk-
+        download purposes.
 
         Futures tradingsymbols follow `{SYMBOL}{2-digit-year}{3-letter
-        -month}FUT` (e.g. 'RELIANCE26AUGFUT') — the underlying ticker is
-        recovered by stripping that trailing date+FUT suffix, then
-        deduplicated across the (usually 3) listed expiries.
+        -month}FUT` (e.g. 'RELIANCE26AUGFUT', 'GOLD27FEBFUT') — the
+        underlying ticker is recovered by stripping that trailing
+        date+FUT suffix, then deduplicated across the (usually 3) listed
+        expiries. Same pattern for both exchanges.
         """
         import re
         df = self.get_or_refresh()
         fut = df[df["exchange"] == "NSE_FO"]
+        mcx_fut = df[(df["exchange"] == "MCX_FO") & (df["instrument_type"] == "FUTCOM")]
         pattern = re.compile(r"^([A-Z0-9\-&]+?)\d{2}[A-Z]{3}FUT$")
 
         def _extract(symbols) -> list:
@@ -311,6 +347,7 @@ class InstrumentCache:
         return {
             "stocks": _extract(fut[fut["instrument_type"] == "FUTSTK"]["symbol"]),
             "indices": _extract(fut[fut["instrument_type"] == "FUTIDX"]["symbol"]),
+            "commodities": _extract(mcx_fut["symbol"]),
         }
 
     def resolve_nearest_future_key(self, symbol: str) -> Optional[tuple]:

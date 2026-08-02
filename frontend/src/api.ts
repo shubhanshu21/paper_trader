@@ -1,4 +1,5 @@
 // api.ts — API client for paper trading application
+import type { CustomStrategy, CustomStrategyRules, PortfolioGreeksResponse } from './types/customStrategy';
 
 // Builds a same-origin WebSocket URL (nginx proxies /ws/ to the API, see
 // deploy/automate-nginx.conf) so this works unmodified in dev and prod.
@@ -253,53 +254,6 @@ export interface AdvancedOrdersList {
   oco_orders: OcoOrder[];
   trailing_stops: TrailingStopOrder[];
   bracket_orders: BracketOrder[];
-}
-
-// Custom strategies (strategy builder) — the full Phase 3 per-leg/entry/exit
-// rules shape (per-leg exit/trailing/expiry_mode/sizing, conditional entry).
-// Every field below the top level is optional/nullable so a pre-Phase-3
-// strategy (none of these set) round-trips unchanged — see rule_schema.py.
-export interface CustomStrategyLeg {
-  action: 'BUY' | 'SELL';
-  option_type: 'CE' | 'PE';
-  strike_selection: { mode: 'ATM' | 'OTM_PERCENT' | 'OTM_POINTS' | 'FIXED'; value: number | null };
-  lots: number;
-  expiry_mode?: 'WEEKLY' | 'MONTHLY' | null;
-  sizing?: { mode: 'LOTS' | 'RISK_PCT'; risk_pct?: number } | null;
-  exit?: {
-    take_profit_pct: number | null;
-    stop_loss_pct: number | null;
-    trailing?: { enabled: boolean; trail_amount: number; trail_type: 'points' | 'percent' } | null;
-  } | null;
-}
-
-export interface CustomStrategyRules {
-  legs: CustomStrategyLeg[];
-  entry: {
-    mode: 'IMMEDIATE' | 'AT_TIME' | 'CONDITIONAL';
-    time: string | null;
-    condition?:
-      | { type: 'MA_CROSSOVER'; period_days: number; direction: 'ABOVE' | 'BELOW' }
-      | { type: 'IV_RANK'; operator: 'ABOVE' | 'BELOW'; threshold: number }
-      | null;
-  };
-  expiry?: { mode: 'WEEKLY' | 'MONTHLY' };
-  exit: { take_profit_pct: number | null; stop_loss_pct: number | null; exit_time: string | null; exit_days_before_expiry: number };
-}
-
-export interface CustomStrategy {
-  id: number;
-  name: string;
-  description: string;
-  instrument_type: string;
-  symbols: string[];
-  rules: CustomStrategyRules | null;
-  status: string;
-  backtest_return_pct: number | null;
-  paper_return_pct: number | null;
-  live_return_pct: number | null;
-  created_at: string;
-  deployed_at: string | null;
 }
 
 export interface LeaderboardRow {
@@ -636,4 +590,5 @@ export const api = {
     }),
   deleteCustomStrategy: (id: number) =>
     request<{ status: string }>(`/api/custom-strategies/${id}`, { method: 'DELETE' }),
+  getPortfolioGreeks: () => request<PortfolioGreeksResponse>('/api/custom-strategies/portfolio/greeks'),
 };

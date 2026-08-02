@@ -33,6 +33,29 @@ log = get_logger(__name__)
 _API_VERSION = "v2"
 _ORDER_API_VERSION = "v3"
 
+# The rest of this codebase (BaseBroker's own default, MockBroker,
+# PaperBroker, backtest engines, config.MarketConfig.PRODUCT) uses the
+# human-readable convention 'NRML'/'MIS'/'CNC' for a product type — none of
+# those brokers validate it strictly, it's just a label there. Upstox's
+# REAL order/margin APIs (PlaceOrderV3Request, Instrument) instead require
+# one of the EXACT short codes below and raise ValueError on anything else
+# (verified against upstox_client's generated model — 'NRML' is NOT
+# accepted). This is the one place real Upstox calls happen, so it's the
+# one place that needs to translate between the two conventions — every
+# other file in the codebase can keep using 'NRML' unmodified.
+_PRODUCT_ALIASES = {"NRML": "D", "MIS": "I", "CNC": "D"}
+_UPSTOX_VALID_PRODUCTS = {"D", "I", "MTF"}
+
+
+def _to_upstox_product(product: str) -> str:
+    code = _PRODUCT_ALIASES.get(product.upper(), product.upper())
+    if code not in _UPSTOX_VALID_PRODUCTS:
+        raise ValueError(
+            f"Unknown product type '{product}' — expected one of "
+            f"{sorted(_PRODUCT_ALIASES) + sorted(_UPSTOX_VALID_PRODUCTS)}."
+        )
+    return code
+
 # Retry settings for transient network errors
 _MAX_RETRIES = 3
 _RETRY_DELAY_SEC = 2.0
@@ -74,6 +97,8 @@ class UpstoxBroker(BaseBroker):
         # place_multi_order() (real batch/basket submission) only exists on
         # the v2 OrderApi, not OrderApiV3 — used by place_basket_sell_order().
         self._order_api_v2 = upstox_client.OrderApi(self._api_client)
+        # Real SPAN+exposure Margin Calculator — see get_required_margin().
+        self._charge_api = upstox_client.ChargeApi(self._api_client)
 
         # Instrument master cache (downloaded daily before market open)
         self._cache = InstrumentCache()
@@ -109,21 +134,31 @@ class UpstoxBroker(BaseBroker):
 
     def resolve_instrument_key(self, symbol: str) -> str:
         """
-        Dynamically resolve the Upstox NSE_EQ instrument key for a stock symbol.
+        Dynamically resolve the Upstox instrument key for a symbol — tries
+        the NSE equity segment first, then falls back to the INDEX segment
+        (see InstrumentCache.resolve_key()), so this works for a stock
+        ('RELIANCE' -> 'NSE_EQ|...') AND an index ('NIFTY' ->
+        'NSE_INDEX|Nifty 50') alike.
 
-        Searches the daily instrument master CSV for an exact symbol match
-        in the NSE equity segment and returns the instrument_key string.
+        MockBroker (backtest) and the PaperBroker-internal futures-key
+        lookup already call InstrumentCache.resolve_key() directly — this
+        used to call resolve_equity_key() only, which has no index
+        fallback, so a real (paper or live) INDEX custom strategy would
+        raise here immediately in RuleBasedStrategy.__init__() the moment
+        it tried to resolve NIFTY/BANKNIFTY/FINNIFTY/MIDCPNIFTY, even
+        though the exact same symbol backtests fine (MockBroker never hit
+        this bug). Fixed to match the other two broker's resolution paths.
 
         Args:
-            symbol: NSE trading symbol (e.g., 'RELIANCE', 'TCS').
+            symbol: NSE trading symbol (e.g., 'RELIANCE', 'NIFTY').
 
         Returns:
-            Upstox instrument_key string (e.g., 'NSE_EQ|INE002A01018').
+            Upstox instrument_key string.
 
         Raises:
             RuntimeError: If the symbol is not found in today's master.
         """
-        key = self._cache.resolve_equity_key(symbol)
+        key = self._cache.resolve_key(symbol)
         if not key:
             raise RuntimeError(
                 f"Upstox: Could not resolve instrument_key for '{symbol}'. "
@@ -139,6 +174,48 @@ class UpstoxBroker(BaseBroker):
     def get_strike_step(self, symbol: str) -> Optional[float]:
         """Real current strike interval for `symbol`, from today's instrument master. See BaseBroker."""
         return self._cache.resolve_strike_step(symbol)
+
+    def get_required_margin(
+        self, instrument_key: str, quantity: int, transaction_type: str, product: str = "D",
+    ) -> Optional[float]:
+        """
+        Real SPAN + exposure margin via Upstox's Margin Calculator API
+        (POST /charges/margin) — the actual figure the exchange/broker
+        would block for this exact order, not a flat-percentage estimate.
+        See BaseBroker.get_required_margin for the None-means-unavailable
+        contract every caller must honor.
+        """
+        instrument = {"instrument_key": instrument_key, "quantity": quantity, "transaction_type": transaction_type, "product": product}
+        return self.get_basket_required_margin([instrument])
+
+    def get_basket_required_margin(self, instruments: list[dict]) -> Optional[float]:
+        """
+        Real NETTED SPAN + exposure margin for a whole basket of legs in
+        ONE call via Upstox's Margin Calculator API (POST /charges/margin)
+        — the exchange's own hedge-benefit netting applies when multiple
+        instruments are passed together (e.g. a short strangle needs
+        meaningfully less combined margin than its two legs summed
+        independently). See BaseBroker.get_basket_required_margin for the
+        None-means-unavailable contract every caller must honor.
+        """
+        try:
+            sdk_instruments = [
+                upstox_client.Instrument(
+                    instrument_key=i["instrument_key"], quantity=i["quantity"],
+                    product=_to_upstox_product(i.get("product", "D")), transaction_type=i["transaction_type"],
+                )
+                for i in instruments
+            ]
+            response = self._charge_api.post_margin(
+                body=upstox_client.MarginRequest(instruments=sdk_instruments),
+            )
+            if response.status != "success" or response.data is None:
+                log.warning("UpstoxBroker: margin calculator returned no data for basket of %d instrument(s).", len(instruments))
+                return None
+            return float(response.data.required_margin)
+        except Exception as exc:
+            log.warning("UpstoxBroker: margin calculator call failed for basket of %d instrument(s): %s", len(instruments), exc)
+            return None
 
     def get_order_status(self, order_id: str) -> Optional[str]:
         """
@@ -554,7 +631,7 @@ class UpstoxBroker(BaseBroker):
 
         order_request = upstox_client.PlaceOrderV3Request(
             quantity=quantity,
-            product=product,           # 'D' = NRML | 'I' = MIS
+            product=_to_upstox_product(product),  # translates the codebase-wide 'NRML'/'MIS' convention to Upstox's 'D'/'I' — see _to_upstox_product
             validity="DAY",            # Always DAY for options swing entries
             price=price,               # 0 for MARKET/SL-M; limit price otherwise
             tag=tag,
@@ -737,7 +814,7 @@ class UpstoxBroker(BaseBroker):
             tag = tag[:16] if len(tag) > 16 else tag
             body.append(upstox_client.MultiOrderRequest(
                 quantity=leg["quantity"],
-                product=leg.get("product", "D"),
+                product=_to_upstox_product(leg.get("product", "D")),
                 validity="DAY",
                 price=0,
                 tag=tag,

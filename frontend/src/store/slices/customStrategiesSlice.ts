@@ -1,5 +1,5 @@
 import { createSlice } from '@reduxjs/toolkit';
-import { CustomStrategy } from '../../api';
+import type { CustomStrategy } from '../../types/customStrategy';
 import {
   fetchCustomStrategies, createCustomStrategy, updateCustomStrategy,
   updateCustomStrategyStatus, deleteCustomStrategy,
