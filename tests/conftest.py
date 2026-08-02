@@ -114,3 +114,59 @@ def db_session(db_session_factory):
     session = db_session_factory()
     yield session
     session.close()
+
+
+@pytest.fixture(autouse=True)
+def _never_touch_real_notifications(db_session_factory, monkeypatch):
+    """
+    Global safety net, applied to EVERY test automatically — no test file
+    needs to remember this itself.
+
+    utils/notify.py writes an in-app Notification row via a LOCAL `from
+    automate.db.engine import SessionLocal` (re-resolved fresh on every
+    call, not a fixed import), and also fires a real Telegram alert. Any
+    test that exercises a real failure/kill-switch code path (e.g.
+    BaseStrategy's exception handler, RuleBasedStrategy's partial-fill
+    unwind) — even one that has nothing to do with notifications as its
+    actual subject — ends up calling the REAL notify() unless the test
+    explicitly mocks it. This actually happened: test_partial_fill_auto_unwind.py
+    (pre-existing, testing an unrelated unwind bug) silently wrote ~240
+    fake "TESTSTOCK kill switch" rows into the PRODUCTION notifications
+    table and fired real Telegram alerts to the operator's phone, every
+    time the suite ran, across multiple sessions — discovered only when
+    they showed up in the live notification bell.
+
+    Patching automate.db.engine.SessionLocal here redirects any such
+    call to this test's own automate_test transaction (rolled back same
+    as everything else) instead of production, and patching
+    send_telegram_alert prevents the real HTTP call outright — both
+    apply regardless of which module actually calls notify(), and
+    regardless of whether that test file remembered to mock anything.
+    Individual tests that want to assert notify() WAS called still
+    patch it directly at their own call site (e.g. `sched.notify`) —
+    that continues to work exactly as before; this fixture only affects
+    the path notify() itself would otherwise take under the hood.
+    """
+    import sys
+    import automate.utils.telegram_alert as telegram_alert
+    # automate/db/__init__.py does `from .engine import engine`, which
+    # shadows the `automate.db.engine` package ATTRIBUTE with the Engine
+    # instance itself — `import automate.db.engine as db_engine` would
+    # bind to the Engine, not the module. Go through sys.modules instead,
+    # which always holds the real submodule regardless (see this same fix
+    # already applied in test_wallet_real_margin.py etc.).
+    db_engine = sys.modules["automate.db.engine"]
+    monkeypatch.setattr(db_engine, "SessionLocal", db_session_factory)
+    # Patches the actual network call (requests.post), not
+    # send_telegram_alert itself — test_telegram_alert.py's own tests
+    # exercise send_telegram_alert directly and patch requests.post
+    # themselves; since that happens inside the test body (after this
+    # autouse fixture's setup already ran), their own patch simply
+    # overrides this one for those specific tests, same as before. Returns
+    # a fake 200 response object (not None) — send_telegram_alert reads
+    # resp.status_code unconditionally, and would crash on a bare None.
+    class _FakeTelegramResponse:
+        status_code = 200
+        text = "ok"
+
+    monkeypatch.setattr(telegram_alert.requests, "post", lambda *a, **k: _FakeTelegramResponse())

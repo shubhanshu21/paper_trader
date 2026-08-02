@@ -46,12 +46,31 @@ export default function NotificationBell() {
   useEffect(() => {
     let cancelled = false;
     let reconnectTimer: ReturnType<typeof setTimeout>;
+    let watchdogTimer: ReturnType<typeof setInterval>;
+
+    // The backend (ws_notifications.py) pushes a message every 4s
+    // unconditionally, even with nothing new, specifically so the client
+    // can tell a live connection from a dead one. Browsers/proxies can
+    // silently drop a WebSocket without ever firing onclose/onerror (a
+    // "half-open" connection, e.g. after a laptop sleeps, a network
+    // switch, or a NAT/proxy idling it out) — the socket looks OPEN but
+    // will never receive another message, so new notifications stop
+    // arriving until something else forces a fresh connection (which is
+    // exactly the "count updates but the list doesn't, until I reload"
+    // symptom this watchdog fixes). If nothing arrives for 3x the
+    // server's own push interval, assume the connection is dead and
+    // force a reconnect rather than waiting on a close event that may
+    // never come.
+    const STALE_AFTER_MS = 12_000;
+    let lastMessageAt = Date.now();
 
     const connect = () => {
       if (cancelled) return;
       const ws = new WebSocket(wsUrl("/ws/notifications"));
       wsRef.current = ws;
+      lastMessageAt = Date.now();
       ws.onmessage = (event) => {
+        lastMessageAt = Date.now();
         const data = JSON.parse(event.data);
         if (data.type === "snapshot") {
           setNotifications(data.notifications || []);
@@ -73,9 +92,17 @@ export default function NotificationBell() {
     };
     connect();
 
+    watchdogTimer = setInterval(() => {
+      if (cancelled) return;
+      if (Date.now() - lastMessageAt > STALE_AFTER_MS) {
+        wsRef.current?.close(); // triggers onclose -> the normal reconnect path above
+      }
+    }, 4000);
+
     return () => {
       cancelled = true;
       clearTimeout(reconnectTimer);
+      clearInterval(watchdogTimer);
       wsRef.current?.close();
       wsRef.current = null;
     };
