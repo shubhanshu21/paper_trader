@@ -126,3 +126,38 @@ class TestGetRequiredMargin:
         broker._charge_api = MagicMock()
         broker._charge_api.post_margin.return_value = fake_response
         assert broker.get_required_margin("NSE_FO|12345", 50, "SELL") is None
+
+
+class TestGetBrokerPositions:
+    """
+    get_broker_positions() — real broker-side net open quantity per
+    instrument, added for utils/position_reconciliation.py's crash-window
+    safety net (see that module's docstring for the scenario this guards
+    against).
+    """
+    def test_returns_net_quantity_keyed_by_instrument_token(self, broker):
+        long_pos = MagicMock(instrument_token="NSE_FO|1", quantity=50)
+        short_pos = MagicMock(instrument_token="NSE_FO|2", quantity=-25)
+        flat_pos = MagicMock(instrument_token="NSE_FO|3", quantity=0)  # Upstox omits these in practice, but tolerate it
+        broker._portfolio_api = MagicMock()
+        broker._portfolio_api.get_positions.return_value = MagicMock(data=[long_pos, short_pos, flat_pos])
+
+        result = broker.get_broker_positions()
+
+        assert result == {"NSE_FO|1": 50, "NSE_FO|2": -25}
+        broker._portfolio_api.get_positions.assert_called_once_with(api_version="2.0")
+
+    def test_returns_empty_dict_when_no_positions(self, broker):
+        broker._portfolio_api = MagicMock()
+        broker._portfolio_api.get_positions.return_value = MagicMock(data=[])
+        assert broker.get_broker_positions() == {}
+
+    def test_returns_none_when_response_data_is_none(self, broker):
+        broker._portfolio_api = MagicMock()
+        broker._portfolio_api.get_positions.return_value = MagicMock(data=None)
+        assert broker.get_broker_positions() is None
+
+    def test_returns_none_on_api_failure_rather_than_raising(self, broker):
+        broker._portfolio_api = MagicMock()
+        broker._portfolio_api.get_positions.side_effect = RuntimeError("network error")
+        assert broker.get_broker_positions() is None

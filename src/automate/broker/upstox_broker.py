@@ -18,7 +18,7 @@ Error handling strategy:
 """
 
 import time
-from typing import Optional
+from typing import Dict, Optional
 
 import upstox_client
 from upstox_client.rest import ApiException
@@ -99,6 +99,9 @@ class UpstoxBroker(BaseBroker):
         self._order_api_v2 = upstox_client.OrderApi(self._api_client)
         # Real SPAN+exposure Margin Calculator — see get_required_margin().
         self._charge_api = upstox_client.ChargeApi(self._api_client)
+        # Real broker-side open positions — see get_broker_positions(),
+        # used only for reconciliation against this app's own DB records.
+        self._portfolio_api = upstox_client.PortfolioApi(self._api_client)
 
         # Instrument master cache (downloaded daily before market open)
         self._cache = InstrumentCache()
@@ -215,6 +218,30 @@ class UpstoxBroker(BaseBroker):
             return float(response.data.required_margin)
         except Exception as exc:
             log.warning("UpstoxBroker: margin calculator call failed for basket of %d instrument(s): %s", len(instruments), exc)
+            return None
+
+    def get_broker_positions(self) -> Optional[Dict[str, int]]:
+        """
+        Real broker-side NET open quantity per instrument_token, straight
+        from Upstox's own books (GET /v2/portfolio/short-term-positions) —
+        the actual source of truth for "what does the exchange think I'm
+        holding right now," used ONLY for reconciliation against this
+        app's own DB records (utils/position_reconciliation.py), never for
+        order-placement decisions. Positive = net long, negative = net
+        short, an instrument absent from the returned dict means flat
+        (Upstox's own API omits fully-squared-off instruments rather than
+        returning a zero row).
+
+        Returns None on any failure (network, auth) — the caller must
+        treat that as "couldn't check right now," not "confirmed flat."
+        """
+        try:
+            response = self._portfolio_api.get_positions(api_version="2.0")
+            if response.data is None:
+                return None
+            return {p.instrument_token: int(p.quantity) for p in response.data if p.quantity}
+        except Exception as exc:
+            log.warning("UpstoxBroker: could not fetch broker positions for reconciliation: %s", exc)
             return None
 
     def get_order_status(self, order_id: str) -> Optional[str]:

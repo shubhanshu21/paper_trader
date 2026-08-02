@@ -31,8 +31,9 @@ Each tick (every _TICK_SEC, only during real NSE market hours):
 """
 import asyncio
 import json
+import time
 from datetime import date, datetime
-from typing import Optional
+from typing import Dict, Optional
 from zoneinfo import ZoneInfo
 
 from automate.compliance.sebi_rules import AuditTrail, KillSwitch, OrderRateLimiter, assert_market_is_open
@@ -50,6 +51,13 @@ log = get_logger(__name__)
 
 _TICK_SEC_OPEN = 60
 _TICK_SEC_CLOSED = 300
+
+# How often to run the LIVE-position reconciliation safety net (see
+# utils/position_reconciliation.py) — deliberately much coarser than the
+# trading tick itself; it exists to catch drift from a rare crash-window
+# event, not to run on every tick and hammer the broker's positions API.
+_RECONCILE_INTERVAL_SEC = 600
+_last_reconcile_at: Optional[float] = None
 
 # entry/exit "time" rules (e.g. "10:00") are entered by the user as NSE
 # market-hours-of-day (IST) — the server itself runs on UTC, so comparing
@@ -664,8 +672,89 @@ def dtime_or_none(expiry_str: Optional[str]):
         return None
 
 
+def _reconcile_live_positions(db, brokers: dict) -> None:
+    """
+    Safety net for the crash window described in
+    utils/position_reconciliation.py's module docstring: this app places
+    a real LIVE order BEFORE committing the matching DB row, so a process
+    death in between can leave the broker holding a real position this
+    app has no record of (or the mirror case on exit). Compares this
+    app's OPEN mode='live' CustomStrategyPosition rows against the real
+    broker's actual net positions and ALERTS (never auto-corrects — a
+    wrong automatic fix on a live account is worse than a detected,
+    human-reviewed drift) on any mismatch. PAPER mode has no real
+    exchange to reconcile against and is out of scope here.
+    """
+    from automate.utils.position_reconciliation import reconcile_live_positions
+
+    live_broker = brokers.get("live")
+    if live_broker is None:
+        return
+
+    live_legs = db.query(CustomStrategyPosition).filter(
+        CustomStrategyPosition.mode == "live", CustomStrategyPosition.status == "OPEN",
+    ).all()
+    if not live_legs:
+        return
+
+    broker_net = live_broker.get_broker_positions()
+    mismatches = reconcile_live_positions(
+        [{"instrument_key": l.instrument_key, "transaction_type": l.transaction_type, "quantity": l.quantity} for l in live_legs],
+        broker_net,
+    )
+    if mismatches is None:
+        log.warning("custom_strategy_scheduler: position reconciliation skipped this cycle — could not fetch broker positions.")
+        return
+    if not mismatches:
+        return
+
+    log.critical("custom_strategy_scheduler: LIVE POSITION RECONCILIATION MISMATCH: %s", mismatches)
+
+    strategy_ids = {leg.strategy_id for leg in live_legs}
+    strategies = {s.id: s for s in db.query(CustomStrategy).filter(CustomStrategy.id.in_(strategy_ids)).all()}
+    legs_by_instrument: Dict[str, list] = defaultdict(list)
+    for leg in live_legs:
+        legs_by_instrument[leg.instrument_key].append(leg)
+
+    # Group by owning user (via each mismatched instrument's leg(s) ->
+    # strategy -> user_id) so each account only ever sees its own drift —
+    # a mismatch with NO matching DB leg at all (a fully orphaned broker
+    # position) has no owner to attribute it to and goes out system-wide.
+    mismatches_by_user: Dict[Optional[int], list] = defaultdict(list)
+    for m in mismatches:
+        owning_legs = legs_by_instrument.get(m["instrument_key"], [])
+        user_ids = {strategies[l.strategy_id].user_id for l in owning_legs if l.strategy_id in strategies} or {None}
+        for uid in user_ids:
+            mismatches_by_user[uid].append(m)
+
+    for user_id, user_mismatches in mismatches_by_user.items():
+        lines = "\n".join(
+            f"  {m['instrument_key']}: app expects net qty {m['db_quantity']}, broker shows {m['broker_quantity']}"
+            for m in user_mismatches
+        )
+        notify(
+            "custom_strategy",
+            f"LIVE position mismatch detected between this app's records and your real Upstox account:\n{lines}\n"
+            f"This can happen if the app restarted mid-order, or a position changed outside the app. "
+            f"Nothing was auto-corrected — please verify your actual positions manually.",
+            level="error",
+            user_id=user_id,
+        )
+
+
 async def custom_strategy_scheduler() -> None:
     """Persistent background task — see module docstring. Never raises; logs and keeps ticking."""
+    from automate.utils.single_instance_lock import acquire_singleton_lock
+
+    if not acquire_singleton_lock("custom_strategy_scheduler"):
+        log.critical(
+            "custom_strategy_scheduler: another instance already holds this lock — refusing to start a "
+            "second trading loop (it would independently double-place every live order). If you're SURE "
+            "no other instance of this app is actually running, delete "
+            "logs/custom_strategy_scheduler.lock and restart."
+        )
+        return
+
     log.info("custom_strategy_scheduler: started.")
     while True:
         try:
@@ -687,6 +776,15 @@ async def custom_strategy_scheduler() -> None:
                                 _try_entry(db, strategy, broker)
                             except Exception as exc:
                                 log.error("custom_strategy_scheduler: tick failed for strategy %s: %s", strategy.id, exc, exc_info=True)
+
+                        global _last_reconcile_at
+                        now_monotonic = time.monotonic()
+                        if _last_reconcile_at is None or now_monotonic - _last_reconcile_at >= _RECONCILE_INTERVAL_SEC:
+                            _last_reconcile_at = now_monotonic
+                            try:
+                                _reconcile_live_positions(db, brokers)
+                            except Exception as exc:
+                                log.error("custom_strategy_scheduler: position reconciliation failed: %s", exc, exc_info=True)
                     finally:
                         db.close()
         except Exception as exc:
