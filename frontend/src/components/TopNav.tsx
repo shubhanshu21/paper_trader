@@ -4,6 +4,7 @@ import { User, LogOut, Menu, X } from "lucide-react";
 import { User as UserType } from "../api";
 import { C, FONT } from "./Common";
 import NotificationBell from "./NotificationBell";
+import MarketStatusBadge from "./MarketStatusBadge";
 
 const NAV = ["Dashboard", "Strategies", "Orders", "Advanced Orders", "Holdings", "Positions", "Leaderboard"];
 
@@ -75,6 +76,9 @@ export default function TopNav({ currentUser, onLogout }: TopNavProps) {
               </button>
             );
           })}
+          <div className="hidden md:block">
+            <MarketStatusBadge />
+          </div>
           <div className="hidden md:block">
             <NotificationBell />
           </div>
@@ -152,6 +156,7 @@ export default function TopNav({ currentUser, onLogout }: TopNavProps) {
       {mobileMenu && (
         <div className="md:hidden absolute top-16 left-0 right-0 bg-white border-b shadow-lg z-30" style={{ borderColor: C.border2 }}>
           <div className="flex flex-col p-4 space-y-3">
+            <div><MarketStatusBadge /></div>
             {NAV.map((n) => {
               const active = currentPage === navSlug(n);
               return (

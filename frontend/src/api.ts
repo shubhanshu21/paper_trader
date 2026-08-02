@@ -430,6 +430,8 @@ export const api = {
     }),
   googleOauthStatus: () =>
     request<{ configured: boolean }>('/api/auth/oauth/google/status'),
+  marketStatus: () =>
+    request<{ open: boolean; message: string; server_time_ist: string }>('/api/market-status'),
   register: (username: string, email: string, password: string) =>
     request<User>('/api/auth/register', {
       method: 'POST',

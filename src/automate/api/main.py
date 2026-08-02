@@ -154,7 +154,7 @@ if PanelAuthConfig.ENABLED:
     async def require_auth_middleware(request: Request, call_next) -> Response:
         path = request.url.path
         # Allow auth routes and health check without authentication
-        if path.startswith("/api/auth/") or path == "/api/health":
+        if path.startswith("/api/auth/") or path in ("/api/health", "/api/market-status"):
             return await call_next(request)
         # Allow frontend static assets (non-/api paths)
         if not path.startswith("/api/") and not path.startswith("/ws/"):
@@ -260,6 +260,28 @@ async def _start_background_tasks():
 def health():
     auth_status = "enabled" if PanelAuthConfig.ENABLED else "disabled"
     return {"ok": True, "auth": auth_status}
+
+
+@app.get("/api/market-status")
+def market_status():
+    """
+    Whether NSE F&O is open right now — same real check (weekday, holiday
+    calendar, 09:15-15:30 IST session window) every scheduler already uses
+    before entering/exiting a position, exposed so the UI can show it too
+    instead of leaving "will my strategy trade today?" a mystery. No auth
+    required (see require_auth_middleware's exemption below) — this is as
+    non-sensitive as /api/health, and the login page can use it too.
+    """
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    from automate.compliance.sebi_rules import assert_market_is_open
+
+    now_ist = datetime.now(ZoneInfo("Asia/Kolkata"))
+    try:
+        assert_market_is_open()
+        return {"open": True, "message": "Market is open", "server_time_ist": now_ist.isoformat()}
+    except RuntimeError as exc:
+        return {"open": False, "message": str(exc), "server_time_ist": now_ist.isoformat()}
 
 
 # ---------------------------------------------------------------------------
