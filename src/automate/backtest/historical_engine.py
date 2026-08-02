@@ -1,7 +1,7 @@
 """
 backtest/historical_engine.py — Runs the REAL strategy class against every
-historical monthly expiry cycle found in the bhavcopy database
-(dataset/fno_bhavcopy.db, built by scripts/import_bhavcopy_to_db.py).
+historical monthly expiry cycle found in the MySQL fno_bhavcopy table
+(bulk-loaded by scripts/import_bhavcopy_to_db.py).
 
 This answers "what would this strategy's win rate / P&L distribution have
 looked like historically" — not a single backtest run, but aggregate
@@ -112,7 +112,6 @@ class HistoricalCycleEngine:
 
     def __init__(
         self,
-        db_path: Optional[str],
         symbol: str,
         strategy: str = "ten_percent_otm_strangle",
         num_lots: int = 1,
@@ -476,7 +475,6 @@ def main() -> None:
                          help="Which strategy to simulate. Only one is implemented today.")
     parser.add_argument("--type", choices=["index", "stock"], default="index",
                          help="index -> FUTIDX/OPTIDX rows, stock -> FUTSTK/OPTSTK rows")
-    parser.add_argument("--db", default="dataset/fno_bhavcopy.db")
     parser.add_argument(
         "--strike-step", type=float, default=None,
         help="Override the strike interval (e.g. 20, 2.5). Default: None = resolved dynamically "
@@ -526,7 +524,7 @@ def main() -> None:
         strategy_kwargs["stop_loss_pct"] = args.stop_loss_pct
 
     engine = HistoricalCycleEngine(
-        db_path=args.db, symbol=args.symbol, strategy=args.strategy,
+        symbol=args.symbol, strategy=args.strategy,
         num_lots=args.num_lots, strike_step=args.strike_step,
         option_instrument=option_instrument, future_instrument=future_instrument,
         strategy_kwargs=strategy_kwargs,

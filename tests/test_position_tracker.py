@@ -1,21 +1,13 @@
 """
 tests/test_position_tracker.py — Tests for utils/position_tracker.py.
-Uses a throwaway in-memory SQLite database via mock_db fixture — no shared state
-with the production MySQL database, no network.
+Uses the shared automate_test MySQL schema (see tests/conftest.py) via
+the mock_db fixture — no shared state with the production database, no
+network.
 """
+from contextlib import contextmanager
+
 import pytest
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy.ext.compiler import compiles
-from sqlalchemy.types import BigInteger
 
-# SQLITE compatibility: BigInteger must compile to INTEGER to autoincrement
-@compiles(BigInteger, "sqlite")
-def compile_bigint_sqlite(type_, compiler, **kw):
-    return "INTEGER"
-
-
-from automate.db.engine import Base
 import automate.utils.position_tracker
 from automate.utils.position_tracker import (
     record_open_position, get_open_positions, close_position, has_open_position,
@@ -23,16 +15,10 @@ from automate.utils.position_tracker import (
 
 
 @pytest.fixture(autouse=True)
-def mock_db():
-    # Setup temporary SQLite memory database for isolated unit testing
-    engine = create_engine("sqlite:///:memory:")
-    Base.metadata.create_all(engine)
-    SessionClass = sessionmaker(bind=engine)
-
-    from contextlib import contextmanager
+def mock_db(db_session_factory):
     @contextmanager
     def mock_get_session():
-        session = SessionClass()
+        session = db_session_factory()
         try:
             yield session
             session.commit()

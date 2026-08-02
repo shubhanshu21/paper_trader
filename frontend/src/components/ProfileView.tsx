@@ -1,6 +1,10 @@
 import React, { useState } from "react";
+import { useDispatch } from "react-redux";
+import { useNavigate } from "react-router-dom";
 import { User as UserType, LedgerItem, api } from "../api";
 import { C, FONT, inr, Banner, fmtDate } from "./Common";
+import { logout } from "../store/slices/authSlice";
+import { AppDispatch } from "../store";
 
 interface ProfileProps {
   currentUser: UserType | null;
@@ -9,11 +13,99 @@ interface ProfileProps {
 }
 
 export default function ProfileView({ currentUser, ledger, onRefreshData }: ProfileProps) {
+  const dispatch = useDispatch<AppDispatch>();
+  const navigate = useNavigate();
   const [startingCapitalInput, setStartingCapitalInput] = useState("");
   const [adjustAmountInput, setAdjustAmountInput] = useState("");
   const [adjustNoteInput, setAdjustNoteInput] = useState("");
   const [feedback, setFeedback] = useState({ msg: "", isError: false });
   const [loading, setLoading] = useState(false);
+  const [loggingOutAll, setLoggingOutAll] = useState(false);
+
+  const [mfaEnabled, setMfaEnabled] = useState(!!currentUser?.mfa_enabled);
+  const [mfaStep, setMfaStep] = useState<"idle" | "setup" | "backup-codes" | "disable">("idle");
+  const [mfaSetupData, setMfaSetupData] = useState<{ secret: string; qrCodeDataUri: string } | null>(null);
+  const [mfaConfirmCode, setMfaConfirmCode] = useState("");
+  const [mfaBackupCodes, setMfaBackupCodes] = useState<string[]>([]);
+  const [mfaDisablePassword, setMfaDisablePassword] = useState("");
+  const [mfaDisableCode, setMfaDisableCode] = useState("");
+  const [mfaError, setMfaError] = useState("");
+  const [mfaBusy, setMfaBusy] = useState(false);
+
+  const handleStartMfaSetup = async () => {
+    setMfaError("");
+    setMfaBusy(true);
+    try {
+      const res = await api.mfaSetup();
+      setMfaSetupData({ secret: res.secret, qrCodeDataUri: res.qr_code_data_uri });
+      setMfaStep("setup");
+    } catch (err) {
+      const message = err instanceof Error ? err.message : undefined;
+      setMfaError(message || "Could not start MFA setup.");
+    } finally {
+      setMfaBusy(false);
+    }
+  };
+
+  const handleConfirmMfaSetup = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!mfaSetupData) return;
+    setMfaError("");
+    setMfaBusy(true);
+    try {
+      const res = await api.mfaConfirm(mfaSetupData.secret, mfaConfirmCode.trim());
+      setMfaBackupCodes(res.backup_codes);
+      setMfaStep("backup-codes");
+      setMfaEnabled(true);
+      setMfaConfirmCode("");
+    } catch (err) {
+      const message = err instanceof Error ? err.message : undefined;
+      setMfaError(message || "Invalid code — check your authenticator app and try again.");
+    } finally {
+      setMfaBusy(false);
+    }
+  };
+
+  const handleDisableMfa = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setMfaError("");
+    setMfaBusy(true);
+    try {
+      await api.mfaDisable(mfaDisablePassword, mfaDisableCode.trim());
+      setMfaEnabled(false);
+      setMfaStep("idle");
+      setMfaDisablePassword("");
+      setMfaDisableCode("");
+    } catch (err) {
+      const message = err instanceof Error ? err.message : undefined;
+      setMfaError(message || "Could not disable MFA.");
+    } finally {
+      setMfaBusy(false);
+    }
+  };
+
+  const handleDoneWithBackupCodes = () => {
+    setMfaStep("idle");
+    setMfaSetupData(null);
+    setMfaBackupCodes([]);
+  };
+
+  const handleLogoutAll = async () => {
+    setFeedback({ msg: "", isError: false });
+    setLoggingOutAll(true);
+    try {
+      await api.logoutAll();
+    } catch (err) {
+      // Even if the request itself failed, the cookies are cleared client-side below —
+      // worst case the server-side session isn't revoked, same as a network hiccup on regular logout.
+      const message = err instanceof Error ? err.message : undefined;
+      console.error("Logout-all request failed", message);
+    } finally {
+      setLoggingOutAll(false);
+      dispatch(logout());
+      navigate("/login");
+    }
+  };
 
   const handleSetCapital = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -119,6 +211,150 @@ export default function ProfileView({ currentUser, ledger, onRefreshData }: Prof
                 <span className="font-semibold">{val}</span>
               </div>
             ))}
+          </div>
+
+          <div className="pt-4 mt-4 border-t flex justify-between items-center">
+            <div>
+              <span className="text-xs text-gray-700 font-semibold block">Security</span>
+              <span className="text-[11px] text-gray-400">Sign out of this session on every device/browser it's currently logged in on.</span>
+            </div>
+            <button
+              type="button"
+              onClick={handleLogoutAll}
+              disabled={loggingOutAll}
+              className="px-4 py-2 text-xs font-semibold text-white rounded hover:opacity-90 disabled:opacity-50 shadow-sm shrink-0 ml-3"
+              style={{ backgroundColor: C.orange }}
+            >
+              {loggingOutAll ? "Logging out..." : "Log Out Everywhere"}
+            </button>
+          </div>
+
+          {/* Two-Factor Authentication */}
+          <div className="pt-4 mt-4 border-t">
+            <div className="flex justify-between items-center">
+              <div>
+                <span className="text-xs text-gray-700 font-semibold block">Two-Factor Authentication</span>
+                <span className="text-[11px] text-gray-400">
+                  {mfaEnabled ? "Enabled — an authenticator code is required at login." : "Add an authenticator app code as a second login step."}
+                </span>
+              </div>
+              {mfaStep === "idle" && (
+                mfaEnabled ? (
+                  <button
+                    type="button"
+                    onClick={() => { setMfaStep("disable"); setMfaError(""); }}
+                    className="px-4 py-2 text-xs font-semibold text-red-600 border border-red-200 rounded hover:bg-red-50 shrink-0 ml-3"
+                  >
+                    Disable
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={handleStartMfaSetup}
+                    disabled={mfaBusy}
+                    className="px-4 py-2 text-xs font-semibold text-white rounded hover:opacity-90 disabled:opacity-50 shadow-sm shrink-0 ml-3"
+                    style={{ backgroundColor: C.blue }}
+                  >
+                    {mfaBusy ? "Starting..." : "Enable"}
+                  </button>
+                )
+              )}
+            </div>
+
+            {mfaError && mfaStep !== "idle" && (
+              <div className="mt-3 px-3 py-2 rounded text-xs border bg-red-50 border-red-200 text-red-600">{mfaError}</div>
+            )}
+
+            {mfaStep === "setup" && mfaSetupData && (
+              <div className="mt-4 p-4 rounded border bg-gray-50 space-y-3" style={{ borderColor: C.border2 }}>
+                <p className="text-xs text-gray-600">Scan this QR code with Google Authenticator, Authy, or any TOTP app — or enter the key manually.</p>
+                <img src={mfaSetupData.qrCodeDataUri} alt="MFA QR code" className="w-40 h-40 border rounded bg-white p-1" style={{ borderColor: C.border2 }} />
+                <div className="text-[11px] font-mono bg-white border rounded px-2 py-1.5 break-all" style={{ borderColor: C.border2 }}>
+                  {mfaSetupData.secret}
+                </div>
+                <form onSubmit={handleConfirmMfaSetup} className="flex gap-2 pt-1">
+                  <input
+                    type="text"
+                    required
+                    autoFocus
+                    inputMode="numeric"
+                    placeholder="6-digit code"
+                    value={mfaConfirmCode}
+                    onChange={(e) => setMfaConfirmCode(e.target.value)}
+                    className="flex-1 px-3 py-2 border rounded focus:ring-1 focus:ring-orange-500 outline-none text-sm font-mono tracking-widest"
+                  />
+                  <button
+                    type="submit"
+                    disabled={mfaBusy}
+                    className="px-4 py-2 text-xs font-semibold text-white bg-blue-500 rounded hover:bg-blue-600 disabled:bg-gray-300 shadow-sm"
+                  >
+                    Confirm
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => { setMfaStep("idle"); setMfaSetupData(null); setMfaConfirmCode(""); setMfaError(""); }}
+                    className="px-3 py-2 text-xs font-semibold text-gray-500 hover:text-gray-700"
+                  >
+                    Cancel
+                  </button>
+                </form>
+              </div>
+            )}
+
+            {mfaStep === "backup-codes" && (
+              <div className="mt-4 p-4 rounded border bg-amber-50 space-y-3" style={{ borderColor: "#fde68a" }}>
+                <p className="text-xs font-semibold text-amber-800">Save these backup codes now — each works once, and this is the only time they're shown.</p>
+                <div className="grid grid-cols-2 gap-2 font-mono text-xs bg-white border rounded p-3" style={{ borderColor: C.border2 }}>
+                  {mfaBackupCodes.map((code) => <div key={code}>{code}</div>)}
+                </div>
+                <button
+                  type="button"
+                  onClick={handleDoneWithBackupCodes}
+                  className="px-4 py-2 text-xs font-semibold text-white bg-blue-500 rounded hover:bg-blue-600 shadow-sm"
+                >
+                  I've saved these codes
+                </button>
+              </div>
+            )}
+
+            {mfaStep === "disable" && (
+              <form onSubmit={handleDisableMfa} className="mt-4 p-4 rounded border bg-gray-50 space-y-3" style={{ borderColor: C.border2 }}>
+                <p className="text-xs text-gray-600">Confirm your password and a current authenticator (or backup) code to disable two-factor authentication.</p>
+                <input
+                  type="password"
+                  required
+                  placeholder="Current password"
+                  value={mfaDisablePassword}
+                  onChange={(e) => setMfaDisablePassword(e.target.value)}
+                  className="w-full px-3 py-2 border rounded focus:ring-1 focus:ring-orange-500 outline-none text-sm"
+                />
+                <input
+                  type="text"
+                  required
+                  inputMode="numeric"
+                  placeholder="Authenticator or backup code"
+                  value={mfaDisableCode}
+                  onChange={(e) => setMfaDisableCode(e.target.value)}
+                  className="w-full px-3 py-2 border rounded focus:ring-1 focus:ring-orange-500 outline-none text-sm font-mono"
+                />
+                <div className="flex gap-2">
+                  <button
+                    type="submit"
+                    disabled={mfaBusy}
+                    className="px-4 py-2 text-xs font-semibold text-white bg-red-600 rounded hover:bg-red-700 disabled:opacity-50 shadow-sm"
+                  >
+                    {mfaBusy ? "Disabling..." : "Disable MFA"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => { setMfaStep("idle"); setMfaDisablePassword(""); setMfaDisableCode(""); setMfaError(""); }}
+                    className="px-3 py-2 text-xs font-semibold text-gray-500 hover:text-gray-700"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </form>
+            )}
           </div>
         </div>
 

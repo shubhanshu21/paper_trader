@@ -79,7 +79,6 @@ def import_dir(source_dir: str) -> int:
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--dir", default="data/historical", help="Directory of CSVs to import")
-    parser.add_argument("--db", default=None, help="Ignored since we use MySQL global configuration")
     args = parser.parse_args()
     import_dir(args.dir)
 

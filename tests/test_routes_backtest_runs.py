@@ -7,9 +7,10 @@ GET /{id}/backtest/runs (history list), GET /{id}/backtest/runs/{run_id}
 functions that actually do the work.
 
 Direct-function-call style (this session's established pattern — see
-tests/test_routes_advanced_orders.py) against an in-memory SQLite DB.
-CustomRuleBacktestEngine and compute_nifty_benchmark_return are patched at
-their source module so no real bhavcopy data / MySQL is needed.
+tests/test_routes_advanced_orders.py) against the shared automate_test
+MySQL schema (see tests/conftest.py). CustomRuleBacktestEngine and
+compute_nifty_benchmark_return are patched at their source module so no
+real bhavcopy data is needed.
 """
 import asyncio
 import json
@@ -17,18 +18,7 @@ from unittest.mock import patch
 
 import pytest
 from fastapi import HTTPException
-from sqlalchemy import create_engine
-from sqlalchemy.ext.compiler import compiles
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy.types import BigInteger
 
-
-@compiles(BigInteger, "sqlite")
-def compile_bigint_sqlite(type_, compiler, **kw):
-    return "INTEGER"
-
-
-from automate.db.engine import Base
 from automate.db.models import CustomBacktestRun, CustomStrategy
 import automate.api.routes_custom_strategies as routes
 from automate.api.routes_custom_strategies import (
@@ -76,22 +66,18 @@ class FakeEngine:
 
 
 @pytest.fixture()
-def session_factory():
-    # SQLite :memory: uses one pooled connection per thread by default, so
-    # multiple sessions from this SAME sessionmaker (bound to the same
-    # engine) all see the same data as long as everything runs on this
-    # test's thread — which _run_backtest_sync() does here, since it's
-    # called directly rather than via asyncio.to_thread.
-    engine = create_engine("sqlite:///:memory:")
-    Base.metadata.create_all(engine, tables=[CustomBacktestRun.__table__, CustomStrategy.__table__])
-    return sessionmaker(bind=engine)
+def session_factory(db_session_factory):
+    # db_session_factory (see tests/conftest.py) is bound to ONE
+    # connection + transaction for the whole test, so multiple sessions
+    # from it all see the same data — needed since _run_backtest_sync()
+    # opens its own fresh SessionLocal() call here (called directly
+    # rather than via asyncio.to_thread).
+    return db_session_factory
 
 
 @pytest.fixture()
-def db(session_factory):
-    session = session_factory()
-    yield session
-    session.close()
+def db(db_session):
+    return db_session
 
 
 def _make_strategy(db, **overrides):
@@ -113,7 +99,7 @@ def strategy(db):
 
 
 @pytest.fixture()
-def sqlite_session_local(session_factory, db, monkeypatch):
+def session_local_patch(session_factory, db, monkeypatch):
     """
     Patch SessionLocal so _run_backtest_sync()'s own `db = SessionLocal()`
     call (and its `db.close()` at the end) gets a FRESH session from the
@@ -152,7 +138,7 @@ class TestRunBacktestSymbols:
 
 
 class TestRunBacktestSync:
-    def test_completes_and_populates_result(self, db, strategy, sqlite_session_local):
+    def test_completes_and_populates_result(self, db, strategy, session_local_patch):
         run = CustomBacktestRun(strategy_id=strategy.id, user_id=1, status="QUEUED", rules_snapshot_json=json.dumps(_RULES))
         db.add(run)
         db.commit()
@@ -176,7 +162,7 @@ class TestRunBacktestSync:
         assert strategy.status == "BACKTESTING"
         assert strategy.backtest_result_json is not None
 
-    def test_all_symbols_failing_marks_run_failed(self, db, strategy, sqlite_session_local):
+    def test_all_symbols_failing_marks_run_failed(self, db, strategy, session_local_patch):
         strategy.symbols = json.dumps(["BROKEN"])
         db.commit()
         run = CustomBacktestRun(strategy_id=strategy.id, user_id=1, status="QUEUED", rules_snapshot_json=json.dumps(_RULES))
@@ -191,7 +177,7 @@ class TestRunBacktestSync:
         assert run.status == "FAILED"
         assert run.error_message is not None
 
-    def test_progress_updates_during_run(self, db, strategy, sqlite_session_local):
+    def test_progress_updates_during_run(self, db, strategy, session_local_patch):
         run = CustomBacktestRun(strategy_id=strategy.id, user_id=1, status="QUEUED", rules_snapshot_json=json.dumps(_RULES))
         db.add(run)
         db.commit()

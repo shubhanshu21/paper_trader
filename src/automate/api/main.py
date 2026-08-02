@@ -26,10 +26,10 @@ from automate.api import (
     routes_positions, routes_strategies, routes_daemon,
     routes_backtest, routes_logs, routes_dashboard,
     routes_leaderboard, routes_wallet, ws_positions,
-    routes_auth, routes_equity, routes_terminal,
+    routes_auth, routes_oauth, routes_equity, routes_terminal,
     routes_watchlist, routes_orders, routes_websocket,
     routes_advanced_orders, routes_multi_leg, routes_performance,
-    routes_custom_strategies, routes_strategy_deployment, routes_health,
+    routes_custom_strategies, routes_health,
     ws_custom_strategy_greeks, routes_notifications, ws_notifications,
     ws_custom_strategy_positions, ws_market_depth,
 )
@@ -108,9 +108,43 @@ async def add_security_headers(request: Request, call_next) -> Response:
     return response
 
 # ---------------------------------------------------------------------------
+# CSRF protection (double-submit cookie) — api/auth.py::validate_csrf already
+# implements the check; csrf_protection_middleware below is what actually
+# calls it on every request. Applies to every state-changing /api/* request
+# except the handful that happen BEFORE a real session cookie exists
+# (login/register/mfa verify-login) or that the frontend can't attach a
+# custom header to (OAuth's GET browser-redirect endpoints — already exempt
+# via the safe-method check, since browsers can't add headers to a
+# top-level navigation). The frontend (frontend/src/api.ts::request())
+# already sends X-CSRF-Token on every POST/PUT/DELETE/PATCH whenever the
+# csrf_token cookie exists — it was just never verified server-side.
+#
+# _csrf_exempt() is a plain function (not a closure inside the
+# PanelAuthConfig.ENABLED branch below) specifically so it's directly unit-
+# testable regardless of which config state happened to be active when this
+# module was imported — see tests/test_csrf_middleware.py.
+# ---------------------------------------------------------------------------
+CSRF_EXEMPT_PATHS = {
+    "/api/auth/login",
+    "/api/auth/register",
+    "/api/auth/logout",  # see logout()'s own docstring — a CSRF-forced logout is only a DoS, not data modification
+    "/api/auth/mfa/verify-login",
+}
+
+
+def _csrf_exempt(method: str, path: str) -> bool:
+    if method in ("GET", "HEAD", "OPTIONS"):
+        return True
+    if not path.startswith("/api/"):
+        return True
+    return path in CSRF_EXEMPT_PATHS
+
+
+# ---------------------------------------------------------------------------
 # Optional auth gate
 # When PANEL_AUTH_ENABLED=true: all /api/* routes except /api/auth/* and
-# /api/health require a valid session cookie.
+# /api/health require a valid session cookie, and CSRF is enforced on every
+# state-changing request (see _csrf_exempt above).
 # ---------------------------------------------------------------------------
 if PanelAuthConfig.ENABLED:
     log.info("Panel auth is ENABLED — all API routes require login.")
@@ -144,6 +178,20 @@ if PanelAuthConfig.ENABLED:
                 content={"detail": "Session expired or invalid"},
             )
         return await call_next(request)
+
+    @app.middleware("http")
+    async def csrf_protection_middleware(request: Request, call_next) -> Response:
+        if _csrf_exempt(request.method, request.url.path):
+            return await call_next(request)
+
+        from fastapi import HTTPException
+        from automate.api.auth import validate_csrf
+        try:
+            validate_csrf(request, request.cookies.get("csrf_token"))
+        except HTTPException as exc:
+            from fastapi.responses import JSONResponse
+            return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+        return await call_next(request)
 else:
     log.info(
         "Panel auth is DISABLED (PANEL_AUTH_ENABLED not set). "
@@ -154,6 +202,7 @@ else:
 # Routers
 # ---------------------------------------------------------------------------
 app.include_router(routes_auth.router)
+app.include_router(routes_oauth.router)
 app.include_router(routes_positions.router)
 app.include_router(routes_strategies.router)
 app.include_router(routes_daemon.router)
@@ -172,7 +221,6 @@ app.include_router(routes_advanced_orders.router)
 app.include_router(routes_multi_leg.router)
 app.include_router(routes_performance.router)
 app.include_router(routes_custom_strategies.router)
-app.include_router(routes_strategy_deployment.router)
 app.include_router(routes_health.router)
 app.include_router(ws_positions.router)
 app.include_router(ws_custom_strategy_greeks.router)

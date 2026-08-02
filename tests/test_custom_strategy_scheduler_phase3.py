@@ -2,26 +2,16 @@
 tests/test_custom_strategy_scheduler_phase3.py — Phase 3 coverage for
 api/custom_strategy_scheduler.py: per-leg-role cycle gating (calendar
 spreads), per-leg independent exit/trailing, and MA-crossover/IV-rank
-conditional entry. Direct-function-call style with fakes/in-memory SQLite
-— same established pattern as tests/test_advanced_orders_scheduler.py and
+conditional entry. Direct-function-call style with fakes and the shared automate_test MySQL
+schema (see tests/conftest.py) — same established pattern as
+tests/test_advanced_orders_scheduler.py and
 tests/test_routes_backtest_runs.py. Never touches real broker/DB.
 """
 import json
 from unittest.mock import patch
 
 import pytest
-from sqlalchemy import create_engine
-from sqlalchemy.ext.compiler import compiles
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy.types import BigInteger
 
-
-@compiles(BigInteger, "sqlite")
-def compile_bigint_sqlite(type_, compiler, **kw):
-    return "INTEGER"
-
-
-from automate.db.engine import Base
 from automate.db.models import CustomStrategy, CustomStrategyPosition, FnoBhavcopy
 import automate.api.custom_strategy_scheduler as sched
 
@@ -97,10 +87,8 @@ class FakeBroker:
 
 
 @pytest.fixture()
-def bhav_session():
-    engine = create_engine("sqlite:///:memory:")
-    Base.metadata.create_all(engine, tables=[FnoBhavcopy.__table__])
-    return sessionmaker(bind=engine)
+def bhav_session(db_session_factory):
+    return db_session_factory
 
 
 class TestMaCrossoverCondition:
@@ -200,44 +188,66 @@ def _make_leg(**overrides):
     return CustomStrategyPosition(**defaults)
 
 
+@pytest.fixture()
+def leg_session(db_session):
+    """
+    _close_leg (called via _try_exit_individual_leg) atomically claims the
+    leg row (OPEN -> CLOSING) via a real UPDATE before placing the broker
+    order — see custom_strategy_scheduler.py::_close_leg's docstring for
+    why (a race between the scheduler's own tick and a user-triggered
+    Stop). That needs a real persisted row + session, not a bare
+    db=None call like these tests previously used.
+    """
+    return db_session
+
+
+def _persist_leg(db, **overrides):
+    leg = _make_leg(**{k: v for k, v in overrides.items() if k != "id"})
+    db.add(leg)
+    db.commit()
+    return leg
+
+
 class TestTryExitIndividualLeg:
-    def test_take_profit_closes_the_leg(self):
-        leg = _make_leg(leg_config_json=json.dumps({"take_profit_pct": 20.0}))
+    def test_take_profit_closes_the_leg(self, leg_session):
+        leg = _persist_leg(leg_session, leg_config_json=json.dumps({"take_profit_pct": 20.0}))
         broker = FakeOrderBroker()
         strategy = CustomStrategy(id=1, name="S", user_id=1)
-        closed = sched._try_exit_individual_leg(None, strategy, broker, leg, {"TOK1": 5.0})  # SELL: price fell -> big profit
+        closed = sched._try_exit_individual_leg(leg_session, strategy, broker, leg, {"TOK1": 5.0})  # SELL: price fell -> big profit
         assert closed is True
         assert leg.status == "CLOSED"
         assert leg.exit_reason == "TAKE_PROFIT"
         assert broker.orders == [("BUY", "TOK1", 50)]  # opposite of SELL entry
 
-    def test_no_trigger_leaves_leg_open_but_updates_trailing_state(self):
-        leg = _make_leg(leg_config_json=json.dumps(
+    def test_no_trigger_leaves_leg_open_but_updates_trailing_state(self, leg_session):
+        leg = _persist_leg(leg_session, leg_config_json=json.dumps(
             {"trailing": {"enabled": True, "trail_amount": 1.0, "trail_type": "points"}}
         ))
         broker = FakeOrderBroker()
         strategy = CustomStrategy(id=1, name="S", user_id=1)
-        closed = sched._try_exit_individual_leg(None, strategy, broker, leg, {"TOK1": 10.0})
+        closed = sched._try_exit_individual_leg(leg_session, strategy, broker, leg, {"TOK1": 10.0})
         assert closed is False
         assert leg.status == "OPEN"
         state = json.loads(leg.trail_state_json)
         assert state["current_stop_price"] == 11.0  # SELL side: entry 10 + trail 1
 
-    def test_trailing_stop_triggers_a_close(self):
-        leg = _make_leg(leg_config_json=json.dumps(
-            {"trailing": {"enabled": True, "trail_amount": 1.0, "trail_type": "points"}}
-        ), trail_state_json=json.dumps({"highest_price": None, "lowest_price": 10.0, "current_stop_price": 11.0}))
+    def test_trailing_stop_triggers_a_close(self, leg_session):
+        leg = _persist_leg(
+            leg_session,
+            leg_config_json=json.dumps({"trailing": {"enabled": True, "trail_amount": 1.0, "trail_type": "points"}}),
+            trail_state_json=json.dumps({"highest_price": None, "lowest_price": 10.0, "current_stop_price": 11.0}),
+        )
         broker = FakeOrderBroker()
         strategy = CustomStrategy(id=1, name="S", user_id=1)
-        closed = sched._try_exit_individual_leg(None, strategy, broker, leg, {"TOK1": 12.0})  # crossed back above stop
+        closed = sched._try_exit_individual_leg(leg_session, strategy, broker, leg, {"TOK1": 12.0})  # crossed back above stop
         assert closed is True
         assert leg.exit_reason == "TRAILING_STOP"
 
-    def test_missing_price_never_triggers(self):
-        leg = _make_leg(leg_config_json=json.dumps({"take_profit_pct": 1.0}))
+    def test_missing_price_never_triggers(self, leg_session):
+        leg = _persist_leg(leg_session, leg_config_json=json.dumps({"take_profit_pct": 1.0}))
         broker = FakeOrderBroker()
         strategy = CustomStrategy(id=1, name="S", user_id=1)
-        closed = sched._try_exit_individual_leg(None, strategy, broker, leg, {})
+        closed = sched._try_exit_individual_leg(leg_session, strategy, broker, leg, {})
         assert closed is False
         assert leg.status == "OPEN"
 
@@ -246,13 +256,8 @@ class TestTryExitIndividualLeg:
 # _try_exit end-to-end split: individually-managed vs combined-managed
 # ---------------------------------------------------------------------------
 @pytest.fixture()
-def position_session():
-    engine = create_engine("sqlite:///:memory:")
-    Base.metadata.create_all(engine, tables=[CustomStrategyPosition.__table__])
-    Session = sessionmaker(bind=engine)
-    session = Session()
-    yield session
-    session.close()
+def position_session(db_session):
+    return db_session
 
 
 class TestTryExitSplit:

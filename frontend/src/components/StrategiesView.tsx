@@ -1284,7 +1284,15 @@ export default function StrategiesView({
                     </button>
                   )}
                   {canTransitionTo(selectedStrategy.status, "PAUSED") && (
-                    <button onClick={() => handleStatusChange(selectedStrategy, "PAUSED")}
+                    <button onClick={() => {
+                      setConfirmModal({
+                        title: "Pause Strategy",
+                        message: "Pause this strategy? No new positions will be entered, but any position it already holds stays open and keeps being managed (TP/SL/trailing/expiry) until it closes naturally, or you Stop the strategy.",
+                        confirmText: "Pause",
+                        confirmColor: C.orange,
+                        onConfirm: () => handleStatusChange(selectedStrategy, "PAUSED")
+                      });
+                    }}
                       className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-semibold transition-colors focus:outline-none hover:opacity-80"
                       style={{ backgroundColor: "#fff7ed", color: C.orange }}>
                       <Pause size={14} /> Disable
@@ -1294,7 +1302,22 @@ export default function StrategiesView({
                     <button onClick={() => handleStatusChange(selectedStrategy, "PAPER_TRADING")}
                       className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-semibold transition-colors focus:outline-none hover:opacity-80"
                       style={{ backgroundColor: "#e6f4ea", color: C.green }}>
-                      <Play size={14} /> Enable
+                      <Play size={14} /> Resume Paper
+                    </button>
+                  )}
+                  {selectedStrategy.status === "PAUSED" && (
+                    <button onClick={() => {
+                      setConfirmModal({
+                        title: "Resume LIVE",
+                        message: "Resume LIVE trading — Upstox will place real orders with real money again. Continue?",
+                        confirmText: "Resume Live",
+                        confirmColor: C.orange,
+                        onConfirm: () => handleStatusChange(selectedStrategy, "LIVE")
+                      });
+                    }}
+                      className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-semibold text-white transition-colors focus:outline-none hover:opacity-90 shadow-sm"
+                      style={{ backgroundColor: C.orange }}>
+                      <Play size={14} /> Resume Live
                     </button>
                   )}
                   {canTransitionTo(selectedStrategy.status, "DRAFT") && selectedStrategy.status !== "DRAFT" && (

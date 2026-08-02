@@ -174,11 +174,14 @@ def update_strategy(strategy_id: int, strategy: CustomStrategyUpdate, db: Sessio
     """Update a custom strategy."""
     db_strategy = _get_owned_strategy(db, strategy_id, _current_user_id(user))
 
-    # Editable in any state that isn't actively executing/holding real
-    # positions — PAPER_TRADING/LIVE must be paused or stopped first
-    # (see routes_strategy_deployment.py's pause/stop, which square off
-    # any open position before status leaves those two, so DRAFT/
-    # BACKTESTING/PAUSED/STOPPED are all guaranteed flat here).
+    # Editable in any state that isn't actively taking NEW entries —
+    # PAPER_TRADING/LIVE must be paused or stopped first. Note PAUSED can
+    # still have real OPEN legs (pausing only blocks new entries; already-
+    # open legs stay exit-managed by the scheduler until they close or the
+    # strategy is stopped — see custom_strategy_scheduler.py's module
+    # docstring) — editing rules_json here only affects future entries;
+    # each open leg's own exit config was already snapshotted into its
+    # leg_config_json at entry time, so it's unaffected by this edit.
     if db_strategy.status not in ("DRAFT", "PAUSED", "BACKTESTING", "STOPPED"):
         raise HTTPException(status_code=400, detail="Can only update DRAFT, BACKTESTING, PAUSED, or STOPPED strategies")
 
@@ -246,18 +249,57 @@ def update_strategy_status(strategy_id: int, status_update: StrategyStatusUpdate
     
     if new_status not in valid_transitions.get(current_status, []):
         raise HTTPException(
-            status_code=400, 
+            status_code=400,
             detail=f"Invalid status transition from {current_status} to {new_status}"
         )
-    
+
+    # Stopping a strategy must actually square off any open legs — the
+    # frontend's confirm dialog already promises this ("square off any
+    # open position?"), and once STOPPED, custom_strategy_scheduler.py's
+    # main loop query excludes this strategy entirely, so any leg left
+    # OPEN here would never be managed (or exited) again.
+    if new_status == "STOPPED":
+        has_open_legs = db.query(CustomStrategyPosition.id).filter(
+            CustomStrategyPosition.strategy_id == db_strategy.id,
+            CustomStrategyPosition.status == "OPEN",
+        ).first() is not None
+        if has_open_legs:
+            from automate.api.custom_strategy_scheduler import _get_brokers, square_off_all_open_legs
+            brokers = _get_brokers()
+            if brokers is None:
+                raise HTTPException(
+                    status_code=503,
+                    detail="Broker connection not ready — cannot square off open positions right now. Please try again shortly.",
+                )
+            square_off_all_open_legs(db, db_strategy, brokers)
+            # Do NOT flip to STOPPED if any leg failed to close (broker
+            # rejection, missing broker, etc.) — once STOPPED, this
+            # strategy leaves the scheduler's main-loop query for good, so
+            # a leftover OPEN leg here would never be managed again. Better
+            # to fail the stop request loudly (strategy stays in its
+            # current, still-scheduler-managed status) than silently
+            # abandon a real position.
+            still_open = db.query(CustomStrategyPosition.id).filter(
+                CustomStrategyPosition.strategy_id == db_strategy.id,
+                CustomStrategyPosition.status == "OPEN",
+            ).count()
+            if still_open:
+                raise HTTPException(
+                    status_code=502,
+                    detail=(
+                        f"Failed to square off {still_open} open position(s) — strategy was NOT stopped and "
+                        f"remains under active management. Check the alert notification for details, or retry."
+                    ),
+                )
+
     db_strategy.status = new_status
-    
+
     if new_status in ["PAPER_TRADING", "LIVE"]:
         db_strategy.deployed_at = datetime.now()
-    
+
     db.commit()
     db.refresh(db_strategy)
-    
+
     return db_strategy.to_dict()
 
 

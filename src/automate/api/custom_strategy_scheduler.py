@@ -1,8 +1,8 @@
 """
 api/custom_strategy_scheduler.py — runs paper/live execution for
 user-built custom strategies (CustomStrategy rows with status
-PAPER_TRADING or LIVE) as a background asyncio task inside the SAME
-FastAPI process (started from main.py's startup hook, exactly like
+PAPER_TRADING, LIVE, or PAUSED) as a background asyncio task inside the
+SAME FastAPI process (started from main.py's startup hook, exactly like
 market_broadcaster.py/the daemon supervisor) — per the standing rule in
 this codebase: no second systemd service for background work.
 
@@ -14,9 +14,10 @@ their own lightweight scheduler here instead of being forced through
 that static config path.
 
 Each tick (every _TICK_SEC, only during real NSE market hours):
-  1. ENTRY — for every PAPER_TRADING/LIVE strategy with no OPEN basket
-     and no basket already entered for the CURRENT expiry cycle, run its
-     RuleBasedStrategy once and record the resulting legs as OPEN
+  1. ENTRY — for every PAPER_TRADING/LIVE strategy (PAUSED strategies are
+     skipped — pausing means "don't take new entries") with no OPEN
+     basket and no basket already entered for the CURRENT expiry cycle,
+     run its RuleBasedStrategy once and record the resulting legs as OPEN
      CustomStrategyPosition rows. "Current cycle" is tracked per symbol,
      not per calendar day — a strategy that exits early (TP/SL hit well
      before expiry) must NOT re-enter a fresh basket on the same
@@ -25,9 +26,17 @@ Each tick (every _TICK_SEC, only during real NSE market hours):
      _resolve_current_expiry/_get_last_entered_expiry). This is what
      makes "enter once, hold through the cycle, don't come back until
      the next cycle starts" the real behavior, for every entry mode.
-  2. EXIT — for every strategy with an OPEN basket, price it and check
-     take-profit / stop-loss / exit-time / exit-days-before-expiry;
-     square off every leg and mark the basket CLOSED if any trigger fires.
+  2. EXIT — for every PAPER_TRADING/LIVE/PAUSED strategy with an OPEN
+     basket, price it and check take-profit / stop-loss / exit-time /
+     exit-days-before-expiry; square off every leg and mark the basket
+     CLOSED if any trigger fires. PAUSED strategies are included here
+     (only entry is skipped) — otherwise pausing a strategy would abandon
+     any already-open real position with zero further management until
+     it's resumed or stopped, which is exactly the gap that used to exist
+     for STOPPED too (see routes_custom_strategies.py::update_strategy_status,
+     which now square-offs on STOP; PAUSE deliberately does NOT square
+     off — it's meant to be reversible — so exit management must instead
+     keep running for whatever's already open).
 """
 import asyncio
 import json
@@ -45,7 +54,7 @@ from automate.utils.logger import get_logger
 from automate.utils.notify import notify
 from automate.utils.option_utils import check_exit_trigger, is_within_pre_expiry_buffer
 from automate.utils.trailing_stop import advance_trailing_stop, stop_triggered
-from sqlalchemy import text
+from sqlalchemy import text, update
 
 log = get_logger(__name__)
 
@@ -485,7 +494,31 @@ def _combined_pnl_pct(legs: list[CustomStrategyPosition], now_prices: dict) -> O
 
 
 def _close_leg(db, strategy: CustomStrategy, broker, leg: CustomStrategyPosition, trigger: str, now_prices: dict) -> bool:
-    """Square off ONE leg via a MARKET order opposite its entry side. Returns True iff closed — on failure, alerts (a real position may still be open) and leaves the leg OPEN for the next tick to retry."""
+    """
+    Square off ONE leg via a MARKET order opposite its entry side. Returns
+    True iff closed — on failure, alerts (a real position may still be
+    open) and leaves the leg OPEN for the next tick to retry.
+
+    Atomically claims the leg (OPEN -> CLOSING) before placing the broker
+    order. This matters because a leg can now be closed from two
+    independent callers racing on the same row: the scheduler's own tick
+    (runs on the asyncio event loop) and a user-triggered Stop
+    (routes_custom_strategies.py::update_strategy_status, a sync route
+    that FastAPI runs in a threadpool thread) — without this claim, both
+    could read the leg as OPEN and each place a real closing order,
+    double-exiting it at the broker. Only the caller whose UPDATE
+    actually matches a row (claimed == 1) proceeds; the other backs off
+    and returns False, same as any other "couldn't close this tick" case.
+    """
+    claimed = db.execute(
+        update(CustomStrategyPosition)
+        .where(CustomStrategyPosition.id == leg.id, CustomStrategyPosition.status == "OPEN")
+        .values(status="CLOSING")
+    ).rowcount
+    db.commit()
+    if claimed == 0:
+        return False  # another caller already claimed (or closed) this leg this instant
+
     opposite = broker.place_buy_order if leg.transaction_type == "SELL" else broker.place_sell_order
     try:
         _rate_limiter.acquire()
@@ -505,6 +538,8 @@ def _close_leg(db, strategy: CustomStrategy, broker, leg: CustomStrategyPosition
             f"({trigger} triggered): {exc}. A position may still be open on your real account.",
             user_id=strategy.user_id,
         )
+        leg.status = "OPEN"  # release the claim so the next tick (or a retried Stop) picks it back up
+        db.commit()
         return False
     leg.status = "CLOSED"
     leg.exit_price = now_prices.get(leg.instrument_key)
@@ -663,6 +698,57 @@ def _try_exit(db, strategy: CustomStrategy, broker) -> None:
         db.commit()
 
 
+def square_off_all_open_legs(db, strategy: CustomStrategy, brokers: dict, reason: str = "MANUAL_STOP") -> int:
+    """
+    Immediately close every OPEN leg for `strategy`, regardless of expiry-
+    cycle group — used when a user explicitly stops a strategy (see
+    routes_custom_strategies.py::update_strategy_status), so the UI's
+    "square off any open position" promise on the Stop dialog is actually
+    true. This is needed because once a strategy leaves PAPER_TRADING/LIVE
+    it's excluded from this scheduler's main loop query above, so any
+    still-open legs would otherwise never be touched again.
+
+    Each leg is closed using ITS OWN entry mode (leg.mode) rather than the
+    strategy's current status — a leg entered while LIVE keeps using the
+    live broker even if the strategy was PAUSED (and re-labeled) before
+    being stopped. Returns the number of legs successfully closed; any
+    leg that fails to close (broker error, broker unavailable) is left
+    OPEN and alerted on, same failure handling as _close_leg's normal
+    scheduler-driven callers.
+    """
+    legs = db.query(CustomStrategyPosition).filter(
+        CustomStrategyPosition.strategy_id == strategy.id,
+        CustomStrategyPosition.status == "OPEN",
+    ).all()
+    if not legs:
+        return 0
+
+    legs_by_mode = defaultdict(list)
+    for leg in legs:
+        legs_by_mode[leg.mode].append(leg)
+
+    closed_count = 0
+    for mode, mode_legs in legs_by_mode.items():
+        broker = brokers.get(mode)
+        if broker is None:
+            log.error("square_off_all_open_legs: no %s broker available — cannot close %d leg(s) for strategy %s.",
+                       mode, len(mode_legs), strategy.id)
+            notify(
+                "custom_strategy",
+                f"Could not square off {len(mode_legs)} open {mode} leg(s) for \"{strategy.name}\" while stopping "
+                f"it — broker unavailable. These positions are still OPEN; please close them manually and retry.",
+                level="error", user_id=strategy.user_id,
+            )
+            continue
+        tokens = [leg.instrument_key for leg in mode_legs]
+        now_prices = broker.get_ltp_batch(tokens)
+        for leg in mode_legs:
+            if _close_leg(db, strategy, broker, leg, reason, now_prices):
+                closed_count += 1
+    db.commit()
+    return closed_count
+
+
 def dtime_or_none(expiry_str: Optional[str]):
     if not expiry_str:
         return None
@@ -742,6 +828,42 @@ def _reconcile_live_positions(db, brokers: dict) -> None:
         )
 
 
+def _tick_one_strategy(db, strategy: CustomStrategy, brokers: dict) -> None:
+    """
+    One strategy's worth of a scheduler tick — extracted from the main
+    loop below so it's directly unit-testable. Never raises (logs and
+    returns) — the caller ticks many strategies per pass and one
+    strategy's failure must not stop the rest.
+    """
+    if not strategy.rules_json:
+        return
+
+    if strategy.status == "PAUSED":
+        # No new entries while paused — but any already-open leg must
+        # keep being exit-managed (see module docstring). The strategy's
+        # own status is mode-ambiguous once paused, so the broker is
+        # derived from the open legs' own recorded mode instead of
+        # _mode_for_status(status).
+        first_leg_mode = db.query(CustomStrategyPosition.mode).filter(
+            CustomStrategyPosition.strategy_id == strategy.id,
+            CustomStrategyPosition.status == "OPEN",
+        ).first()
+        if first_leg_mode is None:
+            return  # nothing open — nothing to do while paused
+        try:
+            _try_exit(db, strategy, brokers[first_leg_mode[0]])
+        except Exception as exc:
+            log.error("custom_strategy_scheduler: paused-strategy exit tick failed for strategy %s: %s", strategy.id, exc, exc_info=True)
+        return
+
+    broker = brokers[_mode_for_status(strategy.status)]
+    try:
+        _try_exit(db, strategy, broker)
+        _try_entry(db, strategy, broker)
+    except Exception as exc:
+        log.error("custom_strategy_scheduler: tick failed for strategy %s: %s", strategy.id, exc, exc_info=True)
+
+
 async def custom_strategy_scheduler() -> None:
     """Persistent background task — see module docstring. Never raises; logs and keeps ticking."""
     from automate.utils.single_instance_lock import acquire_singleton_lock
@@ -765,17 +887,10 @@ async def custom_strategy_scheduler() -> None:
                     db = SessionLocal()
                     try:
                         strategies = db.query(CustomStrategy).filter(
-                            CustomStrategy.status.in_(["PAPER_TRADING", "LIVE"])
+                            CustomStrategy.status.in_(["PAPER_TRADING", "LIVE", "PAUSED"])
                         ).all()
                         for strategy in strategies:
-                            if not strategy.rules_json:
-                                continue
-                            broker = brokers[_mode_for_status(strategy.status)]
-                            try:
-                                _try_exit(db, strategy, broker)
-                                _try_entry(db, strategy, broker)
-                            except Exception as exc:
-                                log.error("custom_strategy_scheduler: tick failed for strategy %s: %s", strategy.id, exc, exc_info=True)
+                            _tick_one_strategy(db, strategy, brokers)
 
                         global _last_reconcile_at
                         now_monotonic = time.monotonic()

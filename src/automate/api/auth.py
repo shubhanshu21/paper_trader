@@ -11,11 +11,19 @@ Security notes:
   on every state-changing (non-GET) request.
 - 'none' JWT algorithm explicitly rejected.
 - 'exp' claim validated on every decode.
-
-TODO(security): Add TOTP/MFA for admin accounts.
-TODO(security): Add OAuth provider (e.g. Google) as alternative login.
-TODO(security): Implement session revocation list for immediate invalidation.
-TODO(security): Integrate HaveIBeenPwned API for leaked password detection.
+- Session revocation: every token embeds the issuing user's token_version
+  ('tv' claim); get_current_user_optional() checks it against the live DB
+  value on every request, so bump_token_version() invalidates every
+  outstanding session for that user immediately, not just at natural
+  'exp' — used by "log out everywhere" and account deactivation.
+- Registration rejects passwords found in known public breaches (see
+  utils/pwned_passwords.py, called from routes_auth.py::register) — on
+  top of validate_password_strength()'s length/character rules below.
+- TOTP two-factor auth is available per-account (see utils/mfa.py,
+  routes_auth.py's /mfa/* endpoints) — opt-in, not mandatory.
+- "Sign in with Google" is available if the operator configures a real
+  Google OAuth client (see config.GoogleOAuthConfig, api/routes_oauth.py)
+  — off by default, and the rest of the app is unaffected either way.
 """
 import logging
 import secrets
@@ -52,7 +60,7 @@ def get_password_hash(password: str) -> str:
 # JWT token creation and verification
 # ---------------------------------------------------------------------------
 
-def create_access_token(user_id: int, username: str, role: str) -> str:
+def create_access_token(user_id: int, username: str, role: str, token_version: int = 0) -> str:
     """
     Create a signed JWT access token.
 
@@ -60,6 +68,9 @@ def create_access_token(user_id: int, username: str, role: str) -> str:
     - sub: str(user_id)
     - username: the user's display name
     - role: 'admin' | 'viewer'
+    - tv: the user's token_version at issue time — checked against the
+      live DB value on every request (see get_current_user_optional);
+      a mismatch means this token was revoked after being issued.
     - exp: UTC expiry (PanelAuthConfig.SESSION_HOURS from now)
     - iat: issued-at
     """
@@ -70,6 +81,7 @@ def create_access_token(user_id: int, username: str, role: str) -> str:
         "sub": str(user_id),
         "username": username,
         "role": role,
+        "tv": token_version,
         "iat": now,
         "exp": expire,
     }
@@ -89,6 +101,67 @@ def decode_access_token(token: str) -> dict:
     if payload.get("sub") is None:
         raise JWTError("Token missing 'sub' claim")
     return payload
+
+
+# ---------------------------------------------------------------------------
+# MFA-pending tokens — issued after a correct password but before the TOTP/
+# backup code step, for accounts with mfa_enabled. Deliberately a SEPARATE
+# token shape (short-lived, carries only 'purpose': 'mfa_pending', no role/
+# tv claims) rather than a real access token with reduced permissions — so
+# it can never accidentally be accepted by get_current_user_optional() as a
+# real session, even if the two code paths drift in the future. See
+# routes_auth.py's login()/mfa_verify_login().
+# ---------------------------------------------------------------------------
+_MFA_PENDING_MINUTES = 5
+
+
+def create_mfa_pending_token(user_id: int) -> str:
+    secret = PanelAuthConfig.jwt_secret()
+    now = datetime.now(timezone.utc)
+    payload = {
+        "sub": str(user_id),
+        "purpose": "mfa_pending",
+        "iat": now,
+        "exp": now + timedelta(minutes=_MFA_PENDING_MINUTES),
+    }
+    return jwt.encode(payload, secret, algorithm=ALGORITHM)
+
+
+def decode_mfa_pending_token(token: str) -> dict:
+    """Raises JWTError if invalid, expired, or not actually an mfa_pending token."""
+    secret = PanelAuthConfig.jwt_secret()
+    payload = jwt.decode(token, secret, algorithms=[ALGORITHM])
+    if payload.get("sub") is None or payload.get("purpose") != "mfa_pending":
+        raise JWTError("Not a valid MFA-pending token")
+    return payload
+
+
+# ---------------------------------------------------------------------------
+# OAuth state tokens — the 'state' param round-tripped through Google's
+# consent screen (api/routes_oauth.py), verified on callback to prevent
+# CSRF (an attacker tricking a victim into completing an attacker-
+# initiated OAuth flow, binding the victim's session to the attacker's
+# Google account). Stateless by design (a signed, short-lived JWT, not a
+# server-side session store) — this app has no shared cache/Redis, and a
+# single web process doesn't need one just for a 10-minute CSRF token.
+# ---------------------------------------------------------------------------
+_OAUTH_STATE_MINUTES = 10
+
+
+def create_oauth_state_token() -> str:
+    secret = PanelAuthConfig.jwt_secret()
+    now = datetime.now(timezone.utc)
+    payload = {"purpose": "oauth_state", "iat": now, "exp": now + timedelta(minutes=_OAUTH_STATE_MINUTES)}
+    return jwt.encode(payload, secret, algorithm=ALGORITHM)
+
+
+def verify_oauth_state_token(token: str) -> bool:
+    try:
+        secret = PanelAuthConfig.jwt_secret()
+        payload = jwt.decode(token, secret, algorithms=[ALGORITHM])
+        return payload.get("purpose") == "oauth_state"
+    except JWTError:
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -150,15 +223,58 @@ def get_current_user_optional(
     token: Optional[str] = Depends(_get_token_from_cookie),
 ) -> Optional[dict]:
     """
-    Dependency: return the decoded JWT payload if a valid session cookie exists,
-    or None if not authenticated. Suitable for endpoints that degrade gracefully.
+    Dependency: return the decoded JWT payload if a valid, non-revoked
+    session exists, or None if not authenticated/revoked. Suitable for
+    endpoints that degrade gracefully.
+
+    Checks the token's 'tv' claim against the live token_version column
+    (see User model) — this is what makes bump_token_version() actually
+    revoke a session immediately instead of only at 'exp'. A missing 'tv'
+    claim (a token issued before this check existed) is treated as 0,
+    matching the column's default, so already-issued tokens keep working
+    until they naturally expire rather than being force-invalidated by
+    this change.
     """
     if not token:
         return None
     try:
-        return decode_access_token(token)
+        payload = decode_access_token(token)
     except JWTError:
         return None
+
+    if payload.get("purpose") == "mfa_pending":
+        return None  # never accept an MFA-pending token as a real session
+
+    if not _token_version_is_current(payload):
+        return None
+    return payload
+
+
+def _token_version_is_current(payload: dict) -> bool:
+    from automate.db.engine import get_session
+    from automate.db.models import User
+
+    try:
+        user_id = int(payload["sub"])
+    except (KeyError, TypeError, ValueError):
+        return False
+    token_version = payload.get("tv", 0)
+
+    with get_session() as session:
+        user = session.get(User, user_id)
+        if user is None or not user.is_active:
+            return False
+        return user.token_version == token_version
+
+
+def bump_token_version(session, user: "User") -> None:  # noqa: F821 — type-only forward ref, avoids a hard import cycle
+    """
+    Revoke every currently-outstanding session for `user` immediately —
+    used by "log out everywhere" and account deactivation. `session` must
+    be an open Session the caller commits (matches this module's other
+    DB-touching helpers, which never own the transaction themselves).
+    """
+    user.token_version = (user.token_version or 0) + 1
 
 
 def get_current_user(
@@ -205,9 +321,12 @@ def get_current_user_ws(websocket) -> Optional[dict]:
     if not token:
         return None
     try:
-        return decode_access_token(token)
+        payload = decode_access_token(token)
     except JWTError:
         return None
+    if not _token_version_is_current(payload):
+        return None
+    return payload
 
 
 # ---------------------------------------------------------------------------

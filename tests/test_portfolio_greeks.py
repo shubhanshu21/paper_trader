@@ -6,7 +6,8 @@ Greeks) added as a "what's good for our project" frontend improvement —
 see StrategiesView.tsx's existing per-strategy Greeks widget, which this
 sits alongside/above.
 
-In-memory SQLite, a fake broker pair — no network/real DB.
+Real automate_test MySQL schema (see tests/conftest.py), a fake broker
+pair — no network, never the production DB.
 
 live_greeks.py does `from automate.db.engine import SessionLocal` at
 module load time, binding its OWN copy of that name into
@@ -21,18 +22,7 @@ import json
 from datetime import date, timedelta
 
 import pytest
-from sqlalchemy import create_engine
-from sqlalchemy.ext.compiler import compiles
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy.types import BigInteger
 
-
-@compiles(BigInteger, "sqlite")
-def compile_bigint_sqlite(type_, compiler, **kw):
-    return "INTEGER"
-
-
-from automate.db.engine import Base
 from automate.db.models import CustomStrategy, CustomStrategyPosition
 import automate.api.live_greeks as live_greeks
 from automate.api.live_greeks import compute_portfolio_greeks
@@ -41,12 +31,9 @@ NEAR_EXPIRY = (date.today() + timedelta(days=14)).isoformat()
 
 
 @pytest.fixture()
-def session_factory(monkeypatch):
-    engine = create_engine("sqlite:///:memory:")
-    Base.metadata.create_all(engine, tables=[CustomStrategy.__table__, CustomStrategyPosition.__table__])
-    factory = sessionmaker(bind=engine, expire_on_commit=False)
-    monkeypatch.setattr(live_greeks, "SessionLocal", factory)
-    return factory
+def session_factory(db_session_factory, monkeypatch):
+    monkeypatch.setattr(live_greeks, "SessionLocal", db_session_factory)
+    return db_session_factory
 
 
 class FakeBroker:

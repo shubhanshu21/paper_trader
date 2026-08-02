@@ -206,9 +206,15 @@ class User(Base):
     Security:
     - Passwords are never stored in plaintext — only bcrypt hashes.
     - role: 'admin' can create/manage users; 'viewer' is read-only.
-    - is_active: deactivated accounts cannot log in (all sessions should be
-      invalidated separately when deactivating — TODO(security): implement
-      session revocation list if long-lived sessions are needed).
+    - is_active: deactivated accounts cannot log in. Combined with
+      token_version below, a deactivation now also kills any session that
+      was already issued before the deactivation, not just future logins.
+    - token_version: embedded in every issued JWT as the 'tv' claim (see
+      api/auth.py::create_access_token) and checked against this column on
+      every authenticated request. Bumping it (api/auth.py::bump_token_version)
+      immediately invalidates every token issued before the bump, even
+      though JWTs are otherwise stateless and normally valid until 'exp' —
+      used for "log out everywhere" and admin-forced deactivation.
     """
     __tablename__ = "panel_users"
 
@@ -218,7 +224,16 @@ class User(Base):
     hashed_password = Column(String(256), nullable=False)
     role           = Column(String(16),  nullable=False, default="viewer")   # 'admin' | 'viewer'
     is_active      = Column(Integer,     nullable=False, default=1)           # 0 = deactivated
+    token_version  = Column(Integer,     nullable=False, default=0)           # bumped to revoke all outstanding sessions
     created_at     = Column(DateTime,    nullable=False, server_default=func.now())
+
+    # TOTP two-factor auth (see utils/mfa.py) — mfa_secret is only set once
+    # the user has proven they scanned it (submitted one valid code back
+    # during enrollment); mfa_backup_codes_json holds bcrypt-hashed,
+    # single-use recovery codes for when the authenticator device is lost.
+    mfa_enabled           = Column(Integer, nullable=False, default=0)
+    mfa_secret             = Column(String(64), nullable=True)
+    mfa_backup_codes_json   = Column(Text, nullable=True)
 
     __table_args__ = (
         Index("ix_panel_users_username", "username"),
@@ -233,6 +248,7 @@ class User(Base):
             "email":      self.email,
             "role":       self.role,
             "is_active":  bool(self.is_active),
+            "mfa_enabled": bool(self.mfa_enabled),
             "created_at": self.created_at.isoformat() if self.created_at else None,
         }
 

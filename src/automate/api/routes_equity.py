@@ -29,6 +29,35 @@ def _scope_user_id(user: dict):
 # Helpers
 # ---------------------------------------------------------------------------
 
+def _resolve_paper_exit_price(pos: EquityPosition) -> float:
+    """
+    Best available price for a manual paper-close, in order of freshness:
+    1. A real live LTP from the paper broker, fetched right now.
+    2. pos.current_price — the /ws/positions background poller's last
+       written mark-to-market price (ws_positions.py, every 3s), if the
+       broker call above didn't return one.
+    3. entry_price — final fallback so a close never fails outright, but
+       reports a real (zero) P&L rather than fabricating a plausible one.
+    Using entry_price as exit_price unconditionally (the previous
+    behavior) silently reported 0 P&L on every manual paper close
+    regardless of actual price movement.
+    """
+    try:
+        from automate.api.deps import get_brokers
+        brokers = get_brokers()
+        if brokers is not None:
+            ltp = brokers["paper"].get_ltp(pos.symbol)
+            if ltp is not None:
+                return float(ltp)
+    except Exception:
+        log.warning("Could not fetch live LTP for paper close of equity position %s — falling back.", pos.id, exc_info=True)
+
+    if pos.current_price is not None:
+        return float(pos.current_price)
+
+    return float(pos.entry_price)
+
+
 def _position_with_live_price(pos_dict: dict, brokers: Optional[dict]) -> dict:
     """
     Attach mark-to-market data to an open equity position.
@@ -131,9 +160,7 @@ def close_equity_position(position_id: int, user: dict = Depends(get_current_use
             raise HTTPException(status_code=409, detail="Position is already closed")
 
         if pos.mode == "paper":
-            # Paper close: use entry price as exit price (no live data required)
-            # TODO: fetch live LTP for a more realistic paper P&L calculation
-            exit_price = float(pos.entry_price)
+            exit_price = _resolve_paper_exit_price(pos)
             gross_pnl = (exit_price - float(pos.entry_price)) * pos.quantity
             if pos.direction == "SHORT":
                 gross_pnl = -gross_pnl

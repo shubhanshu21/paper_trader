@@ -182,7 +182,6 @@ def import_day(session, http_session: requests.Session, d: date) -> str:
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--db", default=None, help="Ignored since we use MySQL global configuration")
     parser.add_argument("--from-date", required=True, help="YYYY-MM-DD")
     parser.add_argument("--to-date", required=True, help="YYYY-MM-DD")
     parser.add_argument("--delay", type=float, default=0.4, help="Seconds between requests")

@@ -6,26 +6,18 @@ the exchange's own hedge-benefit netting applies) over the old flat-rate
 estimate — same tiered "real when available, flat-rate fallback" policy
 order-time sizing/validation already use.
 
-In-memory SQLite (automate.db.engine.SessionLocal monkeypatched), a fake
-paper broker (monkeypatching wallet._paper_broker) — no network/real DB.
+Real automate_test MySQL schema (automate.db.engine.SessionLocal
+monkeypatched to a factory bound to this test's own transaction — see
+tests/conftest.py's db_session_factory), a fake paper broker
+(monkeypatching wallet._paper_broker) — no network, and never the real
+production DB.
 """
 import json
+import sys
 from datetime import datetime
 
 import pytest
-from sqlalchemy import create_engine
-from sqlalchemy.ext.compiler import compiles
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy.types import BigInteger
 
-
-@compiles(BigInteger, "sqlite")
-def compile_bigint_sqlite(type_, compiler, **kw):
-    return "INTEGER"
-
-
-import sys
-from automate.db.engine import Base
 from automate.db.models import CustomStrategy, CustomStrategyPosition
 import automate.utils.wallet as wallet
 
@@ -40,12 +32,9 @@ db_engine = sys.modules["automate.db.engine"]
 
 
 @pytest.fixture()
-def session_factory(monkeypatch):
-    engine = create_engine("sqlite:///:memory:")
-    Base.metadata.create_all(engine, tables=[CustomStrategy.__table__, CustomStrategyPosition.__table__])
-    factory = sessionmaker(bind=engine, expire_on_commit=False)  # matches automate.db.engine.SessionLocal's own config
-    monkeypatch.setattr(db_engine, "SessionLocal", factory)
-    return factory
+def session_factory(db_session_factory, monkeypatch):
+    monkeypatch.setattr(db_engine, "SessionLocal", db_session_factory)
+    return db_session_factory
 
 
 def _seed_open_strangle(session_factory, symbol="NIFTY"):

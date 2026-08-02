@@ -24,8 +24,13 @@ from sqlalchemy import select
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 
+from jose import JWTError
+
 from automate.api.auth import (
+    bump_token_version,
     create_access_token,
+    create_mfa_pending_token,
+    decode_mfa_pending_token,
     generate_csrf_token,
     get_current_user,
     get_password_hash,
@@ -35,6 +40,16 @@ from automate.api.auth import (
 from automate.config import PanelAuthConfig
 from automate.db.engine import get_session
 from automate.db.models import User
+from automate.utils.mfa import (
+    consume_backup_code,
+    generate_backup_codes,
+    generate_totp_secret,
+    hash_backup_codes,
+    provisioning_uri,
+    qr_code_data_uri,
+    verify_totp_code,
+)
+from automate.utils.pwned_passwords import check_password_pwned
 
 log = logging.getLogger("api.auth_routes")
 router = APIRouter(prefix="/api/auth", tags=["auth"])
@@ -80,12 +95,28 @@ class LoginRequest(BaseModel):
     password: str
 
 
+class MfaVerifyLoginRequest(BaseModel):
+    mfa_token: str
+    code: str   # a 6-digit TOTP code OR a backup code
+
+
+class MfaConfirmRequest(BaseModel):
+    secret: str
+    code: str
+
+
+class MfaDisableRequest(BaseModel):
+    password: str
+    code: str   # current TOTP or backup code — proves possession, not just the session cookie
+
+
 class UserOut(BaseModel):
     id: int
     username: str
     email: str
     role: str
     is_active: bool
+    mfa_enabled: bool
     created_at: Optional[str]
 
 
@@ -158,6 +189,17 @@ def register(request: Request, body: RegisterRequest, response: Response):
         validate_password_strength(body.password)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
+
+    # Reject passwords found in known public breaches (HaveIBeenPwned's
+    # Pwned Passwords, k-anonymity API — see utils/pwned_passwords.py).
+    # None means "couldn't check" (network/API issue) — fails OPEN, never
+    # blocks registration just because the external check was unreachable.
+    breach_count = check_password_pwned(body.password)
+    if breach_count:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="This password has appeared in known data breaches. Please choose a different one.",
+        )
 
     with get_session() as session:
         # Check if this is the very first user (always allowed as bootstrapping)
@@ -240,7 +282,16 @@ def login(request: Request, body: LoginRequest, response: Response):
             log.warning("Failed login attempt for identifier: %s", identifier[:64])
             raise _generic_401
 
-        token = create_access_token(user.id, user.username, user.role)
+        if user.mfa_enabled:
+            # Password alone isn't enough — issue a short-lived, single-
+            # purpose token (see auth.py::create_mfa_pending_token) that
+            # can ONLY be redeemed at /mfa/verify-login with a valid TOTP/
+            # backup code. No session cookies are set yet.
+            mfa_token = create_mfa_pending_token(user.id)
+            log.info("Password OK, awaiting MFA: username=%s id=%s", user.username, user.id)
+            return {"mfa_required": True, "mfa_token": mfa_token}
+
+        token = create_access_token(user.id, user.username, user.role, user.token_version)
         csrf = generate_csrf_token()
         _set_auth_cookies(response, token, csrf)
 
@@ -251,6 +302,138 @@ def login(request: Request, body: LoginRequest, response: Response):
             "access_token": token,
             "csrf_token": csrf,
         }
+
+
+@router.post("/mfa/verify-login")
+@_limiter.limit("10/minute")
+def mfa_verify_login(request: Request, body: MfaVerifyLoginRequest, response: Response):
+    """
+    Second step of login for an mfa_enabled account — redeems the
+    mfa_token from login() plus a TOTP (or backup) code for the real
+    session cookies. Rate-limited same as login() itself: a 6-digit TOTP
+    code has only 1e6 possibilities, so unlimited guessing must not be
+    allowed.
+    """
+    _generic_401 = HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired verification code.")
+
+    try:
+        mfa_payload = decode_mfa_pending_token(body.mfa_token)
+    except JWTError:
+        raise _generic_401
+
+    user_id = int(mfa_payload["sub"])
+    with get_session() as session:
+        user = session.get(User, user_id)
+        if user is None or not user.is_active or not user.mfa_enabled:
+            raise _generic_401
+
+        code_ok = verify_totp_code(user.mfa_secret, body.code)
+        if not code_ok:
+            consumed, remaining_json = consume_backup_code(user.mfa_backup_codes_json, body.code)
+            if consumed:
+                user.mfa_backup_codes_json = remaining_json
+                code_ok = True
+                log.warning("MFA backup code consumed for username=%s id=%s", user.username, user.id)
+
+        if not code_ok:
+            log.warning("Failed MFA verification for username=%s id=%s", user.username, user.id)
+            raise _generic_401
+
+        token = create_access_token(user.id, user.username, user.role, user.token_version)
+        csrf = generate_csrf_token()
+        _set_auth_cookies(response, token, csrf)
+
+        log.info("User completed MFA login: username=%s id=%s", user.username, user.id)
+        return {
+            "user": user.to_safe_dict(),
+            "message": "Logged in successfully",
+            "access_token": token,
+            "csrf_token": csrf,
+        }
+
+
+@router.post("/mfa/setup")
+def mfa_setup(payload: dict = Depends(get_current_user)):
+    """
+    Step 1 of enrollment: generate a fresh TOTP secret and return it plus
+    a scannable otpauth:// URI. Deliberately NOT persisted yet — the
+    secret only gets saved (in mfa_confirm) once the user proves they
+    actually scanned/imported it by submitting one valid code, so a
+    half-finished enrollment never silently locks anyone into a secret
+    they never actually captured.
+    """
+    user_id = int(payload["sub"])
+    with get_session() as session:
+        user = session.get(User, user_id)
+        if user is None:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Session invalid")
+        if user.mfa_enabled:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="MFA is already enabled. Disable it first to re-enroll.")
+        username = user.username
+
+    secret = generate_totp_secret()
+    uri = provisioning_uri(secret, username)
+    return {"secret": secret, "otpauth_uri": uri, "qr_code_data_uri": qr_code_data_uri(uri)}
+
+
+@router.post("/mfa/confirm")
+def mfa_confirm(body: MfaConfirmRequest, payload: dict = Depends(get_current_user)):
+    """
+    Step 2 of enrollment: verify the code the user's authenticator app
+    computed from the secret returned by /mfa/setup, and only THEN
+    persist it + turn mfa_enabled on. Returns backup codes ONCE, in
+    plaintext — only their bcrypt hashes are stored (see utils/mfa.py) —
+    this is the user's only chance to save them.
+    """
+    if not verify_totp_code(body.secret, body.code):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid verification code. Check your authenticator app and try again.")
+
+    user_id = int(payload["sub"])
+    backup_codes = generate_backup_codes()
+    with get_session() as session:
+        user = session.get(User, user_id)
+        if user is None:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Session invalid")
+        user.mfa_secret = body.secret
+        user.mfa_enabled = 1
+        user.mfa_backup_codes_json = hash_backup_codes(backup_codes)
+
+    log.info("MFA enabled for user id=%s", user_id)
+    return {"message": "MFA enabled.", "backup_codes": backup_codes}
+
+
+@router.post("/mfa/disable")
+def mfa_disable(body: MfaDisableRequest, payload: dict = Depends(get_current_user)):
+    """
+    Requires the account password AND a current TOTP/backup code — not
+    just the session cookie — so a hijacked-but-not-fully-compromised
+    session (e.g. an unattended unlocked browser) can't be used to strip
+    MFA protection off the account by itself.
+    """
+    user_id = int(payload["sub"])
+    with get_session() as session:
+        user = session.get(User, user_id)
+        if user is None:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Session invalid")
+        if not user.mfa_enabled:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="MFA is not enabled.")
+
+        if not verify_password(body.password, user.hashed_password):
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Incorrect password.")
+
+        code_ok = verify_totp_code(user.mfa_secret, body.code)
+        if not code_ok:
+            consumed, _ = consume_backup_code(user.mfa_backup_codes_json, body.code)
+            code_ok = consumed
+        if not code_ok:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid verification code.")
+
+        user.mfa_enabled = 0
+        user.mfa_secret = None
+        user.mfa_backup_codes_json = None
+
+    log.info("MFA disabled for user id=%s", user_id)
+    return {"message": "MFA disabled."}
 
 
 @router.post("/logout")
@@ -265,6 +448,28 @@ def logout(response: Response):
     """
     _clear_auth_cookies(response)
     return {"message": "Logged out successfully"}
+
+
+@router.post("/logout-all")
+def logout_all(response: Response, payload: dict = Depends(get_current_user)):
+    """
+    Revoke EVERY session for the current user, not just this one — e.g.
+    after noticing an unrecognized login, or on a shared/public machine.
+    Bumps token_version (see User model / api/auth.py::bump_token_version),
+    which invalidates every JWT issued before this call on its next use,
+    including the one making this very request — clears this browser's
+    cookies too so it also has to log back in.
+    """
+    user_id = int(payload["sub"])
+    with get_session() as session:
+        user = session.get(User, user_id)
+        if user is None:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Session invalid")
+        bump_token_version(session, user)
+
+    _clear_auth_cookies(response)
+    log.info("All sessions revoked for user id=%s", user_id)
+    return {"message": "Logged out of all sessions."}
 
 
 @router.get("/me", response_model=UserOut)

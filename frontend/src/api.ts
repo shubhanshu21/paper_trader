@@ -14,8 +14,13 @@ export interface User {
   email: string;
   role: string;
   is_active: boolean;
+  mfa_enabled: boolean;
   created_at: string | null;
 }
+
+export type LoginResult =
+  | { user: User; message: string }
+  | { mfa_required: true; mfa_token: string };
 
 export interface WalletSummary {
   starting_capital: number;
@@ -406,11 +411,33 @@ export const api = {
   // Auth
   me: () => request<User>('/api/auth/me'),
   login: (username: string, password: string) =>
-    request<{ user: User; message: string }>('/api/auth/login', {
+    request<LoginResult>('/api/auth/login', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ username, password }),
     }),
+  mfaVerifyLogin: (mfaToken: string, code: string) =>
+    request<{ user: User; message: string }>('/api/auth/mfa/verify-login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mfa_token: mfaToken, code }),
+    }),
+  mfaSetup: () =>
+    request<{ secret: string; otpauth_uri: string; qr_code_data_uri: string }>('/api/auth/mfa/setup', { method: 'POST' }),
+  mfaConfirm: (secret: string, code: string) =>
+    request<{ message: string; backup_codes: string[] }>('/api/auth/mfa/confirm', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ secret, code }),
+    }),
+  mfaDisable: (password: string, code: string) =>
+    request<{ message: string }>('/api/auth/mfa/disable', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password, code }),
+    }),
+  googleOauthStatus: () =>
+    request<{ configured: boolean }>('/api/auth/oauth/google/status'),
   register: (username: string, email: string, password: string) =>
     request<User>('/api/auth/register', {
       method: 'POST',
@@ -419,6 +446,10 @@ export const api = {
     }),
   logout: () =>
     request<{ message: string }>('/api/auth/logout', {
+      method: 'POST',
+    }),
+  logoutAll: () =>
+    request<{ message: string }>('/api/auth/logout-all', {
       method: 'POST',
     }),
 

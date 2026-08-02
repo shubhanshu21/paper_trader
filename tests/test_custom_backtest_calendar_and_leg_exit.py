@@ -6,28 +6,16 @@ feature in custom_strategy_scheduler.py/rule_strategy.py this session.
 
 Same __new__()-bypass test-double pattern as test_custom_backtest_engine.py
 for the DB-free cases; the per-leg-exit-walk and calendar-spread cases need
-a REAL (in-memory SQLite) session because _run_one_cycle's day-by-day walk
-queries fno_bhavcopy directly via `text()` SQL — same
-@compiles(BigInteger, "sqlite") workaround tests/test_routes_backtest_runs.py
-already established.
+a REAL session (the shared automate_test MySQL schema — see
+tests/conftest.py) because _run_one_cycle's day-by-day walk queries
+fno_bhavcopy directly via `text()` SQL.
 """
 from types import SimpleNamespace
 from typing import Optional
 from unittest.mock import patch
 
 import pytest
-from sqlalchemy import create_engine
-from sqlalchemy.ext.compiler import compiles
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy.types import BigInteger
 
-
-@compiles(BigInteger, "sqlite")
-def compile_bigint_sqlite(type_, compiler, **kw):
-    return "INTEGER"
-
-
-from automate.db.engine import Base
 from automate.db.models import FnoBhavcopy
 from automate.backtest.custom_engine import CustomRuleBacktestEngine
 from automate.backtest.data_feed import DataFeed
@@ -82,12 +70,6 @@ def _build_feed(ce_price: float, pe_price: float, ce_token: str, pe_token: str) 
     return feed
 
 
-def _sqlite_session():
-    engine = create_engine("sqlite:///:memory:")
-    Base.metadata.create_all(engine, tables=[FnoBhavcopy.__table__])
-    return sessionmaker(bind=engine)()
-
-
 def _build_engine(feed: _TestFeed, rules: dict, session=None) -> CustomRuleBacktestEngine:
     engine = CustomRuleBacktestEngine.__new__(CustomRuleBacktestEngine)
     engine.symbol = "TESTSTOCK"
@@ -140,7 +122,7 @@ class TestPerLegIndependentExit:
             ],
         }
 
-    def test_leg_with_own_take_profit_exits_early_sibling_rides_to_expiry(self):
+    def test_leg_with_own_take_profit_exits_early_sibling_rides_to_expiry(self, db_session):
         ce_token, pe_token = "NSE_FO|CE_TEST", "NSE_FO|PE_TEST"
         # Entry premium 10.0, then a big drop to 2.0 on the checked day — a
         # SELL leg profits as price falls, easily clearing a 50%
@@ -158,7 +140,7 @@ class TestPerLegIndependentExit:
         feed.set_ltp(ce_token, 10.0)
         feed.set_ltp(pe_token, 8.0)
         feed.by_day[ce_token] = {"2026-01-06": 2.0}
-        session = _sqlite_session()
+        session = db_session
         session.add(FnoBhavcopy(symbol="TESTSTOCK", instrument="OPTSTK", expiry_dt=EXPIRY,
                                  trade_date="2026-01-06", close=2.0))
         session.commit()
@@ -198,7 +180,7 @@ class TestPerLegIndependentExit:
 
 
 class TestTrailingStopLegExit:
-    def test_trailing_stop_leg_exits_when_price_reverses_past_the_ratchet(self):
+    def test_trailing_stop_leg_exits_when_price_reverses_past_the_ratchet(self, db_session):
         ce_token, pe_token = "NSE_FO|CE_TEST", "NSE_FO|PE_TEST"
         # SELL CE trailing stop seeded at entry_price=20.0 -> stop=21.0
         # (trail_amount=1 point). A rise to 22.0 on the checked day crosses
@@ -214,7 +196,7 @@ class TestTrailingStopLegExit:
         feed.set_ltp(ce_token, 20.0)
         feed.set_ltp(pe_token, 8.0)
         feed.by_day[ce_token] = {"2026-01-06": 22.0}
-        session = _sqlite_session()
+        session = db_session
         session.add(FnoBhavcopy(symbol="TESTSTOCK", instrument="OPTSTK", expiry_dt=EXPIRY,
                                  trade_date="2026-01-06", close=22.0))
         session.commit()
@@ -237,8 +219,8 @@ class TestTrailingStopLegExit:
 
 
 class TestNaturalExitDateAndTradingDays:
-    def test_natural_exit_date_returns_the_last_real_trading_day_for_that_expiry(self):
-        session = _sqlite_session()
+    def test_natural_exit_date_returns_the_last_real_trading_day_for_that_expiry(self, db_session):
+        session = db_session
         session.add_all([
             FnoBhavcopy(symbol="TESTSTOCK", instrument="OPTSTK", expiry_dt="2026-01-29", trade_date="2026-01-27"),
             FnoBhavcopy(symbol="TESTSTOCK", instrument="OPTSTK", expiry_dt="2026-01-29", trade_date="2026-01-29"),
@@ -253,8 +235,8 @@ class TestNaturalExitDateAndTradingDays:
         # Memoized — same dict reused without re-querying.
         assert cache["2026-01-29"] == "2026-01-29"
 
-    def test_trading_days_scoped_to_one_expiry_and_date_range(self):
-        session = _sqlite_session()
+    def test_trading_days_scoped_to_one_expiry_and_date_range(self, db_session):
+        session = db_session
         session.add_all([
             FnoBhavcopy(symbol="TESTSTOCK", instrument="OPTSTK", expiry_dt="2026-01-29", trade_date="2026-01-06"),
             FnoBhavcopy(symbol="TESTSTOCK", instrument="OPTSTK", expiry_dt="2026-01-29", trade_date="2026-01-07"),

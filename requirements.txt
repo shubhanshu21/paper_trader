@@ -5,6 +5,7 @@ pandas==2.2.3
 rich==13.9.4
 selenium==4.46.0
 pyotp==2.10.0
+qrcode[pil]==8.2
 fastapi==0.118.0
 uvicorn[standard]==0.38.0
 sqlalchemy==2.0.41

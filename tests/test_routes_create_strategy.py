@@ -7,26 +7,15 @@ and backtest_strategy() now also blocks an all-EQUITY strategy (its
 cycle-discovery model is expiry-driven — see custom_engine.py — a plain
 equity leg has no expiry to anchor a cycle to).
 
-Direct-function-call style against an in-memory SQLite DB — same pattern
-as tests/test_routes_backtest_runs.py.
+Direct-function-call style against the shared automate_test MySQL schema
+(see tests/conftest.py) — same pattern as tests/test_routes_backtest_runs.py.
 """
 import asyncio
 import json
 
 import pytest
 from fastapi import HTTPException
-from sqlalchemy import create_engine
-from sqlalchemy.ext.compiler import compiles
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy.types import BigInteger
 
-
-@compiles(BigInteger, "sqlite")
-def compile_bigint_sqlite(type_, compiler, **kw):
-    return "INTEGER"
-
-
-from automate.db.engine import Base
 from automate.db.models import CustomStrategy, CustomBacktestRun
 from automate.api.routes_custom_strategies import CustomStrategyCreate, create_strategy, backtest_strategy, BacktestRequest
 
@@ -34,17 +23,13 @@ USER = {"sub": "1"}
 
 
 @pytest.fixture()
-def session_factory():
-    engine = create_engine("sqlite:///:memory:")
-    Base.metadata.create_all(engine, tables=[CustomStrategy.__table__, CustomBacktestRun.__table__])
-    return sessionmaker(bind=engine)
+def session_factory(db_session_factory):
+    return db_session_factory
 
 
 @pytest.fixture()
-def db(session_factory):
-    session = session_factory()
-    yield session
-    session.close()
+def db(db_session):
+    return db_session
 
 
 def _make_strategy(db, **overrides):

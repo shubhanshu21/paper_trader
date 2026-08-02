@@ -330,6 +330,36 @@ class PanelAuthConfig:
 
 
 # ---------------------------------------------------------------------------
+# Google OAuth — optional alternative login for the web panel
+# ---------------------------------------------------------------------------
+class GoogleOAuthConfig:
+    """
+    "Sign in with Google" for the panel (api/routes_oauth.py) — entirely
+    optional; the panel works exactly as before with only username/
+    password if this isn't configured.
+
+    Requires a real OAuth 2.0 Client ID registered in Google Cloud
+    Console (APIs & Services -> Credentials -> Create Credentials ->
+    OAuth client ID -> Web application), with GOOGLE_OAUTH_REDIRECT_URI
+    added to that client's "Authorized redirect URIs". This app cannot
+    create that registration for you — it's tied to your own Google
+    Cloud project/billing identity.
+
+    Set:
+      GOOGLE_OAUTH_CLIENT_ID
+      GOOGLE_OAUTH_CLIENT_SECRET
+      GOOGLE_OAUTH_REDIRECT_URI (e.g. https://your-domain/api/auth/oauth/google/callback)
+    """
+    CLIENT_ID:     str = _optional("GOOGLE_OAUTH_CLIENT_ID")
+    CLIENT_SECRET: str = _optional("GOOGLE_OAUTH_CLIENT_SECRET")
+    REDIRECT_URI:  str = _optional("GOOGLE_OAUTH_REDIRECT_URI")
+
+    @classmethod
+    def is_configured(cls) -> bool:
+        return bool(cls.CLIENT_ID and cls.CLIENT_SECRET and cls.REDIRECT_URI)
+
+
+# ---------------------------------------------------------------------------
 # Equity Moving Average Crossover Strategy
 # ---------------------------------------------------------------------------
 class EquityMACrossoverConfig:

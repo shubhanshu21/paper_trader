@@ -1,8 +1,9 @@
 """
 tests/test_iv_history_scheduler.py — api/iv_history_scheduler.py: the
 daily ATM-IV snapshot job feeding rule_schema.py's entry.condition
-IV_RANK feature. Direct-function-call style, fakes for the broker,
-in-memory SQLite for CustomStrategy/SymbolIvHistory — same pattern
+IV_RANK feature. Direct-function-call style, fakes for the broker, the shared
+automate_test MySQL schema (see tests/conftest.py) for
+CustomStrategy/SymbolIvHistory — same pattern
 tests/test_routes_backtest_runs.py already established.
 """
 import json
@@ -10,18 +11,7 @@ from datetime import date
 from unittest.mock import patch
 
 import pytest
-from sqlalchemy import create_engine
-from sqlalchemy.ext.compiler import compiles
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy.types import BigInteger
 
-
-@compiles(BigInteger, "sqlite")
-def compile_bigint_sqlite(type_, compiler, **kw):
-    return "INTEGER"
-
-
-from automate.db.engine import Base
 from automate.db.models import CustomStrategy, SymbolIvHistory
 import automate.api.iv_history_scheduler as scheduler
 
@@ -55,17 +45,13 @@ class FakeBroker:
 
 
 @pytest.fixture()
-def session_factory():
-    engine = create_engine("sqlite:///:memory:")
-    Base.metadata.create_all(engine, tables=[CustomStrategy.__table__, SymbolIvHistory.__table__])
-    return sessionmaker(bind=engine)
+def session_factory(db_session_factory):
+    return db_session_factory
 
 
 @pytest.fixture()
-def db(session_factory):
-    session = session_factory()
-    yield session
-    session.close()
+def db(db_session):
+    return db_session
 
 
 def _make_strategy(db, **overrides):

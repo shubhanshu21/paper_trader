@@ -148,7 +148,6 @@ def _run_historical(req: BacktestRequest, contract_type: str) -> dict:
         strategy_kwargs["stop_loss_pct"] = req.stop_loss_pct
 
     engine = HistoricalCycleEngine(
-        db_path=str(REPO_ROOT / "dataset" / "fno_bhavcopy.db"),
         symbol=req.symbol,
         strategy=req.strategy,
         num_lots=req.num_lots,

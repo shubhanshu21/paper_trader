@@ -3,34 +3,20 @@ tests/test_scheduler_reconciliation_wiring.py — custom_strategy_scheduler.py::
 _reconcile_live_positions, the caller that wires utils/position_reconciliation.py's
 pure diff logic to a real DB session + broker + notify() alerting. _reconcile_live_positions
 takes its `db` session as a plain argument (no module-level SessionLocal to
-monkeypatch) — an in-memory SQLite session is passed straight in.
+monkeypatch) — a real session against the automate_test MySQL schema
+(see tests/conftest.py) is passed straight in.
 """
 import json
 
 import pytest
-from sqlalchemy import create_engine
-from sqlalchemy.ext.compiler import compiles
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy.types import BigInteger
 
-
-@compiles(BigInteger, "sqlite")
-def compile_bigint_sqlite(type_, compiler, **kw):
-    return "INTEGER"
-
-
-from automate.db.engine import Base
 from automate.db.models import CustomStrategy, CustomStrategyPosition
 from automate.api.custom_strategy_scheduler import _reconcile_live_positions
 
 
 @pytest.fixture()
-def db():
-    engine = create_engine("sqlite:///:memory:")
-    Base.metadata.create_all(engine, tables=[CustomStrategy.__table__, CustomStrategyPosition.__table__])
-    session = sessionmaker(bind=engine, expire_on_commit=False)()
-    yield session
-    session.close()
+def db(db_session):
+    return db_session
 
 
 def _make_strategy(db, **overrides):

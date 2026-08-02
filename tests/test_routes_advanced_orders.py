@@ -6,25 +6,14 @@ app — passing real db/user objects positionally/by-keyword bypasses that
 machinery entirely, consistent with this repo's existing test style of
 testing business logic directly rather than through HTTP).
 
-Uses a throwaway in-memory SQLite database (see tests/test_position_tracker.py
-for the same pattern) — no shared state with the production MySQL database.
+Uses the shared automate_test MySQL schema (see tests/conftest.py) — no
+shared state with the production database.
 """
 import json
 
 import pytest
 from fastapi import HTTPException
-from sqlalchemy import create_engine
-from sqlalchemy.ext.compiler import compiles
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy.types import BigInteger
 
-
-@compiles(BigInteger, "sqlite")
-def compile_bigint_sqlite(type_, compiler, **kw):
-    return "INTEGER"
-
-
-from automate.db.engine import Base
 from automate.db.models import AdvancedOrder
 import automate.api.routes_advanced_orders as routes
 from automate.api.routes_advanced_orders import (
@@ -71,13 +60,8 @@ OTHER_USER = {"sub": "2"}
 
 
 @pytest.fixture()
-def db():
-    engine = create_engine("sqlite:///:memory:")
-    Base.metadata.create_all(engine, tables=[AdvancedOrder.__table__])
-    Session = sessionmaker(bind=engine)
-    session = Session()
-    yield session
-    session.close()
+def db(db_session):
+    return db_session
 
 
 @pytest.fixture()
