@@ -29,6 +29,10 @@ temp_form.html
 frontend/node_modules/
 frontend/dist/
 
+# ── Deploy configs ───────────────────────────────────────────────────────────
+deploy/
+!deploy/*.example
+
 # ── IDE / editor ───────────────────────────────────────────────────────────
 .idea/
 .vscode/
