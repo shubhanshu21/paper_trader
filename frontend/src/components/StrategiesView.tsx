@@ -5,8 +5,14 @@ import {
   Download, GitCompare, Eye,
   type LucideIcon,
 } from "lucide-react";
-import { C, FONT, useToast, DatePicker, fmtDate, fmtDateTime, formatTime12h, inr } from "./Common";
+import { DatePicker } from "./Common";
+import { C, FONT, fmtDate, fmtDateTime, formatTime12h, inr } from "../lib/format";
+import { useToast } from "../hooks/useToast";
 import { api, wsUrl } from "../api";
+import type {
+  BacktestCycle, BacktestResult, BacktestRunSummary, BacktestRunDetail,
+  PayoffResponse, PositionLeg,
+} from "../api";
 import type { CustomStrategy, CustomStrategyRules, PortfolioGreeksResponse } from "../types/customStrategy";
 import { useCustomStrategyPositions } from "../hooks/useCustomStrategyPositions";
 import StrategyBuilderModal from "./StrategyBuilderModal";
@@ -36,79 +42,6 @@ export interface InstrumentTypeOption {
   description: string;
 }
 
-interface BacktestCycle {
-  entry_date: string;
-  expiry: string;
-  exit_date: string;
-  exit_reason: string;
-  net_pnl: number;
-  pnl_pct_of_premium: number;
-  won: boolean;
-  liquid: boolean;
-  symbol?: string;
-}
-
-interface PerSymbolBreakdown {
-  cycles_tested: number;
-  avg_return_pct: number;
-  win_rate_pct: number;
-}
-
-interface BacktestResult {
-  run_id?: number;
-  strategy_id?: number;
-  cycles_tested: number;
-  avg_return_pct_of_premium: number;
-  win_rate_pct: number;
-  cycles: BacktestCycle[];
-  from_date?: string | null;
-  to_date?: string | null;
-  run_at?: string;
-  total_net_pnl?: number;
-  max_drawdown_pct?: number;
-  profit_factor?: number | null;
-  max_consecutive_wins?: number;
-  max_consecutive_losses?: number;
-  best_cycle_pct?: number | null;
-  worst_cycle_pct?: number | null;
-  avg_win_pct?: number | null;
-  avg_loss_pct?: number | null;
-  equity_curve?: number[];
-  // Added for the "world-class" backtest pass — Indian-market-specific
-  // (NIFTY 50 benchmark, India risk-free rate) risk/return stats.
-  equity_curve_compounded?: number[];
-  total_return_pct?: number | null;
-  cagr_pct?: number | null;
-  sharpe_ratio?: number | null;
-  sortino_ratio?: number | null;
-  calmar_ratio?: number | null;
-  max_drawdown_duration_days?: number | null;
-  max_drawdown_ongoing?: boolean;
-  exposure_pct?: number | null;
-  benchmark_return_pct?: number | null;
-  alpha_pct?: number | null;
-  sample_size_warning?: "limited" | "very_limited" | null;
-  per_symbol?: Record<string, PerSymbolBreakdown>;
-  skipped_symbols?: Record<string, string>;
-}
-
-interface BacktestRunSummary {
-  run_id: number;
-  strategy_id: number;
-  status: "QUEUED" | "RUNNING" | "COMPLETED" | "FAILED";
-  from_date: string | null;
-  to_date: string | null;
-  progress_current: number;
-  progress_total: number | null;
-  error_message: string | null;
-  created_at: string | null;
-  completed_at: string | null;
-}
-
-interface BacktestRunDetail extends BacktestRunSummary {
-  result: BacktestResult | null;
-}
-
 interface LegGreeks {
   iv: number;
   delta: number;
@@ -136,55 +69,6 @@ interface LiveGreeksResponse {
   legs: LiveGreeksLeg[];
   net: { delta: number; gamma: number; theta: number; vega: number } | null;
   message?: string;
-}
-
-interface PayoffSymbolResult {
-  max_profit: number | null;
-  max_profit_pct: number | null;
-  max_loss: number | null;
-  capital_basis?: number | null;
-  breakevens: number[];
-  breakevens_detail?: { price: number; pct_from_spot: number }[];
-  payoff_curve?: { price: number; pnl: number }[];
-  risk_reward_ratio: number | null;
-  probability_of_profit_pct: number | null;
-  net_premium: number;
-  spot_price?: number;
-  expiry?: string;
-  legs?: {
-    strike: number;
-    option_type: "CE" | "PE";
-    action: "BUY" | "SELL";
-    quantity: number;
-    current_price: number;
-  }[];
-  error?: string;
-}
-
-interface PayoffResponse {
-  strategy_id: number;
-  symbols: Record<string, PayoffSymbolResult>;
-}
-
-interface PositionLeg {
-  id: number;
-  leg_index: number;
-  mode: "paper" | "live";
-  instrument_key: string;
-  instrument_type: string;
-  option_type: string | null;
-  strike: number | null;
-  expiry: string | null;
-  transaction_type: "BUY" | "SELL";
-  quantity: number;
-  entry_price: number;
-  exit_price: number | null;
-  order_id: string | null;
-  exit_order_id: string | null;
-  status: "OPEN" | "CLOSED";
-  exit_reason: string | null;
-  opened_at: string;
-  closed_at: string | null;
 }
 
 const strikeLabel = (sel: { mode: string; value: number | null }) => {
@@ -783,7 +667,7 @@ export default function StrategiesView({
       try {
         const data = await api.getCustomStrategyTemplateExpiries(symbol);
         if (cancelled) return;
-        const expiries: { date: string; label: string }[] = (data as any).expiries || [];
+        const expiries = data.expiries || [];
         const mode = selectedStrategy?.rules?.expiry?.mode || "WEEKLY";
         const match = mode === "MONTHLY" ? expiries.find((e) => e.label === "Monthly") : expiries[0];
         if (match && !cancelled) setExpiryDatePreview(match.date);
@@ -792,7 +676,7 @@ export default function StrategiesView({
       }
     })();
     return () => { cancelled = true; };
-  }, [selectedStrategy?.id, selectedStrategy?.rules?.expiry?.mode]);
+  }, [selectedStrategy]);
 
   const [payoff, setPayoff] = useState<PayoffResponse | null>(null);
   const [payoffLoading, setPayoffLoading] = useState(false);
@@ -816,7 +700,7 @@ export default function StrategiesView({
     setIvShift(0);
     setDaysRemaining(null);
     if (selectedStrategy && selectedStrategy.rules) fetchPayoff(selectedStrategy);
-  }, [selectedStrategy?.id]);
+  }, [selectedStrategy]);
 
   useEffect(() => {
     if (payoff && Object.keys(payoff.symbols).length > 0) {
@@ -851,7 +735,7 @@ export default function StrategiesView({
   useEffect(() => {
     setClosedLegs([]);
     if (selectedStrategy) fetchClosedLegs(selectedStrategy);
-  }, [selectedStrategy?.id]);
+  }, [selectedStrategy]);
 
   // Event-driven refetch (not a poll): when the live open-leg count for
   // this strategy drops, a leg just closed (SL/TP/expiry/manual) — pull
@@ -862,7 +746,7 @@ export default function StrategiesView({
     if (!selectedStrategy) return;
     if (liveOpenLegs.length < prevOpenCountRef.current) fetchClosedLegs(selectedStrategy);
     prevOpenCountRef.current = liveOpenLegs.length;
-  }, [liveOpenLegs.length, selectedStrategy?.id]);
+  }, [liveOpenLegs.length, selectedStrategy]);
 
   // Pull whatever backtest result is already stored for this strategy (if
   // any) as soon as it's selected — persists across page reloads/navigating
@@ -881,13 +765,13 @@ export default function StrategiesView({
       }
     })();
     return () => { cancelled = true; };
-  }, [selectedStrategy?.id]);
+  }, [selectedStrategy]);
 
   useEffect(() => {
     setBacktestRuns([]);
     setCompareRunIds([]);
     if (selectedStrategy) loadBacktestRuns(selectedStrategy);
-  }, [selectedStrategy?.id]);
+  }, [selectedStrategy]);
 
   const [confirmModal, setConfirmModal] = useState<{
     title: string;
@@ -936,7 +820,7 @@ export default function StrategiesView({
       greeksWsRef.current?.close();
       greeksWsRef.current = null;
     };
-  }, [selectedStrategy?.id, selectedStrategy?.status]);
+  }, [selectedStrategy]);
 
   const handleStatusChange = async (strategy: CustomStrategy, newStatus: string) => {
     try {

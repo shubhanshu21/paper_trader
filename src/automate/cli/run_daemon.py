@@ -62,17 +62,15 @@ import os
 import signal
 import sys
 import time
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeoutError
 from datetime import date
 from pathlib import Path
-from typing import Optional
 
-from automate.config import RunConfig, LogConfig, STRATEGY_CONFIGS, UpstoxConfig
-from automate.utils.logger import setup_logger
-from automate.utils.telegram_alert import alert_heartbeat
-from automate.utils.notify import notify
-from automate.utils.position_tracker import get_open_positions
+from automate.auth.upstox_auto_login import ensure_fresh_upstox_token
 from automate.broker.broker_factory import BrokerFactory
+from automate.cli.run_position_monitor import monitor_once
+from automate.cli.run_strategy import run_entries
 from automate.compliance.sebi_rules import (
     AuditTrail,
     KillSwitch,
@@ -81,11 +79,13 @@ from automate.compliance.sebi_rules import (
     init_market_calendar,
     print_risk_disclaimer,
 )
+from automate.config import STRATEGY_CONFIGS, LogConfig, RunConfig, UpstoxConfig
 from automate.strategies.registry import STRATEGIES
-from automate.cli.run_strategy import run_entries
-from automate.cli.run_position_monitor import monitor_once
-from automate.auth.upstox_auto_login import ensure_fresh_upstox_token
+from automate.utils.logger import setup_logger
+from automate.utils.notify import notify
+from automate.utils.position_tracker import get_open_positions
 from automate.utils.strategy_overrides import get_effective_config
+from automate.utils.telegram_alert import alert_heartbeat
 
 # How long to sleep between ticks — short while the market's open (stay
 # responsive to SL/TP/expiry), long while it's closed (nothing to do,
@@ -140,7 +140,7 @@ def _heartbeat_marker_path() -> Path:
 PID_FILE = Path("logs") / "daemon.pid"
 
 
-def _ensure_fresh_upstox_token_bounded(log: logging.Logger) -> Optional[str]:
+def _ensure_fresh_upstox_token_bounded(log: logging.Logger) -> str | None:
     """
     Same contract as ensure_fresh_upstox_token(), but never blocks the
     caller past _TOKEN_REFRESH_TIMEOUT_SEC. The underlying Selenium call

@@ -16,7 +16,7 @@ from sqlalchemy import select
 from automate.api.auth import get_current_user
 from automate.api.deps import get_brokers
 from automate.db.engine import get_session
-from automate.db.models import Instrument, EquityPosition
+from automate.db.models import EquityPosition, Instrument
 
 log = logging.getLogger("api.terminal")
 router = APIRouter(prefix="/api/terminal", tags=["terminal"])
@@ -119,7 +119,7 @@ def get_instrument_ltp(key: str, mode: str = "paper", _user: dict = Depends(get_
             raise HTTPException(status_code=404, detail="LTP quote unavailable.")
         return {"instrument_key": instrument_key, "ltp": ltp}
     except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"Broker quote error: {exc}")
+        raise HTTPException(status_code=502, detail=f"Broker quote error: {exc}") from exc
 
 
 @router.get("/depth/{key}")
@@ -259,9 +259,9 @@ def execute_manual_trade(req: ManualTradeRequest, user: dict = Depends(get_curre
                 )
         except RuntimeError as exc:
             # Shortfall exceptions raised by PaperBroker
-            raise HTTPException(status_code=402, detail=str(exc))
+            raise HTTPException(status_code=402, detail=str(exc)) from exc
         except Exception as exc:
-            raise HTTPException(status_code=502, detail=f"Broker order submission failed: {exc}")
+            raise HTTPException(status_code=502, detail=f"Broker order submission failed: {exc}") from exc
 
         if not order_id and not req.mode == "paper":
             raise HTTPException(status_code=502, detail="Broker rejected order placement (empty order ID).")

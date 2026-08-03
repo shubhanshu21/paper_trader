@@ -8,13 +8,13 @@ from types import SimpleNamespace
 import pytest
 
 from automate.utils.option_utils import (
-    round_to_nearest_strike,
-    find_nearest_monthly_expiry,
-    find_instrument_token,
     calculate_strangle_strikes,
-    strangle_pnl_pct,
     check_exit_trigger,
+    find_instrument_token,
+    find_nearest_monthly_expiry,
     is_within_pre_expiry_buffer,
+    round_to_nearest_strike,
+    strangle_pnl_pct,
 )
 
 

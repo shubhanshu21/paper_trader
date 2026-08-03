@@ -16,16 +16,16 @@ Covers two independent position tables:
 """
 import asyncio
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from sqlalchemy import select
 
 from automate.api.auth import get_current_user_ws
-from automate.utils.position_tracker import get_open_positions
-from automate.api.deps import get_brokers, compute_mtm_economics
+from automate.api.deps import compute_mtm_economics, get_brokers
 from automate.db.engine import get_session
 from automate.db.models import EquityPosition
+from automate.utils.position_tracker import get_open_positions
 
 log = logging.getLogger("api.ws")
 router = APIRouter()
@@ -98,7 +98,7 @@ def _snapshot_equity(brokers, user: dict) -> list:
                 sign = -1 if pos.direction in ("SHORT", "SELL") else 1
                 pos.current_price = ltp
                 pos.unrealized_pnl = (ltp - float(pos.entry_price)) * pos.quantity * sign
-                pos.price_updated_at = datetime.now(timezone.utc)
+                pos.price_updated_at = datetime.now(UTC)
 
             pos_dict = pos.to_dict()
             pos_dict["display_symbol"] = display_symbols.get(pos.symbol, pos.symbol)

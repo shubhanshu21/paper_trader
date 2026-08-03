@@ -12,6 +12,7 @@ charges P&L leaderboard, by asset class (stocks, indices, commodities).
 import json
 from collections import defaultdict
 from datetime import date as date_cls
+
 from fastapi import APIRouter, Depends
 
 from automate.api.auth import get_current_user

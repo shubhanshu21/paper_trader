@@ -22,8 +22,8 @@ a bug to fix later.
 """
 import asyncio
 import json
-from datetime import date, datetime, time as dtime
-from typing import Optional
+from datetime import date, datetime
+from datetime import time as dtime
 from zoneinfo import ZoneInfo
 
 from automate.db.engine import SessionLocal
@@ -56,7 +56,7 @@ def _already_snapshotted_today(db, symbol: str, today: str) -> bool:
     ).first() is not None
 
 
-def _snapshot_symbol_iv(broker, symbol: str) -> Optional[float]:
+def _snapshot_symbol_iv(broker, symbol: str) -> float | None:
     """
     Solve today's ATM IV for `symbol` from its nearest-weekly option
     chain — same Black-76/forward-price pattern

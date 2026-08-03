@@ -43,12 +43,10 @@ class TestAcquireSingletonLock:
 
         # A brand-new handle on the same path can now acquire it (no stale lock left behind).
         path = tmp_path / "scheduler.lock"
-        fh2 = open(path, "w")
-        try:
-            fcntl.flock(fh2.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-            acquired = True
-        except OSError:
-            acquired = False
-        finally:
-            fh2.close()
+        with open(path, "w") as fh2:
+            try:
+                fcntl.flock(fh2.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                acquired = True
+            except OSError:
+                acquired = False
         assert acquired is True

@@ -41,8 +41,8 @@ class TestStrategyTemplates:
         iron_condor = next(t for t in get_strategy_types()["strategy_types"] if t["type"] == "IRON_CONDOR")
         legs = iron_condor["legs"]
         assert len(legs) == 4
-        assert sum(1 for l in legs if l["action"] == "SELL") == 2
-        assert sum(1 for l in legs if l["action"] == "BUY") == 2
+        assert sum(1 for leg in legs if leg["action"] == "SELL") == 2
+        assert sum(1 for leg in legs if leg["action"] == "BUY") == 2
 
     def test_no_template_has_duplicate_legs(self):
         # Confirms the templates themselves don't trip the new

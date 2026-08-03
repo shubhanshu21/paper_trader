@@ -4,9 +4,7 @@ utils/notify.py, the only writer). The frontend Bell icon uses the
 live-updating /ws/notifications WebSocket for real-time pushes; these
 REST endpoints back the initial page load and the mark-read actions.
 """
-from typing import Optional
-from fastapi import APIRouter, HTTPException, Depends
-from pydantic import BaseModel
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 

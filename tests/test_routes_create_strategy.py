@@ -16,8 +16,13 @@ import json
 import pytest
 from fastapi import HTTPException
 
-from automate.db.models import CustomStrategy, CustomBacktestRun
-from automate.api.routes_custom_strategies import CustomStrategyCreate, create_strategy, backtest_strategy, BacktestRequest
+from automate.api.routes_custom_strategies import (
+    BacktestRequest,
+    CustomStrategyCreate,
+    backtest_strategy,
+    create_strategy,
+)
+from automate.db.models import CustomStrategy
 
 USER = {"sub": "1"}
 
@@ -33,14 +38,14 @@ def db(db_session):
 
 
 def _make_strategy(db, **overrides):
-    defaults = dict(
-        user_id=1, name="Test Strategy", instrument_type="STOCK", strategy_type="CUSTOM", option_type="BOTH",
-        symbols=json.dumps(["RELIANCE"]),
-        rules_json=json.dumps({
+    defaults = {
+        "user_id": 1, "name": "Test Strategy", "instrument_type": "STOCK", "strategy_type": "CUSTOM", "option_type": "BOTH",
+        "symbols": json.dumps(["RELIANCE"]),
+        "rules_json": json.dumps({
             "legs": [{"action": "SELL", "option_type": "CE", "strike_selection": {"mode": "ATM", "value": None}, "lots": 1}],
         }),
-        status="DRAFT",
-    )
+        "status": "DRAFT",
+    }
     defaults.update(overrides)
     s = CustomStrategy(**defaults)
     db.add(s)

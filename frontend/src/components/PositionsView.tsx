@@ -1,7 +1,8 @@
 import { useState, ReactNode } from "react";
 import { Search, Download, BarChart2, TrendingUp, ChevronDown, ChevronUp } from "lucide-react";
 import { OptionsPosition, EquityPosition } from "../api";
-import { C, FONT, inr, withSign, sign, Banner, Td, Th } from "./Common";
+import { Banner, Td, Th } from "./Common";
+import { C, FONT, inr, withSign, sign } from "../lib/format";
 import { useCustomStrategyPositions as useLiveCustomPositions } from "../hooks/useCustomStrategyPositions";
 
 function ordinalSuffix(day: number): string {

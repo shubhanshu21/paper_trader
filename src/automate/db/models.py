@@ -17,8 +17,17 @@ Security: No raw SQL strings used here — all access via ORM queries or
   parameterized text() calls in the caller modules.
 """
 from sqlalchemy import (
-    BigInteger, Boolean, Column, DateTime, Index, Integer,
-    Numeric, SmallInteger, String, Text, func,
+    BigInteger,
+    Boolean,
+    Column,
+    DateTime,
+    Index,
+    Integer,
+    Numeric,
+    SmallInteger,
+    String,
+    Text,
+    func,
 )
 
 from automate.db.engine import Base
@@ -91,7 +100,7 @@ class Position(Base):
             c.name: _serialize(v)
             for c, v in zip(self.__table__.columns, [
                 getattr(self, c.name) for c in self.__table__.columns
-            ])
+            ], strict=False)
         }
 
 
@@ -308,7 +317,7 @@ class EquityPosition(Base):
             c.name: _serialize(v)
             for c, v in zip(self.__table__.columns, [
                 getattr(self, c.name) for c in self.__table__.columns
-            ])
+            ], strict=False)
         }
 
 
@@ -371,7 +380,7 @@ class Instrument(Base):
             c.name: _serialize(v)
             for c, v in zip(self.__table__.columns, [
                 getattr(self, c.name) for c in self.__table__.columns
-            ])
+            ], strict=False)
         }
 
 
@@ -509,7 +518,7 @@ class CustomStrategy(Base):
             )
             for c, v in zip(self.__table__.columns, [
                 getattr(self, c.name) for c in self.__table__.columns
-            ])
+            ], strict=False)
         }
         # Expose rules_json as a parsed object under "rules" — the API/UI
         # never needs to handle the raw JSON string.
@@ -578,7 +587,7 @@ class CustomStrategyPosition(Base):
             )
             for c, v in zip(self.__table__.columns, [
                 getattr(self, c.name) for c in self.__table__.columns
-            ])
+            ], strict=False)
         }
 
 

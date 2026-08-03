@@ -16,8 +16,8 @@ import pytest
 
 import automate.api.deps as deps
 import automate.api.routes_equity as routes
+from automate.api.routes_equity import _resolve_paper_exit_price, close_equity_position
 from automate.db.models import EquityPosition
-from automate.api.routes_equity import close_equity_position, _resolve_paper_exit_price
 
 USER = {"sub": "1"}
 
@@ -38,11 +38,11 @@ def db(db_session_factory, monkeypatch):
 
 
 def _make_open_position(db, **overrides):
-    defaults = dict(
-        user_id=1, strategy_name="equity_ma_crossover", mode="paper", symbol="NSE_EQ|RELIANCE",
-        direction="LONG", product="CNC", entry_date=date.today().isoformat(),
-        entry_price=100.0, quantity=10, status="OPEN",
-    )
+    defaults = {
+        "user_id": 1, "strategy_name": "equity_ma_crossover", "mode": "paper", "symbol": "NSE_EQ|RELIANCE",
+        "direction": "LONG", "product": "CNC", "entry_date": date.today().isoformat(),
+        "entry_price": 100.0, "quantity": 10, "status": "OPEN",
+    }
     defaults.update(overrides)
     pos = EquityPosition(**defaults)
     db.add(pos)

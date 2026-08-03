@@ -8,7 +8,6 @@ No synthetic prices are used anywhere in this path.
 import json
 import os
 from datetime import datetime
-from typing import Dict, Optional
 
 from automate.backtest.data_feed import DataFeed
 from automate.broker.mock_broker import MockBroker
@@ -27,10 +26,10 @@ class BacktestEngine:
         symbol: str = "RELIANCE",
         strategy: str = "ten_percent_otm_strangle",
         num_lots: int = 1,
-        strike_step: Optional[float] = None,
+        strike_step: float | None = None,
         product: str = "NRML",
         slippage_pct: float = 0.001,
-        strategy_kwargs: Optional[dict] = None,
+        strategy_kwargs: dict | None = None,
     ):
         if strategy not in STRATEGIES:
             raise ValueError(f"Unknown strategy '{strategy}'. Available: {list(STRATEGIES)}")
@@ -49,7 +48,7 @@ class BacktestEngine:
         self.kill_switch = KillSwitch()
         self.rate_limiter = OrderRateLimiter(max_per_second=10)
 
-    def run_simulation(self, entry_time: Optional[datetime] = None) -> None:
+    def run_simulation(self, entry_time: datetime | None = None) -> None:
         """
         Step through every real historical bar loaded into the data feed
         (`self.data_feed.timestamps`, populated by DataFeed.load_from_csv()).
@@ -144,7 +143,7 @@ class BacktestEngine:
         # Pair each SELL with its closing BUY (if any) on the same
         # instrument, FIFO, so auto-unwind buybacks are matched to the
         # SELL they closed instead of being treated as fresh entries.
-        open_sells: Dict[str, list] = {}
+        open_sells: dict[str, list] = {}
         closed_pairs: list = []
         for order in self.broker.orders:
             token = order["instrument_token"]
@@ -225,6 +224,7 @@ class BacktestEngine:
 
 if __name__ == "__main__":
     import argparse
+
     from automate.compliance.sebi_rules import init_market_calendar
     from automate.utils.logger import setup_logger
 

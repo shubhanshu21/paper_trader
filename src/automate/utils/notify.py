@@ -20,7 +20,6 @@ task is reporting through it.
 """
 import threading
 import time
-from typing import Dict, Optional, Tuple
 
 from automate.utils.logger import get_logger
 from automate.utils.telegram_alert import alert_error
@@ -29,10 +28,10 @@ log = get_logger(__name__)
 
 _DEDUP_WINDOW_SEC = 900  # 15 minutes — long enough to kill tick-by-tick spam, short enough that a same-day recurrence after a fix still gets reported.
 _recent_lock = threading.Lock()
-_recent: Dict[Tuple[Optional[int], str, str], float] = {}
+_recent: dict[tuple[int | None, str, str], float] = {}
 
 
-def notify(source: str, message: str, level: str = "error", user_id: Optional[int] = None) -> None:
+def notify(source: str, message: str, level: str = "error", user_id: int | None = None) -> None:
     """
     Args:
         source: short identifying tag (e.g. "custom_strategy_scheduler",

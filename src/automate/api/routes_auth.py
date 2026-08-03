@@ -16,15 +16,13 @@ Security properties:
 """
 import logging
 import re
-from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from jose import JWTError
 from pydantic import BaseModel, field_validator
-from sqlalchemy import select
 from slowapi import Limiter
 from slowapi.util import get_remote_address
-
-from jose import JWTError
+from sqlalchemy import select
 
 from automate.api.auth import (
     bump_token_version,
@@ -117,7 +115,7 @@ class UserOut(BaseModel):
     role: str
     is_active: bool
     mfa_enabled: bool
-    created_at: Optional[str]
+    created_at: str | None
 
 
 # ---------------------------------------------------------------------------
@@ -188,7 +186,7 @@ def register(request: Request, body: RegisterRequest, response: Response):
     try:
         validate_password_strength(body.password)
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
 
     # Reject passwords found in known public breaches (HaveIBeenPwned's
     # Pwned Passwords, k-anonymity API — see utils/pwned_passwords.py).
@@ -319,7 +317,7 @@ def mfa_verify_login(request: Request, body: MfaVerifyLoginRequest, response: Re
     try:
         mfa_payload = decode_mfa_pending_token(body.mfa_token)
     except JWTError:
-        raise _generic_401
+        raise _generic_401 from None
 
     user_id = int(mfa_payload["sub"])
     with get_session() as session:

@@ -6,10 +6,10 @@ for production-grade API reliability.
 """
 import logging
 import traceback
-from typing import Union
+
 from fastapi import Request, status
-from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 from sqlalchemy.exc import SQLAlchemyError
 
 log = logging.getLogger("api.error_handler")
@@ -22,7 +22,7 @@ class APIError(Exception):
         message: str,
         status_code: int = status.HTTP_500_INTERNAL_SERVER_ERROR,
         error_code: str = "INTERNAL_ERROR",
-        details: Union[dict, list, None] = None
+        details: dict | list | None = None
     ):
         self.message = message
         self.status_code = status_code
@@ -33,7 +33,7 @@ class APIError(Exception):
 
 class ValidationError(APIError):
     """Validation error."""
-    def __init__(self, message: str, details: Union[dict, list, None] = None):
+    def __init__(self, message: str, details: dict | list | None = None):
         super().__init__(
             message=message,
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -157,7 +157,7 @@ async def validation_error_handler(request: Request, exc: RequestValidationError
 async def sqlalchemy_error_handler(request: Request, exc: SQLAlchemyError) -> JSONResponse:
     """Handle SQLAlchemy database errors."""
     log.error(
-        f"Database error: {str(exc)}",
+        f"Database error: {exc!s}",
         extra={
             "path": request.url.path,
             "method": request.method,
@@ -181,7 +181,7 @@ async def sqlalchemy_error_handler(request: Request, exc: SQLAlchemyError) -> JS
 async def generic_error_handler(request: Request, exc: Exception) -> JSONResponse:
     """Handle all unhandled exceptions."""
     log.error(
-        f"Unhandled exception: {str(exc)}",
+        f"Unhandled exception: {exc!s}",
         extra={
             "path": request.url.path,
             "method": request.method,

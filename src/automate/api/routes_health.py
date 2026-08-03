@@ -7,11 +7,12 @@ database, Redis, and external services.
 import os
 import time
 from datetime import datetime
-from typing import Dict, Any
-from fastapi import APIRouter, HTTPException, Depends
-from sqlalchemy.orm import Session
-from sqlalchemy import text
+from typing import Any
+
 import redis
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import text
+from sqlalchemy.orm import Session
 
 from automate.db.engine import get_db
 
@@ -29,7 +30,7 @@ class HealthStatus:
     UNHEALTHY = "unhealthy"
 
 
-async def check_database(db: Session) -> Dict[str, Any]:
+async def check_database(db: Session) -> dict[str, Any]:
     """Check database health."""
     try:
         start_time = time.time()
@@ -50,7 +51,7 @@ async def check_database(db: Session) -> Dict[str, Any]:
         }
 
 
-async def check_redis() -> Dict[str, Any]:
+async def check_redis() -> dict[str, Any]:
     """Check Redis health."""
     try:
         client = redis.from_url(REDIS_URL, socket_timeout=HEALTH_CHECK_TIMEOUT)
@@ -76,7 +77,7 @@ async def check_redis() -> Dict[str, Any]:
         }
 
 
-async def check_external_services() -> Dict[str, Any]:
+async def check_external_services() -> dict[str, Any]:
     """Check external services health."""
     services = {}
     
@@ -110,7 +111,7 @@ async def check_external_services() -> Dict[str, Any]:
     return services
 
 
-def determine_overall_status(checks: Dict[str, Any]) -> str:
+def determine_overall_status(checks: dict[str, Any]) -> str:
     """Determine overall system health status."""
     statuses = [check.get("status") for check in checks.values()]
     

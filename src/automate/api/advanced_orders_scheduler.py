@@ -31,15 +31,14 @@ outcome here than for strategy entry/exit timing.
 """
 import asyncio
 import json
-from typing import Optional
 
+from automate.api.advanced_orders_common import leg_triggered, place_leg, simulate_paper_fill
 from automate.compliance.sebi_rules import assert_market_is_open
 from automate.db.engine import SessionLocal
 from automate.db.models import AdvancedOrder
 from automate.utils.logger import get_logger
 from automate.utils.notify import notify
 from automate.utils.trailing_stop import advance_trailing_stop, exit_transaction_type
-from automate.api.advanced_orders_common import leg_triggered, place_leg, simulate_paper_fill
 
 log = get_logger(__name__)
 
@@ -60,8 +59,21 @@ def _get_brokers():
 
 
 def _cancel_leg(broker, leg: dict) -> None:
-    if leg.get("status") == "PLACED" and leg.get("order_id"):
-        broker.cancel_order(leg["order_id"])
+    if leg.get("status") == "PLACED" and leg.get("order_id") and not broker.cancel_order(leg["order_id"]):
+        # Cancel failed at the broker (network error, or the order already
+        # filled/partially filled). Re-check the real status instead of
+        # assuming it was cancelled — marking it CANCELLED here while it's
+        # actually still resting (or filled) would let a sibling OCO/bracket
+        # leg fill too, producing an unintended double-sided position.
+        status = broker.get_order_status(leg["order_id"])
+        if status == "complete":
+            leg["status"] = "COMPLETE"
+        else:
+            log.warning(
+                "Failed to cancel leg order_id=%s (status=%s); leaving as PLACED for next tick",
+                leg["order_id"], status,
+            )
+        return
     leg["status"] = "CANCELLED"
 
 
@@ -88,10 +100,11 @@ def _tick_oco_pair(order: AdvancedOrder, brokers: dict, state: dict, primary_key
         if primary["status"] == "COMPLETE" or secondary["status"] == "COMPLETE":
             other = secondary if primary["status"] == "COMPLETE" else primary
             _cancel_leg(broker, other)
-            return True
-        if primary["status"] in ("CANCELLED", "REJECTED") and secondary["status"] in ("CANCELLED", "REJECTED"):
-            return True
-        return False
+            # If the cancel failed and the sibling is still resting (PLACED),
+            # it isn't settled yet — keep polling instead of reporting the
+            # pair as done, to avoid missing a later fill on that leg.
+            return other["status"] != "PLACED"
+        return bool(primary["status"] in ("CANCELLED", "REJECTED") and secondary["status"] in ("CANCELLED", "REJECTED"))
 
     # paper mode: nothing is resting at a real exchange — evaluate both
     # legs' trigger conditions against current LTP ourselves.

@@ -18,8 +18,8 @@ from datetime import datetime
 
 import pytest
 
-from automate.db.models import CustomStrategy, CustomStrategyPosition
 import automate.utils.wallet as wallet
+from automate.db.models import CustomStrategy, CustomStrategyPosition
 
 # automate/db/__init__.py does `from .engine import engine`, which shadows
 # the `automate.db.engine` package ATTRIBUTE with the Engine instance

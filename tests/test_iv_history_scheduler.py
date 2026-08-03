@@ -12,8 +12,8 @@ from unittest.mock import patch
 
 import pytest
 
-from automate.db.models import CustomStrategy, SymbolIvHistory
 import automate.api.iv_history_scheduler as scheduler
+from automate.db.models import CustomStrategy, SymbolIvHistory
 
 
 class FakeBroker:
@@ -55,10 +55,10 @@ def db(db_session):
 
 
 def _make_strategy(db, **overrides):
-    defaults = dict(
-        user_id=1, name="Test Strategy", instrument_type="INDEX", strategy_type="CUSTOM", option_type="BOTH",
-        symbols=json.dumps(["NIFTY"]), status="PAPER_TRADING",
-    )
+    defaults = {
+        "user_id": 1, "name": "Test Strategy", "instrument_type": "INDEX", "strategy_type": "CUSTOM", "option_type": "BOTH",
+        "symbols": json.dumps(["NIFTY"]), "status": "PAPER_TRADING",
+    }
     defaults.update(overrides)
     s = CustomStrategy(**defaults)
     db.add(s)

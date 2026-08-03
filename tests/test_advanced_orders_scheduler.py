@@ -11,10 +11,10 @@ FakeBroker stands in for PaperBroker/UpstoxBroker.
 import json
 from unittest.mock import patch
 
-import pytest
-
 from automate.api.advanced_orders_scheduler import (
-    _tick_bracket, _tick_oco, _tick_trailing_stop,
+    _tick_bracket,
+    _tick_oco,
+    _tick_trailing_stop,
 )
 from automate.db.models import AdvancedOrder
 
@@ -36,15 +36,15 @@ class FakeBroker:
     def place_sell_order(self, instrument_token, quantity, product="D", order_type="MARKET",
                           tag="", user_id=None, price=0, trigger_price=0):
         oid = f"SELL-{len(self.placed) + 1}"
-        self.placed.append(dict(order_id=oid, side="SELL", instrument_token=instrument_token,
-                                 order_type=order_type, price=price, trigger_price=trigger_price))
+        self.placed.append({"order_id": oid, "side": "SELL", "instrument_token": instrument_token,
+                                 "order_type": order_type, "price": price, "trigger_price": trigger_price})
         return oid
 
     def place_buy_order(self, instrument_token, quantity, product="D", order_type="MARKET",
                          tag="", user_id=None, price=0, trigger_price=0):
         oid = f"BUY-{len(self.placed) + 1}"
-        self.placed.append(dict(order_id=oid, side="BUY", instrument_token=instrument_token,
-                                 order_type=order_type, price=price, trigger_price=trigger_price))
+        self.placed.append({"order_id": oid, "side": "BUY", "instrument_token": instrument_token,
+                                 "order_type": order_type, "price": price, "trigger_price": trigger_price})
         return oid
 
     def cancel_order(self, order_id):
@@ -55,8 +55,8 @@ class FakeBroker:
         # Mirrors the real UpstoxBroker signature — order_type is
         # positional/required, so a caller that omits it (the exact bug
         # this test suite exists to catch) raises TypeError here.
-        self.modified.append(dict(order_id=order_id, order_type=order_type,
-                                   price=price, trigger_price=trigger_price, quantity=quantity))
+        self.modified.append({"order_id": order_id, "order_type": order_type,
+                                   "price": price, "trigger_price": trigger_price, "quantity": quantity})
         return True
 
 

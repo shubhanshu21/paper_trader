@@ -6,14 +6,15 @@ environments with sliding window algorithm.
 """
 import os
 import time
-from typing import Dict, Any
-from fastapi import Request, HTTPException, status
+from typing import Any
+
+import redis
+from fastapi import HTTPException, Request, status
 from fastapi.responses import JSONResponse
 from slowapi import Limiter
-from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
-import redis
+from slowapi.util import get_remote_address
 
 # Configuration
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
@@ -83,7 +84,7 @@ class SlidingWindowRateLimiter:
         self.window_seconds = window_seconds
         self.max_requests = max_requests
     
-    def is_allowed(self, key: str) -> tuple[bool, Dict[str, Any]]:
+    def is_allowed(self, key: str) -> tuple[bool, dict[str, Any]]:
         """
         Check if request is allowed using sliding window algorithm.
         

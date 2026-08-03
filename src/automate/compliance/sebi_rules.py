@@ -40,13 +40,13 @@ IMPORTANT — READ BEFORE USING:
 import threading
 import time
 from collections import deque
-from datetime import datetime, time as dtime
-from typing import Optional
+from datetime import datetime
+from datetime import time as dtime
 from zoneinfo import ZoneInfo
 
+from automate.config import MarketConfig
 from automate.utils.logger import get_logger
 from automate.utils.market_calendar import MarketCalendar
-from automate.config import MarketConfig
 
 log = get_logger(__name__)
 
@@ -200,7 +200,7 @@ class OrderRateLimiter:
 # 3. Market Hours Gate
 # ---------------------------------------------------------------------------
 
-def assert_market_is_open(check_time: Optional[datetime] = None) -> None:
+def assert_market_is_open(check_time: datetime | None = None) -> None:
     """
     Raise a RuntimeError if the given (or current) time is outside NSE F&O trading hours.
 
@@ -265,23 +265,16 @@ def validate_order_quantity(symbol: str, quantity: int) -> None:
     NSE F&O has a 'freeze quantity' per stock — orders above this threshold
     must be auto-sliced (which the broker handles, but we log a warning).
 
-    Freeze quantities are fetched daily from the NSE F&O market lots API
-    (https://www.nseindia.com/api/fo-mktlots) and cached in
-    cache/nse_freeze_qty_<YYYY-MM-DD>.json. Nothing is hardcoded.
+    NSE's F&O market lots API is dead, so freeze quantities are no longer
+    fetched dynamically: get_freeze_quantity() always returns a hardcoded
+    safe upper bound (50,000) for symbols with no cached value. See
+    utils/market_calendar.py's get_freeze_quantity() docstring.
 
     Args:
         symbol:   Stock symbol (e.g., 'RELIANCE').
         quantity: Total units being ordered.
     """
     freeze_qty = _market_calendar.get_freeze_quantity(symbol.upper())
-
-    if freeze_qty is None:
-        log.warning(
-            "[SEBI] Freeze quantity for '%s' not in today's NSE F&O market lots. "
-            "Verify manually. Run init_market_calendar(force=True) to refresh.",
-            symbol,
-        )
-        return
 
     if quantity > freeze_qty:
         log.warning(
@@ -445,7 +438,7 @@ def run_all_pre_trade_checks(
     spot_price: float,
     quantity: int,
     kill_switch: KillSwitch,
-    check_time: Optional[datetime] = None,
+    check_time: datetime | None = None,
 ) -> None:
     """
     Run the full SEBI pre-trade compliance suite.

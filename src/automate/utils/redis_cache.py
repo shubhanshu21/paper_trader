@@ -6,8 +6,10 @@ cache invalidation strategies.
 """
 import json
 import pickle
-from typing import Any, Optional, Callable
+from collections.abc import Callable
 from functools import wraps
+from typing import Any
+
 import redis
 
 from automate.config.environment import get_settings
@@ -48,7 +50,7 @@ class RedisCache:
             # Fall back to pickle
             return pickle.loads(value)
     
-    def get(self, key: str) -> Optional[Any]:
+    def get(self, key: str) -> Any | None:
         """
         Get value from cache.
         
@@ -68,7 +70,7 @@ class RedisCache:
             print(f"Redis get error: {e}")
             return None
     
-    def set(self, key: str, value: Any, ttl: Optional[int] = None) -> bool:
+    def set(self, key: str, value: Any, ttl: int | None = None) -> bool:
         """
         Set value in cache.
         
@@ -165,14 +167,14 @@ class RedisCache:
         result = {}
         try:
             values = self.redis_client.mget(keys)
-            for key, value in zip(keys, values):
+            for key, value in zip(keys, values, strict=False):
                 if value is not None:
                     result[key] = self._deserialize(value)
         except Exception as e:
             print(f"Redis get_many error: {e}")
         return result
     
-    def set_many(self, mapping: dict, ttl: Optional[int] = None) -> bool:
+    def set_many(self, mapping: dict, ttl: int | None = None) -> bool:
         """
         Set multiple values in cache.
         

@@ -8,11 +8,11 @@ missing, preventing the strategy from running with incomplete configuration.
 Security note: No hardcoded secrets or fallback literals are used anywhere.
 """
 
+import logging
 import os
 import sys
-import logging
 from pathlib import Path
-from typing import Optional
+
 from dotenv import load_dotenv
 
 # ---------------------------------------------------------------------------
@@ -192,8 +192,8 @@ class TenPercentOTMStrangleConfig:
     # real preference, not a strict improvement, so enabling it is a
     # deliberate edit here, same as SYMBOLS/STRIKE_STEPS above, not an env
     # var — this IS the strategy's own config, no reason to split it out.
-    TAKE_PROFIT_PCT: Optional[float] = None
-    STOP_LOSS_PCT: Optional[float] = None
+    TAKE_PROFIT_PCT: float | None = None
+    STOP_LOSS_PCT: float | None = None
 
     # Always exit at least this many days before the option's own expiry —
     # never hold into expiry day itself, regardless of SL/TP state. This is

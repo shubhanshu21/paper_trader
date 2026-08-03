@@ -4,10 +4,11 @@ api/websocket_manager.py — WebSocket manager for real-time market data streami
 Handles WebSocket connections for live price updates, order status changes,
 and other real-time events using FastAPI WebSocket support with Redis pub/sub.
 """
+import asyncio
 import json
 import logging
-import asyncio
-from typing import Set, Dict, Any
+from typing import Any
+
 from fastapi import WebSocket
 
 try:
@@ -24,9 +25,9 @@ class ConnectionManager:
     
     def __init__(self, redis_url: str = "redis://localhost:6379"):
         # Active connections: {connection_id: WebSocket}
-        self.active_connections: Dict[str, WebSocket] = {}
+        self.active_connections: dict[str, WebSocket] = {}
         # Symbol subscriptions: {symbol: Set[connection_id]}
-        self.symbol_subscriptions: Dict[str, Set[str]] = {}
+        self.symbol_subscriptions: dict[str, set[str]] = {}
         # Redis pub/sub
         self.redis_url = redis_url
         self.redis_client = None
@@ -108,7 +109,7 @@ class ConnectionManager:
                 del self.symbol_subscriptions[symbol]
             log.info(f"Connection {connection_id} unsubscribed from {symbol}")
     
-    async def broadcast_to_symbol(self, symbol: str, message: Dict[str, Any]):
+    async def broadcast_to_symbol(self, symbol: str, message: dict[str, Any]):
         """Broadcast a message to all connections subscribed to a symbol."""
         if symbol not in self.symbol_subscriptions:
             return
@@ -132,7 +133,7 @@ class ConnectionManager:
         for conn_id in disconnected:
             self.disconnect(conn_id)
     
-    async def publish_to_redis(self, symbol: str, message: Dict[str, Any]):
+    async def publish_to_redis(self, symbol: str, message: dict[str, Any]):
         """Publish message to Redis for distribution across multiple servers."""
         if self.redis_client:
             try:
@@ -140,7 +141,7 @@ class ConnectionManager:
             except Exception as e:
                 log.error(f"Redis publish error: {e}")
     
-    async def broadcast_to_all(self, message: Dict[str, Any]):
+    async def broadcast_to_all(self, message: dict[str, Any]):
         """Broadcast a message to all active connections."""
         message_str = json.dumps(message)
         disconnected = set()

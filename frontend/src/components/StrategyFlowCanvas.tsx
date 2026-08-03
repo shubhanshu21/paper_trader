@@ -6,7 +6,7 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { Trash2, Plus, Zap, TrendingDown, Percent, Maximize2, Minimize2 } from "lucide-react";
-import { C } from "./Common";
+import { C } from "../lib/format";
 import { PortalDropdown } from "./PortalDropdown";
 import {
   type StrikeMode, type ExpiryModeOverride, type EntryMode, type ConditionType,

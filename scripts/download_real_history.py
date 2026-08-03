@@ -16,17 +16,16 @@ so the option contracts you download are the ones the strategy would
 actually trade today.
 """
 import argparse
+import csv
 import os
 import sys
-import logging
-import csv
 from datetime import date, timedelta
-from dotenv import load_dotenv
-from typing import List, Optional, Tuple
 
-from automate.config import UpstoxConfig, TenPercentOTMStrangleConfig
 import upstox_client
+from dotenv import load_dotenv
 from upstox_client.rest import ApiException
+
+from automate.config import TenPercentOTMStrangleConfig, UpstoxConfig
 from automate.utils.logger import setup_logger
 
 log = setup_logger("download_history", level="INFO")
@@ -44,7 +43,7 @@ _INTERVAL_MAX_DAYS = {
 }
 
 
-def download_historical_data(instrument_key: str, interval: str, to_date: str, from_date: str) -> List[List]:
+def download_historical_data(instrument_key: str, interval: str, to_date: str, from_date: str) -> list[list]:
     """
     Downloads historical candle data using Upstox API.
     """
@@ -78,7 +77,7 @@ def download_historical_data(instrument_key: str, interval: str, to_date: str, f
         return []
 
 
-def save_to_csv(filename: str, candles: List[List]) -> None:
+def save_to_csv(filename: str, candles: list[list]) -> None:
     """
     Saves the candle data to a CSV file.
     Format: timestamp, open, high, low, close, volume, open_interest
@@ -115,7 +114,7 @@ def resolve_atm_legs(
     equity_key: str,
     strike_step: float,
     broker,
-) -> Tuple[int, str, int, str, str, float]:
+) -> tuple[int, str, int, str, str, float]:
     """
     Auto-resolve the CE/PE strikes/tokens + expiry a live TenPercentOTMStrangle
     run right now would actually pick, using the exact same logic
@@ -125,7 +124,9 @@ def resolve_atm_legs(
         (call_strike, call_token, put_strike, put_token, expiry, spot_price)
     """
     from automate.utils.option_utils import (
-        calculate_strangle_strikes, find_nearest_monthly_expiry, find_instrument_token,
+        calculate_strangle_strikes,
+        find_instrument_token,
+        find_nearest_monthly_expiry,
     )
 
     spot = broker.get_ltp(equity_key)
@@ -162,10 +163,10 @@ def download_symbol(
     symbol: str,
     days: int,
     interval: str,
-    strike_step: Optional[float],
+    strike_step: float | None,
     spot_only: bool,
     broker=None,
-) -> Optional[dict]:
+) -> dict | None:
     """
     Download real spot candles (and, unless spot_only, real CE/PE candles
     for the strikes the strategy would pick right now) for one symbol.
@@ -185,7 +186,7 @@ def download_symbol(
     if spot_only:
         return None
 
-    call_strike, call_token, put_strike, put_token, expiry, spot = resolve_atm_legs(
+    call_strike, call_token, put_strike, put_token, expiry, _spot = resolve_atm_legs(
         symbol, equity_key, strike_step, broker,
     )
 
@@ -285,7 +286,7 @@ def main():
         from automate.broker.upstox_broker import UpstoxBroker
         broker = UpstoxBroker(access_token=UpstoxConfig.ACCESS_TOKEN, dry_run=True)
 
-    def strike_step_for(sym: str) -> Optional[float]:
+    def strike_step_for(sym: str) -> float | None:
         # Resolved live from the real instrument master — no hardcoded
         # table, same reasoning as lot size (see config.py). None here
         # (spot_only mode, or genuinely unresolvable) is fine: it's only

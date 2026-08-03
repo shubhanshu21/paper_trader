@@ -13,8 +13,8 @@ import json
 
 import pytest
 
-from automate.db.models import CustomStrategy, CustomStrategyPosition
 from automate.api.custom_strategy_scheduler import square_off_all_open_legs
+from automate.db.models import CustomStrategy, CustomStrategyPosition
 
 
 @pytest.fixture()
@@ -23,10 +23,10 @@ def db(db_session):
 
 
 def _make_strategy(db, **overrides):
-    defaults = dict(
-        user_id=1, name="Live Strangle", instrument_type="INDEX", strategy_type="CUSTOM", option_type="BOTH",
-        symbols=json.dumps(["NIFTY"]), status="LIVE",
-    )
+    defaults = {
+        "user_id": 1, "name": "Live Strangle", "instrument_type": "INDEX", "strategy_type": "CUSTOM", "option_type": "BOTH",
+        "symbols": json.dumps(["NIFTY"]), "status": "LIVE",
+    }
     defaults.update(overrides)
     s = CustomStrategy(**defaults)
     db.add(s)
@@ -50,7 +50,7 @@ class FakeBroker:
         self.orders_placed = []
 
     def get_ltp_batch(self, tokens):
-        return {t: self._ltp for t in tokens}
+        return dict.fromkeys(tokens, self._ltp)
 
     def place_buy_order(self, instrument_token, quantity, order_type, tag, user_id=None):
         if self._fail:

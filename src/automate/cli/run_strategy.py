@@ -39,13 +39,10 @@ SEBI Compliance:
 """
 
 import argparse
-import sys
 import logging
+import sys
 from datetime import date
 
-# ── Project-root imports ────────────────────────────────────────────────────
-from automate.config import RunConfig, LogConfig, STRATEGY_CONFIGS, UpstoxConfig
-from automate.utils.logger import setup_logger
 from automate.broker.broker_factory import BrokerFactory
 from automate.compliance.sebi_rules import (
     AuditTrail,
@@ -54,12 +51,15 @@ from automate.compliance.sebi_rules import (
     init_market_calendar,
     print_risk_disclaimer,
 )
-from automate.strategies.registry import STRATEGIES
-from automate.utils.position_tracker import record_open_position, has_open_position
-from automate.utils.telegram_alert import alert_trade_opened
-from automate.utils.notify import notify
-from automate.utils.strategy_overrides import get_effective_config
 
+# ── Project-root imports ────────────────────────────────────────────────────
+from automate.config import STRATEGY_CONFIGS, LogConfig, RunConfig, UpstoxConfig
+from automate.strategies.registry import STRATEGIES
+from automate.utils.logger import setup_logger
+from automate.utils.notify import notify
+from automate.utils.position_tracker import has_open_position, record_open_position
+from automate.utils.strategy_overrides import get_effective_config
+from automate.utils.telegram_alert import alert_trade_opened
 
 # ---------------------------------------------------------------------------
 # Argument parsing

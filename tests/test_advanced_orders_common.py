@@ -5,7 +5,10 @@ and advanced_orders_scheduler.py. No network, no DB — a FakeBroker stands in
 for PaperBroker/UpstoxBroker.
 """
 from automate.api.advanced_orders_common import (
-    leg_triggered, place_leg, simulate_paper_fill, validate_leg,
+    leg_triggered,
+    place_leg,
+    simulate_paper_fill,
+    validate_leg,
 )
 
 
@@ -19,14 +22,14 @@ class FakeBroker:
 
     def place_sell_order(self, instrument_token, quantity, product="D", order_type="MARKET",
                           tag="", user_id=None, price=0, trigger_price=0):
-        self.placed.append(dict(side="SELL", instrument_token=instrument_token, quantity=quantity,
-                                 order_type=order_type, tag=tag, price=price, trigger_price=trigger_price))
+        self.placed.append({"side": "SELL", "instrument_token": instrument_token, "quantity": quantity,
+                                 "order_type": order_type, "tag": tag, "price": price, "trigger_price": trigger_price})
         return f"SELL-{len(self.placed)}"
 
     def place_buy_order(self, instrument_token, quantity, product="D", order_type="MARKET",
                          tag="", user_id=None, price=0, trigger_price=0):
-        self.placed.append(dict(side="BUY", instrument_token=instrument_token, quantity=quantity,
-                                 order_type=order_type, tag=tag, price=price, trigger_price=trigger_price))
+        self.placed.append({"side": "BUY", "instrument_token": instrument_token, "quantity": quantity,
+                                 "order_type": order_type, "tag": tag, "price": price, "trigger_price": trigger_price})
         return f"BUY-{len(self.placed)}"
 
 

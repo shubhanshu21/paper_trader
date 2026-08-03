@@ -41,7 +41,9 @@ from pathlib import Path
 # need this as their cwd. No sys.path hack needed: `automate` is installed
 # editable (pip install -e .), so package imports just resolve normally.
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent.parent
-from automate.strategies.registry import STRATEGIES  # Single source of truth — see strategies/registry.py.
+from automate.strategies.registry import (
+    STRATEGIES,  # Single source of truth — see strategies/registry.py.
+)
 
 LIVE_DATA_MAX_DAYS = 30  # Upstox's real 1-minute history limit (verified empirically).
 AVAILABLE_STRATEGIES = list(STRATEGIES)

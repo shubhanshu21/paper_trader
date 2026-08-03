@@ -5,12 +5,12 @@ Provides production-grade configuration management with environment
 variable loading, validation, and type safety.
 """
 import os
-from typing import Optional, List
+from enum import StrEnum
+
 from pydantic.v1 import BaseSettings, Field, validator
-from enum import Enum
 
 
-class Environment(str, Enum):
+class Environment(StrEnum):
     """Environment types."""
     DEVELOPMENT = "development"
     STAGING = "staging"
@@ -41,7 +41,7 @@ class DatabaseConfig(BaseSettings):
         pwd = urllib.parse.quote_plus(self.DB_PASSWORD)
         return f"mysql+pymysql://{self.DB_USER}:{pwd}@{self.DB_HOST}:{self.DB_PORT}/{self.DB_NAME}"
     
-    def validate(self) -> List[str]:
+    def validate(self) -> list[str]:
         """Validate database configuration."""
         errors = []
         if not self.DB_USER:
@@ -58,7 +58,7 @@ class RedisConfig(BaseSettings):
     REDIS_HOST: str = Field(default="localhost", env="REDIS_HOST")
     REDIS_PORT: int = Field(default=6379, env="REDIS_PORT")
     REDIS_DB: int = Field(default=0, env="REDIS_DB")
-    REDIS_PASSWORD: Optional[str] = Field(default=None, env="REDIS_PASSWORD")
+    REDIS_PASSWORD: str | None = Field(default=None, env="REDIS_PASSWORD")
     REDIS_MAX_CONNECTIONS: int = Field(default=50, env="REDIS_MAX_CONNECTIONS")
     
     @property
@@ -144,10 +144,10 @@ class APIConfig(BaseSettings):
     API_RELOAD: bool = Field(default=False, env="API_RELOAD")
     
     # CORS settings
-    CORS_ORIGINS: List[str] = Field(default=["http://localhost:3000"], env="CORS_ORIGINS")
+    CORS_ORIGINS: list[str] = Field(default=["http://localhost:3000"], env="CORS_ORIGINS")
     CORS_ALLOW_CREDENTIALS: bool = Field(default=True, env="CORS_ALLOW_CREDENTIALS")
-    CORS_ALLOW_METHODS: List[str] = Field(default=["*"], env="CORS_ALLOW_METHODS")
-    CORS_ALLOW_HEADERS: List[str] = Field(default=["*"], env="CORS_ALLOW_HEADERS")
+    CORS_ALLOW_METHODS: list[str] = Field(default=["*"], env="CORS_ALLOW_METHODS")
+    CORS_ALLOW_HEADERS: list[str] = Field(default=["*"], env="CORS_ALLOW_HEADERS")
     
     # Compression
     ENABLE_COMPRESSION: bool = Field(default=True, env="ENABLE_COMPRESSION")
@@ -218,7 +218,7 @@ class Settings:
         """Check if running in staging."""
         return self.app.ENVIRONMENT == Environment.STAGING
     
-    def validate(self) -> List[str]:
+    def validate(self) -> list[str]:
         """Validate all configuration settings."""
         errors = []
         

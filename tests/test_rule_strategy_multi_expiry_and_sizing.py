@@ -74,8 +74,8 @@ class TestCalendarSpreadMultiExpiry:
         assert far_leg["expiry"] == MONTHLY_EXPIRY and far_leg["instrument_token"] == monthly_token
 
     def test_execute_fills_both_legs_at_their_own_expiry(self):
-        feed, weekly_token, monthly_token = _build_feed()
-        strategy, broker = _build_strategy(feed, self._rules())
+        feed, _weekly_token, _monthly_token = _build_feed()
+        strategy, _broker = _build_strategy(feed, self._rules())
         result = strategy.execute()
         assert result["status"] == "success"
         assert len(result["legs"]) == 2
@@ -85,7 +85,7 @@ class TestCalendarSpreadMultiExpiry:
 
     def test_single_expiry_strategy_resolves_one_shared_expiry(self):
         """Backward-compat guarantee: no expiry_mode override anywhere -> exactly one resolved expiry for all legs."""
-        feed, weekly_token, _ = _build_feed()
+        feed, _weekly_token, _ = _build_feed()
         rules = {
             "legs": [
                 {"action": "SELL", "option_type": "CE", "strike_selection": {"mode": "ATM", "value": None}, "lots": 1},
@@ -100,8 +100,8 @@ class TestCalendarSpreadMultiExpiry:
 
 class TestRunLegIndicesFilter:
     def test_leg_indices_restricts_execution_to_a_subset(self):
-        feed, weekly_token, monthly_token = _build_feed()
-        strategy, broker = _build_strategy(feed, TestCalendarSpreadMultiExpiry()._rules())
+        feed, _weekly_token, _monthly_token = _build_feed()
+        strategy, _broker = _build_strategy(feed, TestCalendarSpreadMultiExpiry()._rules())
         result = strategy.run(leg_indices=[1])
         assert result["status"] == "success"
         assert result["leg_indices"] == [1]
@@ -119,7 +119,7 @@ class TestRiskBasedSizing:
         }
 
     def test_sizes_lots_from_available_capital_and_margin_estimate(self):
-        feed, weekly_token, _ = _build_feed()
+        feed, _weekly_token, _ = _build_feed()
         strategy, _ = _build_strategy(feed, self._rules(risk_pct=50.0), user_id=1)
         with patch("automate.utils.wallet.get_wallet_summary", return_value={"available_balance": 1_000_000.0}), \
              patch("automate.utils.margin.estimate_margin_blocked", return_value=100_000.0):
@@ -130,7 +130,7 @@ class TestRiskBasedSizing:
 
     def test_prefers_real_broker_margin_over_the_flat_estimate(self):
         """resolve_required_margin() tries broker.get_required_margin() first — a real per-lot figure from the broker must win over the flat-rate guess."""
-        feed, weekly_token, _ = _build_feed()
+        feed, _weekly_token, _ = _build_feed()
         strategy, broker = _build_strategy(feed, self._rules(risk_pct=50.0), user_id=1)
         with patch("automate.utils.wallet.get_wallet_summary", return_value={"available_balance": 1_000_000.0}), \
              patch.object(type(broker), "get_required_margin", return_value=250_000.0), \
@@ -142,21 +142,23 @@ class TestRiskBasedSizing:
         flat_estimate.assert_not_called()
 
     def test_refuses_entry_rather_than_undersizing_below_one_lot(self):
-        feed, weekly_token, _ = _build_feed()
+        feed, _weekly_token, _ = _build_feed()
         strategy, _ = _build_strategy(feed, self._rules(risk_pct=1.0), user_id=1)
-        with patch("automate.utils.wallet.get_wallet_summary", return_value={"available_balance": 10_000.0}), \
-             patch("automate.utils.margin.estimate_margin_blocked", return_value=100_000.0):
-            with pytest.raises(ComplianceError):
-                strategy.preview()
+        with (
+            patch("automate.utils.wallet.get_wallet_summary", return_value={"available_balance": 10_000.0}),
+            patch("automate.utils.margin.estimate_margin_blocked", return_value=100_000.0),
+            pytest.raises(ComplianceError),
+        ):
+            strategy.preview()
 
     def test_requires_a_real_user_id_for_risk_pct_sizing(self):
-        feed, weekly_token, _ = _build_feed()
+        feed, _weekly_token, _ = _build_feed()
         strategy, _ = _build_strategy(feed, self._rules(risk_pct=50.0), user_id=None)
         with pytest.raises(RuntimeError):
             strategy.preview()
 
     def test_lots_mode_is_unaffected_default(self):
-        feed, weekly_token, _ = _build_feed()
+        feed, _weekly_token, _ = _build_feed()
         rules = {
             "legs": [
                 {"action": "SELL", "option_type": "CE", "strike_selection": {"mode": "ATM", "value": None}, "lots": 2},

@@ -24,7 +24,7 @@ No network access — UpstoxBroker is constructed with dry_run + a fake
 token (no network call happens in __init__), and its instrument cache /
 SDK API objects are monkeypatched directly.
 """
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 

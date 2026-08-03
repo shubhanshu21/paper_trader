@@ -12,7 +12,6 @@ resting-order concept of its own).
 import json
 import uuid
 from datetime import datetime
-from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -59,7 +58,7 @@ class OCOOrderRequest(BaseModel):
     mode: str  # 'paper' | 'live'
     primary_order: OrderLeg
     secondary_order: OrderLeg
-    strategy_name: Optional[str] = None
+    strategy_name: str | None = None
 
 
 class TrailingStopRequest(BaseModel):
@@ -72,7 +71,7 @@ class TrailingStopRequest(BaseModel):
     trail_amount: float  # Amount to trail by (points or percentage)
     trail_type: str  # "points" or "percentage"
     product: str = "D"
-    strategy_name: Optional[str] = None
+    strategy_name: str | None = None
 
 
 class BracketOrderRequest(BaseModel):
@@ -81,7 +80,7 @@ class BracketOrderRequest(BaseModel):
     entry_order: OrderLeg
     take_profit: OrderLeg
     stop_loss: OrderLeg
-    strategy_name: Optional[str] = None
+    strategy_name: str | None = None
 
 
 def _require_mode(mode: str) -> str:
@@ -130,7 +129,7 @@ def create_oco_order(req: OCOOrderRequest, db: Session = Depends(get_db), user: 
             # place before surfacing the error.
             if primary.get("order_id"):
                 broker.cancel_order(primary["order_id"])
-            raise HTTPException(status_code=502, detail=f"Failed to place OCO order pair: {exc}")
+            raise HTTPException(status_code=502, detail=f"Failed to place OCO order pair: {exc}") from exc
 
     order = AdvancedOrder(
         public_id=public_id, kind="OCO", user_id=_current_user_id(user), mode=req.mode,
@@ -288,14 +287,14 @@ def create_bracket_order(req: BracketOrderRequest, db: Session = Depends(get_db)
             entry["order_id"] = place_leg(broker, entry, f"BRK_{public_id}", _current_user_id(user))
             entry["status"] = "PLACED"
         except Exception as exc:
-            raise HTTPException(status_code=502, detail=f"Failed to place bracket entry order: {exc}")
+            raise HTTPException(status_code=502, detail=f"Failed to place bracket entry order: {exc}") from exc
     else:
         broker = brokers["paper"]
         try:
             entry["order_id"] = place_leg(broker, {**entry, "order_type": "MARKET"}, f"BRK_{public_id}", _current_user_id(user))
             entry["status"] = "COMPLETE"
         except Exception as exc:
-            raise HTTPException(status_code=502, detail=f"Failed to fill bracket entry order: {exc}")
+            raise HTTPException(status_code=502, detail=f"Failed to fill bracket entry order: {exc}") from exc
 
     order = AdvancedOrder(
         public_id=public_id, kind="BRACKET", user_id=_current_user_id(user), mode=req.mode,

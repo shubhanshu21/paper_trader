@@ -14,7 +14,6 @@ flow" discipline this codebase already applies to notify.py/telegram_alert.py.
 """
 import hashlib
 import logging
-from typing import Optional
 
 import requests
 
@@ -24,7 +23,7 @@ _API_URL = "https://api.pwnedpasswords.com/range/{prefix}"
 _TIMEOUT_SEC = 3
 
 
-def check_password_pwned(password: str) -> Optional[int]:
+def check_password_pwned(password: str) -> int | None:
     """
     Returns the number of times this password has appeared in known
     breaches, or None if it wasn't found OR the check couldn't be

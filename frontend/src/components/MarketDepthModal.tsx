@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { X, AlignLeft, TrendingUp, Trash2, MoreHorizontal } from "lucide-react";
 import { MarketDepth, wsUrl } from "../api";
-import { C, FONT, inr } from "./Common";
+import { C, FONT, inr } from "../lib/format";
 
 interface MarketDepthModalProps {
   instrument: { instrument_key: string; symbol: string; exchange: string };

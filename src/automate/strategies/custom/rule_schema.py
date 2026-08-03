@@ -90,7 +90,6 @@ direction-agnostic across BUY/SELL legs). A leg WITH its own `exit` is
 excluded from that combined check and managed independently instead —
 see custom_strategy_scheduler.py::_try_exit / backtest/custom_engine.py.
 """
-from typing import List, Optional
 
 _ACTIONS = {"BUY", "SELL"}
 _LEG_INSTRUMENT_TYPES = {"OPTION", "EQUITY"}
@@ -114,9 +113,9 @@ def _is_hhmm(value) -> bool:
     return h.isdigit() and m.isdigit() and 0 <= int(h) <= 23 and 0 <= int(m) <= 59
 
 
-def _validate_leg_exit(leg_exit, prefix: str) -> List[str]:
+def _validate_leg_exit(leg_exit, prefix: str) -> list[str]:
     """Optional per-leg exit block — same shape/rules as the strategy-level exit, plus optional trailing."""
-    errors: List[str] = []
+    errors: list[str] = []
     if leg_exit is None:
         return errors
     if not isinstance(leg_exit, dict):
@@ -142,7 +141,7 @@ def _validate_leg_exit(leg_exit, prefix: str) -> List[str]:
     return errors
 
 
-def _validate_leg_sizing(sizing, prefix: str) -> List[str]:
+def _validate_leg_sizing(sizing, prefix: str) -> list[str]:
     """Optional per-leg sizing override — omitted/LOTS keeps today's fixed-`lots` behavior."""
     if sizing is None:
         return []
@@ -155,7 +154,7 @@ def _validate_leg_sizing(sizing, prefix: str) -> List[str]:
     return []
 
 
-def _validate_entry_condition(entry: dict) -> List[str]:
+def _validate_entry_condition(entry: dict) -> list[str]:
     condition = entry.get("condition")
     if not isinstance(condition, dict) or condition.get("type") not in _CONDITION_TYPES:
         return [f"Entry condition type must be one of {sorted(_CONDITION_TYPES)}."]
@@ -174,9 +173,9 @@ def _validate_entry_condition(entry: dict) -> List[str]:
     return []
 
 
-def validate_rules(rules: dict) -> List[str]:
+def validate_rules(rules: dict) -> list[str]:
     """Return a list of human-readable error strings; empty list = valid."""
-    errors: List[str] = []
+    errors: list[str] = []
     if not isinstance(rules, dict):
         return ["Strategy rules must be an object."]
 
@@ -315,7 +314,7 @@ def _leg_phrase(leg: dict) -> str:
     return phrase
 
 
-def describe_rules(rules: Optional[dict], symbol: str = "") -> str:
+def describe_rules(rules: dict | None, symbol: str = "") -> str:
     """
     Render a strategy's rules as one plain-English sentence, the same style
     Streak uses ("IF ... THEN ..."). Shown in the strategy list/detail view

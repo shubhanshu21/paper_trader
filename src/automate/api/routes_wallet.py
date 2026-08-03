@@ -1,5 +1,4 @@
 """api/routes_wallet.py — virtual paper-trading wallet, funds statement, order book."""
-from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -7,7 +6,13 @@ from pydantic import BaseModel
 from automate.api.auth import get_current_user
 from automate.utils.costs import DEFAULT_RATES
 from automate.utils.orders import get_order_book
-from automate.utils.wallet import get_charge_rates, get_ledger, get_wallet_summary, set_charge_rates, set_starting_capital
+from automate.utils.wallet import (
+    get_charge_rates,
+    get_ledger,
+    get_wallet_summary,
+    set_charge_rates,
+    set_starting_capital,
+)
 from automate.utils.wallet_adjustments import add_adjustment
 
 router = APIRouter(prefix="/api/wallet", tags=["wallet"])
@@ -25,12 +30,12 @@ class CapitalRequest(BaseModel):
 
 class ChargeRatesRequest(BaseModel):
     """Any field left out (None) is reset to the codebase default for that component."""
-    brokerage_per_order: Optional[float] = None
-    exchange_charge_pct: Optional[float] = None
-    gst_pct: Optional[float] = None
-    stt_pct: Optional[float] = None
-    sebi_charge_pct: Optional[float] = None
-    stamp_duty_pct: Optional[float] = None
+    brokerage_per_order: float | None = None
+    exchange_charge_pct: float | None = None
+    gst_pct: float | None = None
+    stt_pct: float | None = None
+    sebi_charge_pct: float | None = None
+    stamp_duty_pct: float | None = None
 
 
 @router.get("")
@@ -49,7 +54,7 @@ def wallet_adjust(req: AdjustmentRequest, user: dict = Depends(get_current_user)
     try:
         add_adjustment(user_id, req.amount, req.note)
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return get_wallet_summary(user_id)
 
 
@@ -59,7 +64,7 @@ def wallet_set_capital(req: CapitalRequest, user: dict = Depends(get_current_use
     try:
         set_starting_capital(user_id, req.starting_capital)
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return get_wallet_summary(user_id)
 
 
@@ -98,7 +103,13 @@ def wallet_reset(user: dict = Depends(get_current_user)):
     to also delete globally regardless of who asked for it.
     """
     from automate.db.engine import get_session
-    from automate.db.models import Position, EquityPosition, WalletSettings, CustomStrategy, CustomStrategyPosition
+    from automate.db.models import (
+        CustomStrategy,
+        CustomStrategyPosition,
+        EquityPosition,
+        Position,
+        WalletSettings,
+    )
     from automate.utils.wallet_adjustments import clear_adjustments
 
     user_id = int(user["sub"])
@@ -134,5 +145,5 @@ def wallet_reset(user: dict = Depends(get_current_user)):
 
 
 @orders_router.get("")
-def order_book(mode: Optional[str] = None, limit: int = 200, user: dict = Depends(get_current_user)):
+def order_book(mode: str | None = None, limit: int = 200, user: dict = Depends(get_current_user)):
     return get_order_book(mode=mode, limit=limit, user_id=int(user["sub"]))

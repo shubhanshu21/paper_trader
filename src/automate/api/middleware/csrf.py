@@ -5,7 +5,7 @@ Provides Cross-Site Request Forgery protection for state-changing operations.
 """
 import os
 import secrets
-from typing import Optional
+
 from fastapi import Request, status
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -14,7 +14,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 class CSRFMiddleware(BaseHTTPMiddleware):
     """CSRF protection middleware."""
     
-    def __init__(self, app, csrf_secret: Optional[str] = None):
+    def __init__(self, app, csrf_secret: str | None = None):
         super().__init__(app)
         self.csrf_secret = csrf_secret or os.getenv("CSRF_SECRET", secrets.token_hex(32))
         self.csrf_header = os.getenv("CSRF_HEADER", "X-CSRF-Token")
@@ -89,10 +89,7 @@ class CSRFMiddleware(BaseHTTPMiddleware):
                 return False
             
             # Token should be alphanumeric
-            if not token.isalnum():
-                return False
-            
-            return True
+            return token.isalnum()
         except Exception:
             return False
     

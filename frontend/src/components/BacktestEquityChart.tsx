@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
 import { createChart, IChartApi, LineSeries, AreaSeries } from "lightweight-charts";
-import { C } from "./Common";
+import { C } from "../lib/format";
 
 interface BacktestEquityChartProps {
   equityCurve: number[];  // compounded ₹ curve, one point per cycle, chronological

@@ -6,10 +6,11 @@ tests either; this covers the real gap found this session: it was
 defined but never actually wired into the request path, so no endpoint
 was CSRF-protected despite the frontend already sending the header.
 """
+import pytest
+from fastapi import HTTPException, Request
+
 import automate.api.main as main_module
 from automate.api.auth import validate_csrf
-from fastapi import HTTPException, Request
-import pytest
 
 
 def _fake_request(headers: dict) -> Request:

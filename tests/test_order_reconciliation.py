@@ -5,10 +5,10 @@ accepted it (e.g. margin shortfall can reject it afterward). This must be
 caught and treated the same as an outright placement failure, including
 triggering auto-unwind for any companion leg that genuinely filled.
 """
-from unittest.mock import patch
-
 import sys
 from pathlib import Path
+from unittest.mock import patch
+
 sys.path.append(str(Path(__file__).resolve().parent.parent))
 
 from tests.test_partial_fill_auto_unwind import _build_feed, _build_strategy
@@ -20,7 +20,7 @@ class TestReconciliation:
         lookup reveals the PE leg was actually rejected by the exchange — the
         CE leg (which really filled) must be bought back, not left naked."""
         feed = _build_feed(ce_has_ltp=True, pe_has_ltp=True)
-        strategy, broker, kill_switch = _build_strategy(feed)
+        strategy, broker, _kill_switch = _build_strategy(feed)
 
         with patch.object(broker, "get_order_status") as mock_status:
             def status_side_effect(order_id):
@@ -46,7 +46,7 @@ class TestReconciliation:
         """MockBroker's default get_order_status() returns None — reconciliation
         must not interfere with the normal success path in that case."""
         feed = _build_feed(ce_has_ltp=True, pe_has_ltp=True)
-        strategy, broker, kill_switch = _build_strategy(feed)
+        strategy, _broker, kill_switch = _build_strategy(feed)
 
         result = strategy.run()
 
@@ -56,7 +56,7 @@ class TestReconciliation:
     def test_reconciliation_skipped_in_dry_run(self):
         """dry_run brokers never place real orders, so there's nothing to reconcile."""
         feed = _build_feed(ce_has_ltp=True, pe_has_ltp=True)
-        strategy, broker, kill_switch = _build_strategy(feed)
+        strategy, broker, _kill_switch = _build_strategy(feed)
         broker.dry_run = True
 
         with patch.object(broker, "get_order_status") as mock_status:

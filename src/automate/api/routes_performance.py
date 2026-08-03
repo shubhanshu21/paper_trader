@@ -5,7 +5,7 @@ Provides comprehensive trade tracking, performance metrics, and
 analytics for improving trading strategies and discipline.
 """
 from datetime import datetime, timedelta
-from typing import Optional, List, Dict
+
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
@@ -17,15 +17,15 @@ class TradeJournalEntry(BaseModel):
     symbol: str
     strategy: str
     entry_date: str
-    exit_date: Optional[str] = None
+    exit_date: str | None = None
     side: str  # "BUY" or "SELL"
     quantity: int
     entry_price: float
-    exit_price: Optional[float] = None
-    pnl: Optional[float] = None
-    notes: Optional[str] = None
-    tags: Optional[List[str]] = None
-    user_id: Optional[int] = None
+    exit_price: float | None = None
+    pnl: float | None = None
+    notes: str | None = None
+    tags: list[str] | None = None
+    user_id: int | None = None
 
 
 class PerformanceMetrics(BaseModel):
@@ -39,9 +39,9 @@ class PerformanceMetrics(BaseModel):
     average_loss: float
     profit_factor: float
     max_drawdown: float
-    sharpe_ratio: Optional[float] = None
-    best_trade: Optional[float] = None
-    worst_trade: Optional[float] = None
+    sharpe_ratio: float | None = None
+    best_trade: float | None = None
+    worst_trade: float | None = None
 
 
 # In-memory storage for trade journal (in production, use database)
@@ -125,9 +125,9 @@ def delete_trade_entry(entry_id: str):
 
 @router.get("/journal")
 def list_trade_entries(
-    user_id: Optional[int] = None,
-    symbol: Optional[str] = None,
-    strategy: Optional[str] = None,
+    user_id: int | None = None,
+    symbol: str | None = None,
+    strategy: str | None = None,
     limit: int = 100
 ):
     """List trade journal entries with optional filters."""
@@ -277,7 +277,7 @@ def get_performance_analytics(user_id: int):
         return {"message": "No completed trades found"}
     
     # Strategy breakdown
-    strategy_performance: Dict[str, Dict] = {}
+    strategy_performance: dict[str, dict] = {}
     for trade in user_trades:
         strategy = trade["strategy"]
         if strategy not in strategy_performance:
@@ -298,7 +298,7 @@ def get_performance_analytics(user_id: int):
         stats["average_pnl"] = stats["total_pnl"] / stats["trades"] if stats["trades"] > 0 else 0.0
     
     # Symbol performance
-    symbol_performance: Dict[str, Dict] = {}
+    symbol_performance: dict[str, dict] = {}
     for trade in user_trades:
         symbol = trade["symbol"]
         if symbol not in symbol_performance:
@@ -315,7 +315,7 @@ def get_performance_analytics(user_id: int):
         )
     
     # Day of week analysis
-    dow_performance: Dict[str, Dict] = {}
+    dow_performance: dict[str, dict] = {}
     for trade in user_trades:
         entry_date = datetime.fromisoformat(trade["entry_date"])
         day_of_week = entry_date.strftime("%A")

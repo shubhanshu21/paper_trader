@@ -19,13 +19,16 @@ failing after at least one other leg filled triggers an immediate
 square-off of everything that did fill, generalized to N legs of mixed
 direction.
 """
-from typing import List, Optional, Tuple
 
-from automate.strategies.common.base_strategy import BaseStrategy
 from automate.broker.base_broker import BaseBroker
 from automate.compliance.sebi_rules import AuditTrail, ComplianceError, KillSwitch, OrderRateLimiter
+from automate.strategies.common.base_strategy import BaseStrategy
 from automate.utils.logger import get_logger
-from automate.utils.option_utils import find_instrument_token, find_nearest_expiry_by_type, round_to_nearest_strike
+from automate.utils.option_utils import (
+    find_instrument_token,
+    find_nearest_expiry_by_type,
+    round_to_nearest_strike,
+)
 
 log = get_logger(__name__)
 
@@ -77,9 +80,9 @@ class RuleBasedStrategy(BaseStrategy):
         rate_limiter: OrderRateLimiter,
         symbol: str,
         rules: dict,
-        strike_step: Optional[float] = None,
+        strike_step: float | None = None,
         product: str = "NRML",
-        user_id: Optional[int] = None,
+        user_id: int | None = None,
     ) -> None:
         super().__init__(broker, audit, kill_switch, rate_limiter)
         if not rules or not rules.get("legs"):
@@ -128,14 +131,14 @@ class RuleBasedStrategy(BaseStrategy):
         # to roll over on independent cycles (see _get_last_entered_expiry
         # there) — one leg's expiry rolling doesn't mean the other leg's
         # basket needs re-entering too.
-        self._leg_indices: Optional[List[int]] = None
+        self._leg_indices: list[int] | None = None
 
         log.info(
             "RuleBasedStrategy | symbol=%s | legs=%d | strike_step=%s | product=%s",
             self.symbol, len(rules["legs"]), self.strike_step, self.product,
         )
 
-    def run(self, leg_indices: Optional[List[int]] = None) -> dict:
+    def run(self, leg_indices: list[int] | None = None) -> dict:
         """Same lifecycle wrapper as BaseStrategy.run() — leg_indices restricts execute()/preview() to a subset of legs (see __init__ docstring above)."""
         self._leg_indices = leg_indices
         return super().run()
@@ -148,7 +151,7 @@ class RuleBasedStrategy(BaseStrategy):
             raise RuntimeError(f"Invalid/missing LTP for '{self.symbol}'.")
         return ltp
 
-    def _active_legs(self) -> List[Tuple[int, dict]]:
+    def _active_legs(self) -> list[tuple[int, dict]]:
         """(original_index, leg) pairs for the legs this call should act on — see run()'s leg_indices."""
         legs = self.rules["legs"]
         if self._leg_indices is None:
@@ -159,7 +162,7 @@ class RuleBasedStrategy(BaseStrategy):
         """A leg's own expiry_mode overrides the strategy default — this is what makes a calendar spread (legs at different expiries) possible. See rule_schema.py."""
         return leg.get("expiry_mode") or (self.rules.get("expiry") or {}).get("mode", "WEEKLY")
 
-    def _resolve_expiries_and_chains(self, legs: List[dict]) -> Tuple[dict, dict]:
+    def _resolve_expiries_and_chains(self, legs: list[dict]) -> tuple[dict, dict]:
         """
         Resolve the nearest expiry for each DISTINCT expiry_mode these legs
         need (usually just one — the strategy default — unless this is a
@@ -195,7 +198,7 @@ class RuleBasedStrategy(BaseStrategy):
 
         return mode_to_expiry, expiry_to_chain
 
-    def _resolve_quantity(self, leg: dict, spot_price: float, token: str, transaction_type: str, lot_size: Optional[int] = None) -> int:
+    def _resolve_quantity(self, leg: dict, spot_price: float, token: str, transaction_type: str, lot_size: int | None = None) -> int:
         """
         Today's default: `leg["lots"] * lot_size`, fixed (lot_size defaults
         to self.real_lot_size — the real F&O lot; an EQUITY leg passes 1,
@@ -227,8 +230,12 @@ class RuleBasedStrategy(BaseStrategy):
                 f"not available in this call context."
             )
 
+        from automate.utils.margin import (
+            INDEX_SYMBOLS,
+            is_commodity_instrument_key,
+            resolve_required_margin,
+        )
         from automate.utils.wallet import get_wallet_summary
-        from automate.utils.margin import resolve_required_margin, is_commodity_instrument_key, INDEX_SYMBOLS
 
         available = get_wallet_summary(self.user_id)["available_balance"]
         budget = available * (sizing["risk_pct"] / 100.0)
@@ -269,7 +276,7 @@ class RuleBasedStrategy(BaseStrategy):
             "transaction_type": leg["action"],
         }
 
-    def _resolve_leg(self, leg: dict, spot_price: float, expiry: Optional[str], chain_data: Optional[list]) -> dict:
+    def _resolve_leg(self, leg: dict, spot_price: float, expiry: str | None, chain_data: list | None) -> dict:
         """Return {instrument_token, strike, quantity, transaction_type, tag, ...leg metadata}."""
         if (leg.get("instrument_type") or "OPTION") == "EQUITY":
             return self._resolve_equity_leg(leg, spot_price)
@@ -290,7 +297,7 @@ class RuleBasedStrategy(BaseStrategy):
             "transaction_type": leg["action"],
         }
 
-    def _run_pre_trade_checks(self, resolved_pairs: List[Tuple[int, dict]], spot_price: float) -> None:
+    def _run_pre_trade_checks(self, resolved_pairs: list[tuple[int, dict]], spot_price: float) -> None:
         """
         SEBI pre-trade compliance for every leg about to be placed —
         ±20% circuit price-band check (options only, a strike has no
@@ -301,7 +308,7 @@ class RuleBasedStrategy(BaseStrategy):
         freeze-exceeding order at the broker level — see
         validate_order_quantity's own docstring).
         """
-        from automate.compliance.sebi_rules import validate_price_band, validate_order_quantity
+        from automate.compliance.sebi_rules import validate_order_quantity, validate_price_band
 
         for _, resolved in resolved_pairs:
             if resolved["instrument_type"] == "OPTION" and resolved.get("strike") is not None:
@@ -311,7 +318,7 @@ class RuleBasedStrategy(BaseStrategy):
                     raise ComplianceError(str(exc)) from exc
             validate_order_quantity(self.symbol, resolved["quantity"])
 
-    def _place_leg(self, resolved: dict, idx: int) -> Optional[str]:
+    def _place_leg(self, resolved: dict, idx: int) -> str | None:
         self.rate_limiter.acquire()
         place = self.broker.place_sell_order if resolved["transaction_type"] == "SELL" else self.broker.place_buy_order
         self.audit.record(
@@ -548,7 +555,7 @@ class RuleBasedStrategy(BaseStrategy):
         order = sorted(range(len(resolved_pairs)), key=lambda pos: 0 if resolved_pairs[pos][1]["transaction_type"] == "SELL" else 1)
 
         filled: list[tuple[int, dict, str]] = []
-        failed_idx: Optional[int] = None
+        failed_idx: int | None = None
         for pos in order:
             original_idx, resolved = resolved_pairs[pos]
             order_id = self._place_leg(resolved, original_idx)
@@ -569,7 +576,7 @@ class RuleBasedStrategy(BaseStrategy):
                 break
 
         if failed_idx is not None and not self.broker.dry_run:
-            for idx, resolved, order_id in filled:
+            for idx, resolved, _order_id in filled:
                 self._unwind_leg(resolved, idx)
             raise RuntimeError(
                 f"Custom strategy leg {failed_idx} failed to fill for {self.symbol} — "

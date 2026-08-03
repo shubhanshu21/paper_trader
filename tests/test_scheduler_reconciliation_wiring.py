@@ -10,8 +10,8 @@ import json
 
 import pytest
 
-from automate.db.models import CustomStrategy, CustomStrategyPosition
 from automate.api.custom_strategy_scheduler import _reconcile_live_positions
+from automate.db.models import CustomStrategy, CustomStrategyPosition
 
 
 @pytest.fixture()
@@ -20,10 +20,10 @@ def db(db_session):
 
 
 def _make_strategy(db, **overrides):
-    defaults = dict(
-        user_id=1, name="Live Strangle", instrument_type="INDEX", strategy_type="CUSTOM", option_type="BOTH",
-        symbols=json.dumps(["NIFTY"]), status="LIVE",
-    )
+    defaults = {
+        "user_id": 1, "name": "Live Strangle", "instrument_type": "INDEX", "strategy_type": "CUSTOM", "option_type": "BOTH",
+        "symbols": json.dumps(["NIFTY"]), "status": "LIVE",
+    }
     defaults.update(overrides)
     s = CustomStrategy(**defaults)
     db.add(s)

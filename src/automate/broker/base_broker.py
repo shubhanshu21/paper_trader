@@ -8,7 +8,6 @@ brokers fully interchangeable without touching strategy code.
 
 from abc import ABC, abstractmethod
 from datetime import datetime
-from typing import Optional
 
 
 class BaseBroker(ABC):
@@ -23,7 +22,7 @@ class BaseBroker(ABC):
     """
 
     @abstractmethod
-    def get_ltp(self, instrument_key: str) -> Optional[float]:
+    def get_ltp(self, instrument_key: str) -> float | None:
         """
         Fetch the Last Traded Price of an equity underlying.
 
@@ -35,7 +34,7 @@ class BaseBroker(ABC):
         """
         ...
 
-    def get_ltp_batch(self, instrument_keys: list[str]) -> dict[str, Optional[float]]:
+    def get_ltp_batch(self, instrument_keys: list[str]) -> dict[str, float | None]:
         """
         Fetch LTPs for many instruments at once. Default implementation is
         just N calls to get_ltp() — correct for any broker, but callers that
@@ -47,7 +46,7 @@ class BaseBroker(ABC):
         """
         return {key: self.get_ltp(key) for key in instrument_keys}
 
-    def get_market_depth(self, instrument_key: str) -> Optional[dict]:
+    def get_market_depth(self, instrument_key: str) -> dict | None:
         """
         5-level bid/offer book + OHLC/volume/circuit-limit snapshot for one
         instrument. Not every broker implementation can provide this (paper
@@ -60,7 +59,7 @@ class BaseBroker(ABC):
 
     def get_required_margin(
         self, instrument_key: str, quantity: int, transaction_type: str, product: str = "D",
-    ) -> Optional[float]:
+    ) -> float | None:
         """
         Real broker-calculated SPAN + exposure margin (₹) required for ONE
         order — via Upstox's actual Margin Calculator API
@@ -81,7 +80,7 @@ class BaseBroker(ABC):
         """
         return None
 
-    def get_basket_required_margin(self, instruments: list[dict]) -> Optional[float]:
+    def get_basket_required_margin(self, instruments: list[dict]) -> float | None:
         """
         Real broker-calculated NETTED margin for a whole basket of legs in
         ONE call — e.g. a short strangle's CE+PE together — via the same
@@ -164,8 +163,8 @@ class BaseBroker(ABC):
         product: str = "NRML",
         order_type: str = "MARKET",
         tag: str = "",
-        user_id: Optional[int] = None,
-    ) -> Optional[str]:
+        user_id: int | None = None,
+    ) -> str | None:
         """
         Place a SELL order for an options leg.
 
@@ -199,8 +198,8 @@ class BaseBroker(ABC):
         product: str = "NRML",
         order_type: str = "MARKET",
         tag: str = "",
-        user_id: Optional[int] = None,
-    ) -> Optional[str]:
+        user_id: int | None = None,
+    ) -> str | None:
         """
         Place a BUY order for an options leg.
 
@@ -257,7 +256,7 @@ class BaseBroker(ABC):
             )
         return results
 
-    def get_current_time(self) -> Optional[datetime]:
+    def get_current_time(self) -> datetime | None:
         """
         Return the timestamp the SEBI market-hours check should validate
         against, or None to use the real wall-clock time.
@@ -270,7 +269,7 @@ class BaseBroker(ABC):
         """
         return None
 
-    def get_lot_size(self, symbol: str) -> Optional[int]:
+    def get_lot_size(self, symbol: str) -> int | None:
         """
         Return the REAL current F&O lot size for `symbol`, resolved from
         this broker's live instrument master, or None if this broker
@@ -287,7 +286,7 @@ class BaseBroker(ABC):
         """
         return None
 
-    def get_strike_step(self, symbol: str) -> Optional[float]:
+    def get_strike_step(self, symbol: str) -> float | None:
         """
         Return the REAL current strike-price interval for `symbol`,
         resolved from this broker's live instrument master (the actual
@@ -303,7 +302,7 @@ class BaseBroker(ABC):
         """
         return None
 
-    def get_order_status(self, order_id: str) -> Optional[str]:
+    def get_order_status(self, order_id: str) -> str | None:
         """
         Return the current status of a previously-placed order (e.g.
         'complete', 'rejected', 'cancelled', 'open'), lowercased, or None
@@ -316,7 +315,7 @@ class BaseBroker(ABC):
         """
         return None
 
-    def get_fill_price(self, order_id: str) -> Optional[float]:
+    def get_fill_price(self, order_id: str) -> float | None:
         """
         Return the ACTUAL average price this order filled at, or None if
         that isn't known (order not found, not yet filled, or this broker

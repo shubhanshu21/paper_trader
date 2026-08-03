@@ -1,7 +1,8 @@
 import { useState } from "react";
 import { Search, Download, BarChart2, Users, ChevronDown } from "lucide-react";
 import { EquityPosition } from "../api";
-import { C, FONT, inr, withSign, sign, Banner, Td, Th, inrWithSign, inrWithSignNoPlus } from "./Common";
+import { Banner, Td, Th } from "./Common";
+import { C, FONT, inr, withSign, sign, inrWithSign, inrWithSignNoPlus } from "../lib/format";
 
 interface HoldingsProps {
   openEquity: EquityPosition[];

@@ -23,13 +23,13 @@ Usage:
     df = cache.get_or_refresh()  # Returns a pandas DataFrame
 """
 
+import itertools
 import time
 from datetime import date, datetime
 from pathlib import Path
-from typing import Optional
 
-import requests
 import pandas as pd
+import requests
 
 from automate.utils.logger import get_logger
 
@@ -72,7 +72,7 @@ class InstrumentCache:
     def __init__(self, cache_dir: Path = CACHE_DIR, **kwargs) -> None:
         self.cache_dir = cache_dir
         self.cache_dir.mkdir(parents=True, exist_ok=True)
-        self._df: Optional[pd.DataFrame] = None  # In-memory cache
+        self._df: pd.DataFrame | None = None  # In-memory cache
 
     # ------------------------------------------------------------------
     # Public API
@@ -121,7 +121,7 @@ class InstrumentCache:
         )
         return self._df
 
-    def resolve_equity_key(self, symbol: str) -> Optional[str]:
+    def resolve_equity_key(self, symbol: str) -> str | None:
         """
         Find the Upstox instrument_key for an NSE equity, e.g.
         'NSE_EQ|INE002A01018' for 'RELIANCE'.
@@ -167,7 +167,7 @@ class InstrumentCache:
             log.error("Column missing in Upstox master: %s. Available: %s", exc, list(df.columns))
             return None
 
-    def resolve_key(self, symbol: str) -> Optional[str]:
+    def resolve_key(self, symbol: str) -> str | None:
         """
         Resolve `symbol` as an equity, an index, OR an MCX commodity —
         tries the equity segment first (resolve_equity_key), then the
@@ -193,7 +193,7 @@ class InstrumentCache:
         commodity = self.resolve_commodity_key(symbol)
         return commodity[0] if commodity else None
 
-    def resolve_commodity_key(self, symbol: str) -> Optional[tuple]:
+    def resolve_commodity_key(self, symbol: str) -> tuple | None:
         """
         Return (instrument_key, expiry) of the nearest-dated MCX future
         for `symbol` (e.g. 'GOLD', 'CRUDEOIL', 'SILVERM'), or None if it
@@ -218,7 +218,7 @@ class InstrumentCache:
         row = matches.iloc[0]
         return str(row["instrument_key"]), str(row["expiry"])
 
-    def resolve_lot_size(self, symbol: str) -> Optional[int]:
+    def resolve_lot_size(self, symbol: str) -> int | None:
         """
         Resolve the REAL, CURRENT F&O lot size for `symbol` from today's
         instrument master — more authoritative than any hardcoded table
@@ -262,7 +262,7 @@ class InstrumentCache:
             log.warning("Could not resolve lot size for '%s' from instrument master: %s", symbol, exc)
             return None
 
-    def resolve_strike_step(self, symbol: str) -> Optional[float]:
+    def resolve_strike_step(self, symbol: str) -> float | None:
         """
         Resolve the REAL, CURRENT strike-price interval for `symbol` from
         today's instrument master's actual listed option strikes (nearest
@@ -303,7 +303,7 @@ class InstrumentCache:
                     len(strikes), symbol, nearest_expiry,
                 )
                 return None
-            gaps = sorted(set(round(b - a, 4) for a, b in zip(strikes[:-1], strikes[1:])))
+            gaps = sorted({round(b - a, 4) for a, b in itertools.pairwise(strikes)})
             step = gaps[0]
             log.info(
                 "Real strike step for %s = %s (from today's instrument master, nearest expiry %s)",
@@ -350,7 +350,7 @@ class InstrumentCache:
             "commodities": _extract(mcx_fut["symbol"]),
         }
 
-    def resolve_nearest_future_key(self, symbol: str) -> Optional[tuple]:
+    def resolve_nearest_future_key(self, symbol: str) -> tuple | None:
         """
         Return (instrument_key, expiry) of the nearest-dated NSE_FO future
         for `symbol`, or None if it has no listed futures contract.
@@ -374,7 +374,7 @@ class InstrumentCache:
         row = matches.iloc[0]
         return str(row["instrument_key"]), str(row["expiry"])
 
-    def _resolve_index(self, symbol: str) -> Optional[str]:
+    def _resolve_index(self, symbol: str) -> str | None:
         """Find the Upstox instrument_key for an index by its tradingsymbol (e.g. 'NIFTY')."""
         df = self.get_or_refresh()
         try:
@@ -421,7 +421,7 @@ class InstrumentCache:
                         f"Critical instrument master (NSE) download failed: {exc}. Strategy entries/exits, "
                         f"strike resolution, and lot-size lookups will fail until this succeeds.",
                     )
-                    raise RuntimeError(f"Critical instrument master {name} download failed: {exc}")
+                    raise RuntimeError(f"Critical instrument master {name} download failed: {exc}") from exc
 
         if not dfs:
             from automate.utils.notify import notify

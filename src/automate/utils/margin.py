@@ -12,7 +12,6 @@ Two tiers, in priority order:
      live/paper only if the Upstox margin API call itself fails, e.g. a
      network hiccup) so sizing/validation never simply breaks.
 """
-from typing import Optional
 
 INDEX_SYMBOLS = {"NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY"}
 
@@ -25,7 +24,7 @@ _STOCK_MARGIN_RATE = 0.18
 _COMMODITY_MARGIN_RATE = 0.25
 
 
-def is_commodity_instrument_key(instrument_key: Optional[str]) -> bool:
+def is_commodity_instrument_key(instrument_key: str | None) -> bool:
     """
     Is this instrument_key an MCX commodity contract? Derived from the
     key's own exchange prefix ('MCX_FO|...') rather than a hardcoded
@@ -45,7 +44,7 @@ def estimate_margin_blocked(spot: float, quantity: int, is_index: bool, is_commo
 
 def resolve_required_margin(
     broker, instrument_key: str, quantity: int, transaction_type: str,
-    spot: Optional[float], is_index: bool, is_commodity: bool = False, product: str = "D",
+    spot: float | None, is_index: bool, is_commodity: bool = False, product: str = "D",
 ) -> float:
     """
     The real broker-calculated margin if `broker` can provide one

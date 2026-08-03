@@ -6,11 +6,10 @@ logs/daemon.pid) — it never duplicates state, and every CLI entry point
 keeps working identically whether or not this API process is running.
 """
 import logging
-from typing import Optional
 
 log = logging.getLogger("api")
 
-_brokers_cache: Optional[dict] = None
+_brokers_cache: dict | None = None
 _audit_trail = None
 _rate_limiter = None
 
@@ -31,7 +30,7 @@ def get_rate_limiter():
     return _rate_limiter
 
 
-def get_brokers() -> Optional[dict]:
+def get_brokers() -> dict | None:
     """
     Lazily build the {'paper': ..., 'live': ...} broker pair (same
     BrokerFactory.create_mode_brokers() the CLI uses), cached for this
@@ -62,13 +61,13 @@ def reset_brokers_cache() -> None:
     _brokers_cache = None
 
 
-def compute_mtm(position: dict, brokers: Optional[dict], rates: Optional[dict] = None) -> Optional[float]:
+def compute_mtm(position: dict, brokers: dict | None, rates: dict | None = None) -> float | None:
     """Gross mark-to-market P&L in rupees — see compute_mtm_economics() for the cost-aware version."""
     econ = compute_mtm_economics(position, brokers, rates)
     return None if econ is None else econ["gross_pnl"]
 
 
-def compute_mtm_economics(position: dict, brokers: Optional[dict], rates: Optional[dict] = None) -> Optional[dict]:
+def compute_mtm_economics(position: dict, brokers: dict | None, rates: dict | None = None) -> dict | None:
     """
     gross_pnl/net_pnl/charges for one open short-strangle position, marked
     to market against current LTPs (i.e. "what if I closed it right now"),

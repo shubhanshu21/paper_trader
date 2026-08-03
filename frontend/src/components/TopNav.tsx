@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from "react";
 import { useNavigate, useLocation, NavLink } from "react-router-dom";
 import { User, LogOut, Menu, X } from "lucide-react";
 import { User as UserType } from "../api";
-import { C, FONT } from "./Common";
+import { C, FONT } from "../lib/format";
 import NotificationBell from "./NotificationBell";
 import MarketStatusBadge from "./MarketStatusBadge";
 

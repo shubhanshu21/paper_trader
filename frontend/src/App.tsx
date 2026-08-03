@@ -8,7 +8,7 @@ import { RootState, AppDispatch } from './store';
 import TopNav from './components/TopNav';
 import Watchlist from './components/Watchlist';
 import OrderWindow from './components/OrderWindow';
-import { C } from './components/Common';
+import { C } from './lib/format';
 
 interface ActiveOrder {
   symbol: string;

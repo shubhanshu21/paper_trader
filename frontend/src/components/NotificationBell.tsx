@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { Bell, AlertTriangle, Info, AlertCircle, CheckCheck } from "lucide-react";
-import { C } from "./Common";
+import { C } from "../lib/format";
 import { wsUrl, csrfHeaders } from "../api";
 
 interface NotificationItem {
@@ -46,7 +46,6 @@ export default function NotificationBell() {
   useEffect(() => {
     let cancelled = false;
     let reconnectTimer: ReturnType<typeof setTimeout>;
-    let watchdogTimer: ReturnType<typeof setInterval>;
 
     // The backend (ws_notifications.py) pushes a message every 4s
     // unconditionally, even with nothing new, specifically so the client
@@ -92,7 +91,7 @@ export default function NotificationBell() {
     };
     connect();
 
-    watchdogTimer = setInterval(() => {
+    const watchdogTimer = setInterval(() => {
       if (cancelled) return;
       if (Date.now() - lastMessageAt > STALE_AFTER_MS) {
         wsRef.current?.close(); // triggers onclose -> the normal reconnect path above

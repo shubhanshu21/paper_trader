@@ -10,7 +10,7 @@ initialised before any strategy logic runs.
 from abc import ABC, abstractmethod
 
 from automate.broker.base_broker import BaseBroker
-from automate.compliance.sebi_rules import AuditTrail, KillSwitch, OrderRateLimiter, ComplianceError
+from automate.compliance.sebi_rules import AuditTrail, ComplianceError, KillSwitch, OrderRateLimiter
 from automate.utils.logger import get_logger
 from automate.utils.notify import notify
 

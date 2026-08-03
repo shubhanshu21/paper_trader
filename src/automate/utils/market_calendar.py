@@ -31,16 +31,17 @@ Usage:
     calendar.get_freeze_quantity("RELIANCE")  # Returns int
 """
 
+import contextlib
 import json
-from datetime import date, datetime, time as dtime
+from datetime import date, datetime
+from datetime import time as dtime
 from pathlib import Path
-from typing import Optional
 from zoneinfo import ZoneInfo
 
 import requests
 
-from automate.utils.logger import get_logger
 from automate.config import MarketConfig
+from automate.utils.logger import get_logger
 
 log = get_logger(__name__)
 
@@ -104,7 +105,7 @@ class MarketCalendar:
     def __init__(
         self,
         cache_dir: Path = CACHE_DIR,
-        access_token: Optional[str] = None,
+        access_token: str | None = None,
     ) -> None:
         self._cache_dir = cache_dir
         self._cache_dir.mkdir(parents=True, exist_ok=True)
@@ -139,7 +140,7 @@ class MarketCalendar:
             len(self._freeze_quantities),
         )
 
-    def is_trading_day(self, check_date: Optional[date] = None) -> bool:
+    def is_trading_day(self, check_date: date | None = None) -> bool:
         """
         Return True if the given date is a valid NSE trading day.
 
@@ -150,13 +151,13 @@ class MarketCalendar:
             True if it's a weekday and not a NSE holiday.
         """
         self._ensure_loaded()
-        check_date = check_date or date.today()
+        check_date = check_date or datetime.now(_IST).date()
 
         if check_date.weekday() >= 5:  # Saturday=5, Sunday=6
             return False
         return check_date not in self._holidays
 
-    def assert_market_is_open(self, check_time: Optional[datetime] = None) -> None:
+    def assert_market_is_open(self, check_time: datetime | None = None) -> None:
         """
         Raise RuntimeError if the given (or current) IST time is outside market hours.
 
@@ -234,7 +235,7 @@ class MarketCalendar:
         Cache file: cache/nse_holidays_<YYYY>.json
         Refreshed once per year (unless force=True).
         """
-        year = date.today().year
+        year = datetime.now(_IST).date().year
         cache_file = self._cache_dir / f"nse_holidays_{year}.json"
 
         if not force and cache_file.exists():
@@ -290,10 +291,8 @@ class MarketCalendar:
                 if "NSE" in closed_exchanges or "NFO" in closed_exchanges:
                     raw_date = item.get("date")
                     if raw_date:
-                        try:
+                        with contextlib.suppress(ValueError):
                             holidays.add(datetime.strptime(raw_date, "%Y-%m-%d").date())
-                        except ValueError:
-                            pass
 
             log.info(
                 "[Calendar] Fetched %d holidays.", len(holidays)

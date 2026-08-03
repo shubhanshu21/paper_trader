@@ -26,7 +26,7 @@ PAPER mode is intentionally out of scope — there's no real exchange to
 reconcile against; the DB already IS the sole source of truth there.
 """
 from collections import defaultdict
-from typing import Dict, List, Optional, TypedDict
+from typing import TypedDict
 
 
 class PositionMismatch(TypedDict):
@@ -35,7 +35,7 @@ class PositionMismatch(TypedDict):
     broker_quantity: int
 
 
-def compute_db_net_quantity(open_live_legs: List[dict]) -> Dict[str, int]:
+def compute_db_net_quantity(open_live_legs: list[dict]) -> dict[str, int]:
     """
     Net expected quantity per instrument_key from this app's own OPEN,
     mode='live' CustomStrategyPosition rows — positive = net long
@@ -44,14 +44,14 @@ def compute_db_net_quantity(open_live_legs: List[dict]) -> Dict[str, int]:
     — {instrument_key, transaction_type, quantity} — so this stays a
     pure, trivially-testable function; the caller does the DB query.
     """
-    net: Dict[str, int] = defaultdict(int)
+    net: dict[str, int] = defaultdict(int)
     for leg in open_live_legs:
         sign = 1 if leg["transaction_type"] == "BUY" else -1
         net[leg["instrument_key"]] += sign * leg["quantity"]
     return dict(net)
 
 
-def diff_positions(db_net: Dict[str, int], broker_net: Dict[str, int]) -> List[PositionMismatch]:
+def diff_positions(db_net: dict[str, int], broker_net: dict[str, int]) -> list[PositionMismatch]:
     """
     Every instrument where the DB's expected net quantity and the
     broker's actual net quantity disagree — in EITHER direction: an
@@ -60,7 +60,7 @@ def diff_positions(db_net: Dict[str, int], broker_net: Dict[str, int]) -> List[P
     (closed outside the app, or the crash-after-exit scenario). An
     instrument absent from one side is treated as 0 for that side.
     """
-    mismatches: List[PositionMismatch] = []
+    mismatches: list[PositionMismatch] = []
     for instrument_key in sorted(set(db_net) | set(broker_net)):
         db_qty = db_net.get(instrument_key, 0)
         broker_qty = broker_net.get(instrument_key, 0)
@@ -69,7 +69,7 @@ def diff_positions(db_net: Dict[str, int], broker_net: Dict[str, int]) -> List[P
     return mismatches
 
 
-def reconcile_live_positions(open_live_legs: List[dict], broker_net: Optional[Dict[str, int]]) -> Optional[List[PositionMismatch]]:
+def reconcile_live_positions(open_live_legs: list[dict], broker_net: dict[str, int] | None) -> list[PositionMismatch] | None:
     """
     The one function callers should use — combines compute_db_net_quantity
     + diff_positions, and handles broker_net being unavailable (the

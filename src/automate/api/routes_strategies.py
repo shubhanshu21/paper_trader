@@ -1,5 +1,4 @@
 """api/routes_strategies.py — view/edit per-strategy runtime config (MODE, SYMBOLS, NUM_LOTS, SL/TP, exit-days-before-expiry)."""
-from typing import List, Optional
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
@@ -21,10 +20,10 @@ class ConfigUpdate(BaseModel):
     # meaningful state ("turn this threshold off"), not "leave unchanged".
     # A partial-patch design couldn't distinguish "field left alone" from
     # "field explicitly cleared" without a separate sentinel.
-    symbols: List[str]
+    symbols: list[str]
     num_lots: int
-    take_profit_pct: Optional[float] = None
-    stop_loss_pct: Optional[float] = None
+    take_profit_pct: float | None = None
+    stop_loss_pct: float | None = None
     exit_days_before_expiry: int
 
 
@@ -62,7 +61,7 @@ def known_symbols(name: str):
     try:
         return InstrumentCache().list_tradable_symbols()
     except RuntimeError as exc:
-        raise HTTPException(status_code=502, detail=f"Could not load instrument master: {exc}")
+        raise HTTPException(status_code=502, detail=f"Could not load instrument master: {exc}") from exc
 
 
 @router.post("/{name}/mode")
@@ -72,7 +71,7 @@ def update_mode(name: str, body: ModeUpdate):
     try:
         set_override(name, MODE=body.mode)
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return _serialize(name)
 
 
@@ -91,5 +90,5 @@ def update_config(name: str, body: ConfigUpdate):
             EXIT_DAYS_BEFORE_EXPIRY=body.exit_days_before_expiry,
         )
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return _serialize(name)

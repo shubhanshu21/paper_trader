@@ -27,7 +27,7 @@ compute_greeks_from_market_price() does both steps in one call — this is
 the function most callers actually want.
 """
 import math
-from typing import Literal, Optional, TypedDict
+from typing import Literal, TypedDict
 
 OptionType = Literal["CE", "PE"]
 
@@ -118,7 +118,7 @@ _IV_BISECT_MAX_ITER = 100
 
 def implied_volatility(
     F: float, K: float, T: float, r: float, market_price: float, option_type: OptionType,
-) -> Optional[float]:
+) -> float | None:
     """
     Solve for the volatility that makes black76_price(...) match a real
     traded market_price — Newton-Raphson first (fast, uses vega as the
@@ -241,7 +241,7 @@ def greeks(F: float, K: float, T: float, r: float, sigma: float, option_type: Op
 
 def compute_greeks_from_market_price(
     F: float, K: float, T: float, r: float, market_price: float, option_type: OptionType,
-) -> Optional[Greeks]:
+) -> Greeks | None:
     """
     The function most callers want: solve IV against a real traded price,
     then return all 5 Greeks computed from that solved IV. Returns None

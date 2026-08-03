@@ -11,16 +11,15 @@ tests/conftest.py) because _run_one_cycle's day-by-day walk queries
 fno_bhavcopy directly via `text()` SQL.
 """
 from types import SimpleNamespace
-from typing import Optional
 from unittest.mock import patch
 
 import pytest
 
-from automate.db.models import FnoBhavcopy
 from automate.backtest.custom_engine import CustomRuleBacktestEngine
 from automate.backtest.data_feed import DataFeed
 from automate.broker.mock_broker import MockBroker
-from automate.compliance.sebi_rules import AuditTrail, KillSwitch, OrderRateLimiter
+from automate.compliance.sebi_rules import AuditTrail, OrderRateLimiter
+from automate.db.models import FnoBhavcopy
 from automate.utils.option_utils import calculate_strangle_strikes
 
 EQUITY_KEY = "NSE_EQ|TEST_ISIN"
@@ -47,7 +46,7 @@ class _DayAwareFeed(_TestFeed):
         super().__init__()
         self.by_day: dict = {}
 
-    def get_ltp(self, instrument_key: str) -> Optional[float]:
+    def get_ltp(self, instrument_key: str) -> float | None:
         day_prices = self.by_day.get(instrument_key)
         if day_prices and self.current_time is not None:
             day = self.current_time.date().isoformat()
@@ -84,6 +83,7 @@ def _build_engine(feed: _TestFeed, rules: dict, session=None) -> CustomRuleBackt
     engine.broker = MockBroker(data_feed=feed, slippage_pct=SLIPPAGE_PCT)
     engine.audit = AuditTrail(audit_log_path="logs/test_audit_trail.log")
     engine.rate_limiter = OrderRateLimiter(max_per_second=10)
+    engine.charge_rates = None
     return engine
 
 

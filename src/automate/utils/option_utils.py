@@ -6,7 +6,6 @@ Contains no broker-specific code so these functions are independently testable.
 
 import logging
 from datetime import date, datetime, timedelta
-from typing import Optional
 
 log = logging.getLogger(__name__)
 
@@ -58,8 +57,8 @@ def round_to_nearest_strike(price: float, step: float) -> float:
 # ---------------------------------------------------------------------------
 
 def find_nearest_monthly_expiry(
-    expiries: list[str], fmt: str = "%Y-%m-%d", reference_date: Optional[date] = None,
-) -> Optional[str]:
+    expiries: list[str], fmt: str = "%Y-%m-%d", reference_date: date | None = None,
+) -> str | None:
     """
     Given a list of expiry date strings, return the nearest one that is
     on or after `reference_date` (i.e., the current or next monthly expiry).
@@ -103,8 +102,8 @@ def find_nearest_monthly_expiry(
 
 
 def find_nearest_expiry_by_type(
-    expiries: list[str], mode: str, fmt: str = "%Y-%m-%d", reference_date: Optional[date] = None,
-) -> Optional[str]:
+    expiries: list[str], mode: str, fmt: str = "%Y-%m-%d", reference_date: date | None = None,
+) -> str | None:
     """
     Like find_nearest_monthly_expiry(), but expiry-type aware — needed
     once an underlying (NIFTY, BANKNIFTY, ...) has BOTH weekly and monthly
@@ -165,7 +164,7 @@ def find_instrument_token(
     chain_data: list,
     target_strike: float,
     option_type: str,
-) -> Optional[str]:
+) -> str | None:
     """
     Search an Upstox option chain response for the instrument token that
     matches a specific strike price and option type (CE or PE).
@@ -252,7 +251,7 @@ def find_instrument_token(
     return None
 
 
-def find_leg_iv(chain_data: list, target_strike: float, option_type: str) -> Optional[float]:
+def find_leg_iv(chain_data: list, target_strike: float, option_type: str) -> float | None:
     """
     Exact-strike-only lookup of Upstox's OWN implied volatility for one
     option leg, straight from the option chain response's `.option_greeks.iv`
@@ -355,9 +354,9 @@ def strangle_pnl_pct(
 
 def check_exit_trigger(
     pnl_pct: float,
-    take_profit_pct: Optional[float],
-    stop_loss_pct: Optional[float],
-) -> Optional[str]:
+    take_profit_pct: float | None,
+    stop_loss_pct: float | None,
+) -> str | None:
     """
     Decide whether a position should be closed early, given its current
     P&L (as % of premium collected — see strangle_pnl_pct()) and the

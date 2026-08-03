@@ -15,7 +15,6 @@ this feature first shipped — there's no historical options-price archive
 live to backfill from (see the module docstring on SymbolIvHistory).
 """
 from datetime import date, timedelta
-from typing import Optional
 
 from automate.db.engine import SessionLocal
 from automate.db.models import SymbolIvHistory
@@ -24,7 +23,7 @@ _LOOKBACK_DAYS = 252  # ~1 trading year
 _MIN_HISTORY_DAYS = 30  # below this, a "rank" is too noisy/meaningless to act on
 
 
-def compute_iv_rank(symbol: str, today_iv: Optional[float] = None) -> Optional[float]:
+def compute_iv_rank(symbol: str, today_iv: float | None = None) -> float | None:
     """
     today_iv: the CURRENT ATM IV to rank, if the caller already solved it
     (avoids a redundant live IV solve — e.g. routes_custom_strategies.py's

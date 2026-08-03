@@ -14,15 +14,25 @@ from fastapi import HTTPException
 from starlette.requests import Request
 
 import automate.api.routes_auth as routes_auth
-from automate.api.auth import get_password_hash, create_mfa_pending_token
+from automate.api.auth import create_mfa_pending_token, get_password_hash
+from automate.api.routes_auth import (
+    LoginRequest,
+    MfaConfirmRequest,
+    MfaDisableRequest,
+    MfaVerifyLoginRequest,
+    login,
+    mfa_confirm,
+    mfa_disable,
+    mfa_setup,
+    mfa_verify_login,
+)
 from automate.db.models import User
 from automate.utils.mfa import (
-    consume_backup_code, generate_backup_codes, generate_totp_secret,
-    hash_backup_codes, verify_totp_code,
-)
-from automate.api.routes_auth import (
-    LoginRequest, MfaConfirmRequest, MfaDisableRequest, MfaVerifyLoginRequest,
-    login, mfa_confirm, mfa_disable, mfa_setup, mfa_verify_login,
+    consume_backup_code,
+    generate_backup_codes,
+    generate_totp_secret,
+    hash_backup_codes,
+    verify_totp_code,
 )
 
 
@@ -61,11 +71,11 @@ def db(db_session_factory, monkeypatch):
 
 
 def _make_user(db, **overrides):
-    defaults = dict(
-        username="alice", email="alice@example.com",
-        hashed_password=get_password_hash("correct horse battery staple"),
-        role="viewer", is_active=1, token_version=0, mfa_enabled=0,
-    )
+    defaults = {
+        "username": "alice", "email": "alice@example.com",
+        "hashed_password": get_password_hash("correct horse battery staple"),
+        "role": "viewer", "is_active": 1, "token_version": 0, "mfa_enabled": 0,
+    }
     defaults.update(overrides)
     u = User(**defaults)
     db.add(u)

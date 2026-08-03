@@ -7,19 +7,24 @@ workflow from draft → backtesting → paper trading → live deployment.
 import asyncio
 import json
 from datetime import datetime
-from typing import Optional, List, Dict, Any
-from fastapi import APIRouter, HTTPException, Depends
+from typing import Any
+
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from automate.api.auth import get_current_user
-from automate.db.engine import get_db, SessionLocal
+from automate.db.engine import SessionLocal, get_db
 from automate.db.models import CustomBacktestRun, CustomStrategy, CustomStrategyPosition
-from automate.strategies.custom.rule_schema import validate_rules, describe_rules
+from automate.strategies.custom.rule_schema import describe_rules, validate_rules
 from automate.utils.logger import get_logger
 
 router = APIRouter(prefix="/api/custom-strategies", tags=["custom-strategies"])
 log = get_logger(__name__)
+
+# Kept referenced for the task's lifetime — an unreferenced asyncio task can be
+# garbage-collected mid-run since the event loop only holds a weak reference.
+_background_tasks: set = set()
 
 
 def _current_user_id(user: dict) -> int:
@@ -52,34 +57,34 @@ class CustomStrategyCreate(BaseModel):
     `rules` instead.
     """
     name: str
-    description: Optional[str] = None
+    description: str | None = None
     instrument_type: str  # 'INDEX' | 'STOCK' | 'COMMODITY'
-    symbols: List[str]
-    rules: Dict[str, Any]
+    symbols: list[str]
+    rules: dict[str, Any]
     strategy_type: str = "CUSTOM"
     option_type: str = "BOTH"
-    strike_offset: Optional[float] = None
-    expiry_days: Optional[int] = None
+    strike_offset: float | None = None
+    expiry_days: int | None = None
     num_lots: int = 1
-    take_profit_pct: Optional[float] = None
-    stop_loss_pct: Optional[float] = None
+    take_profit_pct: float | None = None
+    stop_loss_pct: float | None = None
     exit_days_before_expiry: int = 1
 
 
 class CustomStrategyUpdate(BaseModel):
     """Request model for updating a custom strategy."""
-    name: Optional[str] = None
-    description: Optional[str] = None
-    symbols: Optional[List[str]] = None
-    rules: Optional[Dict[str, Any]] = None
-    strategy_type: Optional[str] = None
-    option_type: Optional[str] = None
-    strike_offset: Optional[float] = None
-    expiry_days: Optional[int] = None
-    num_lots: Optional[int] = None
-    take_profit_pct: Optional[float] = None
-    stop_loss_pct: Optional[float] = None
-    exit_days_before_expiry: Optional[int] = None
+    name: str | None = None
+    description: str | None = None
+    symbols: list[str] | None = None
+    rules: dict[str, Any] | None = None
+    strategy_type: str | None = None
+    option_type: str | None = None
+    strike_offset: float | None = None
+    expiry_days: int | None = None
+    num_lots: int | None = None
+    take_profit_pct: float | None = None
+    stop_loss_pct: float | None = None
+    exit_days_before_expiry: int | None = None
 
 
 class StrategyStatusUpdate(BaseModel):
@@ -90,17 +95,17 @@ class StrategyStatusUpdate(BaseModel):
 class AutomationSettings(BaseModel):
     """Request model for updating automation settings."""
     auto_roll: bool = False
-    roll_threshold_pct: Optional[float] = None
+    roll_threshold_pct: float | None = None
     auto_adjust: bool = False
-    greek_threshold_delta: Optional[float] = None
-    greek_threshold_theta: Optional[float] = None
+    greek_threshold_delta: float | None = None
+    greek_threshold_theta: float | None = None
 
 
 class PerformanceUpdate(BaseModel):
     """Request model for updating performance metrics."""
-    backtest_return_pct: Optional[float] = None
-    paper_return_pct: Optional[float] = None
-    live_return_pct: Optional[float] = None
+    backtest_return_pct: float | None = None
+    paper_return_pct: float | None = None
+    live_return_pct: float | None = None
 
 
 @router.post("")
@@ -143,8 +148,8 @@ def create_strategy(strategy: CustomStrategyCreate, db: Session = Depends(get_db
 
 @router.get("")
 def list_strategies(
-    status: Optional[str] = None,
-    instrument_type: Optional[str] = None,
+    status: str | None = None,
+    instrument_type: str | None = None,
     db: Session = Depends(get_db),
     user: dict = Depends(get_current_user),
 ):
@@ -187,9 +192,8 @@ def update_strategy(strategy_id: int, strategy: CustomStrategyUpdate, db: Sessio
 
     update_data = strategy.dict(exclude_unset=True)
 
-    if "instrument_type" in update_data:
-        if update_data["instrument_type"] not in ("INDEX", "STOCK", "COMMODITY"):
-            raise HTTPException(status_code=422, detail="instrument_type must be INDEX, STOCK, or COMMODITY.")
+    if "instrument_type" in update_data and update_data["instrument_type"] not in ("INDEX", "STOCK", "COMMODITY"):
+        raise HTTPException(status_code=422, detail="instrument_type must be INDEX, STOCK, or COMMODITY.")
 
     if "symbols" in update_data:
         update_data["symbols"] = json.dumps(update_data["symbols"])
@@ -293,7 +297,10 @@ def update_strategy_status(strategy_id: int, status_update: StrategyStatusUpdate
             CustomStrategyPosition.status == "OPEN",
         ).first() is not None
         if has_open_legs:
-            from automate.api.custom_strategy_scheduler import _get_brokers, square_off_all_open_legs
+            from automate.api.custom_strategy_scheduler import (
+                _get_brokers,
+                square_off_all_open_legs,
+            )
             brokers = _get_brokers()
             if brokers is None:
                 raise HTTPException(
@@ -370,19 +377,19 @@ def update_performance(strategy_id: int, performance: PerformanceUpdate, db: Ses
 
 
 class BacktestRequest(BaseModel):
-    from_date: Optional[str] = None  # 'YYYY-MM-DD'
-    to_date: Optional[str] = None
-    slippage_pct: Optional[float] = 0.1
+    from_date: str | None = None  # 'YYYY-MM-DD'
+    to_date: str | None = None
+    slippage_pct: float | None = 0.1
 
 
 def _run_backtest_symbols(
-    symbols: List[str],
+    symbols: list[str],
     rules: dict,
     instrument_type: str,
-    from_date: Optional[str],
-    to_date: Optional[str],
-    on_progress: Optional[Any] = None,
-    charge_rates: Optional[dict] = None,
+    from_date: str | None,
+    to_date: str | None,
+    on_progress: Any | None = None,
+    charge_rates: dict | None = None,
 ) -> tuple:
     """
     Run CustomRuleBacktestEngine once per symbol (a strategy can be
@@ -401,9 +408,9 @@ def _run_backtest_symbols(
     option_instrument = "OPTIDX" if instrument_type == "INDEX" else "OPTSTK"
     future_instrument = "FUTIDX" if instrument_type == "INDEX" else "FUTSTK"
 
-    all_cycles: List[dict] = []
-    per_symbol: Dict[str, dict] = {}
-    skipped_symbols: Dict[str, str] = {}
+    all_cycles: list[dict] = []
+    per_symbol: dict[str, dict] = {}
+    skipped_symbols: dict[str, str] = {}
 
     for symbol in symbols:
         try:
@@ -597,7 +604,10 @@ async def backtest_strategy(strategy_id: int, request: BacktestRequest, db: Sess
     db.commit()
     db.refresh(run)
 
-    asyncio.create_task(_execute_backtest_run(run.id))
+    task = asyncio.create_task(_execute_backtest_run(run.id))
+    if task is not None:  # tests monkeypatch create_task to a no-op returning None
+        _background_tasks.add(task)
+        task.add_done_callback(_background_tasks.discard)
 
     return {"run_id": run.id, "status": run.status}
 
@@ -642,7 +652,7 @@ def get_stored_backtest_result(strategy_id: int, db: Session = Depends(get_db), 
     return json.loads(db_strategy.backtest_result_json)
 
 
-def _leg(action: str, option_type: str, mode: str = "ATM", value: Optional[float] = None, lots: int = 1) -> dict:
+def _leg(action: str, option_type: str, mode: str = "ATM", value: float | None = None, lots: int = 1) -> dict:
     return {"action": action, "option_type": option_type, "strike_selection": {"mode": mode, "value": value}, "lots": lots}
 
 
@@ -721,7 +731,7 @@ def get_symbols():
     try:
         return InstrumentCache().list_tradable_symbols()
     except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"Could not load instrument master: {exc}")
+        raise HTTPException(status_code=502, detail=f"Could not load instrument master: {exc}") from exc
 
 
 @router.get("/templates/expiries")
@@ -740,7 +750,7 @@ def get_expiries(symbol: str):
     try:
         df = InstrumentCache().get_or_refresh()
     except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"Could not load instrument master: {exc}")
+        raise HTTPException(status_code=502, detail=f"Could not load instrument master: {exc}") from exc
 
     import re
     symbol = symbol.upper().strip()
@@ -755,7 +765,7 @@ def get_expiries(symbol: str):
     if not expiries:
         raise HTTPException(status_code=404, detail=f"No listed option expiries found for '{symbol}'.")
 
-    by_month: Dict[Any, str] = {}
+    by_month: dict[Any, str] = {}
     for exp in expiries:
         y, m, _ = exp.split("-")
         key = (y, m)
@@ -816,12 +826,18 @@ def get_expected_payoff(strategy_id: int, db: Session = Depends(get_db), user: d
     since this is a what-if calculation, not an actual position snapshot.
     """
     from datetime import date
+
+    from automate.api.custom_strategy_scheduler import (
+        _audit,
+        _get_brokers,
+        _kill_switch,
+        _rate_limiter,
+    )
     from automate.strategies.custom.rule_strategy import RuleBasedStrategy, resolve_leg_strike
-    from automate.utils.option_utils import find_instrument_token, find_leg_iv
-    from automate.utils.payoff import compute_payoff, compute_payoff_curve, probability_of_profit
     from automate.utils import black76
     from automate.utils.margin import estimate_margin_blocked
-    from automate.api.custom_strategy_scheduler import _get_brokers, _audit, _kill_switch, _rate_limiter
+    from automate.utils.option_utils import find_instrument_token, find_leg_iv
+    from automate.utils.payoff import compute_payoff, compute_payoff_curve, probability_of_profit
 
     db_strategy = _get_owned_strategy(db, strategy_id, _current_user_id(user))
     if not db_strategy.rules_json:
@@ -912,11 +928,14 @@ def get_expected_payoff(strategy_id: int, db: Session = Depends(get_db), user: d
         call_iv = sum(call_ivs) / len(call_ivs) if call_ivs else None
         put_iv = sum(put_ivs) / len(put_ivs) if put_ivs else None
 
-        def _iv_for_bound(bound_price: float) -> Optional[float]:
+        def _iv_for_bound(bound_price: float) -> float | None:
             # A tail above the underlying's current forward is really about
             # whether the CALL side finishes ITM, and a tail below is about
             # the PUT side — use that leg's own IV for that side's mass.
-            return call_iv if bound_price >= forward else put_iv
+            # (call_iv/forward/put_iv are this iteration's values — safe since
+            # probability_of_profit() below calls this synchronously, in the
+            # same iteration, before the loop can reassign them.)
+            return call_iv if bound_price >= forward else put_iv  # noqa: B023
 
         fallback_iv = atm_iv or call_iv or put_iv
         pop = (
@@ -939,7 +958,7 @@ def get_expected_payoff(strategy_id: int, db: Session = Depends(get_db), user: d
         # simultaneously), so real exchange SPAN margining gives a benefit
         # for the second leg rather than stacking full margin on top of it;
         # summing double-counted the requirement and understated the ROI%.
-        short_qty = max((l["quantity"] for l in payoff_legs if l["action"] == "SELL"), default=0)
+        short_qty = max((leg["quantity"] for leg in payoff_legs if leg["action"] == "SELL"), default=0)
         if short_qty > 0:
             capital_basis = estimate_margin_blocked(spot, short_qty, is_index)
         else:
@@ -959,9 +978,9 @@ def get_expected_payoff(strategy_id: int, db: Session = Depends(get_db), user: d
             "spot_price": spot,
             "expiry": preview["expiry"],
             "legs": [
-                {"strike": l["strike"], "option_type": l["option_type"], "action": l["transaction_type"],
-                 "quantity": l["quantity"], "current_price": l["current_price"]}
-                for l in preview["legs"]
+                {"strike": leg["strike"], "option_type": leg["option_type"], "action": leg["transaction_type"],
+                 "quantity": leg["quantity"], "current_price": leg["current_price"]}
+                for leg in preview["legs"]
             ],
         }
 
@@ -971,7 +990,7 @@ def get_expected_payoff(strategy_id: int, db: Session = Depends(get_db), user: d
 @router.post("/positions/{position_id}/close")
 def close_custom_strategy_position(position_id: int, db: Session = Depends(get_db), user: dict = Depends(get_current_user)):
     """Square off/close a single open leg of a custom strategy."""
-    from automate.api.custom_strategy_scheduler import _get_brokers, _close_leg
+    from automate.api.custom_strategy_scheduler import _close_leg, _get_brokers
 
     # 1. Fetch the leg
     leg = db.query(CustomStrategyPosition).filter(CustomStrategyPosition.id == position_id).first()
@@ -1035,8 +1054,8 @@ def get_strategy_positions(strategy_id: int, db: Session = Depends(get_db), user
 
     return {
         "strategy_id": strategy_id,
-        "open": [l.to_dict() for l in legs if l.status == "OPEN"],
-        "closed": [l.to_dict() for l in legs if l.status == "CLOSED"],
+        "open": [leg.to_dict() for leg in legs if leg.status == "OPEN"],
+        "closed": [leg.to_dict() for leg in legs if leg.status == "CLOSED"],
     }
 
 

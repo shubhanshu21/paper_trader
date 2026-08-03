@@ -4,9 +4,9 @@ broker/mock_broker.py — Mock Broker for Backtesting
 Simulates broker responses using historical data provided by a DataFeed.
 Does not make any network calls.
 """
-from datetime import datetime
-from typing import Optional, List, Dict, Any
 import uuid
+from datetime import datetime
+from typing import Any
 
 from automate.broker.base_broker import BaseBroker
 from automate.utils.logger import get_logger
@@ -38,8 +38,8 @@ class MockBroker(BaseBroker):
         self.dry_run = False
 
         # Virtual portfolio
-        self.orders: List[Dict[str, Any]] = []
-        self.positions: Dict[str, int] = {}
+        self.orders: list[dict[str, Any]] = []
+        self.positions: dict[str, int] = {}
 
         # order_id -> slippage-adjusted execution_price, populated by
         # _place_order() — see get_fill_price(). custom_engine.py already
@@ -47,7 +47,7 @@ class MockBroker(BaseBroker):
         # entry/exit pricing; this dict just exposes the same data through
         # the standard BaseBroker.get_fill_price() interface other callers
         # (e.g. RuleBasedStrategy.enter(), shared with live/paper) use.
-        self._fills: Dict[str, float] = {}
+        self._fills: dict[str, float] = {}
         
         # In a backtest, we can either use the actual live cache or pass a specific 
         # historical instrument master. For now, we will dynamically fetch it using 
@@ -55,7 +55,7 @@ class MockBroker(BaseBroker):
         from automate.utils.instrument_cache import InstrumentCache
         self._instrument_cache = InstrumentCache()
 
-    def get_ltp(self, instrument_key: str) -> Optional[float]:
+    def get_ltp(self, instrument_key: str) -> float | None:
         """Fetch the simulated Last Traded Price from the data feed."""
         ltp = self.data_feed.get_ltp(instrument_key)
         log.debug("MockBroker get_ltp(%s) -> %s", instrument_key, ltp)
@@ -77,7 +77,7 @@ class MockBroker(BaseBroker):
         """No-op for backtesting. Instruments are statically mapped or loaded in data_feed."""
         log.debug("MockBroker refresh_instrument_master() called (No-op).")
 
-    def get_current_time(self) -> Optional[datetime]:
+    def get_current_time(self) -> datetime | None:
         """Return the backtest's simulated current time (from the data feed)."""
         return self.data_feed.current_time
 
@@ -88,11 +88,11 @@ class MockBroker(BaseBroker):
             raise RuntimeError(f"MockBroker: Unknown symbol '{symbol}'")
         return key
 
-    def get_lot_size(self, symbol: str) -> Optional[int]:
+    def get_lot_size(self, symbol: str) -> int | None:
         """Real current F&O lot size for `symbol`, from the same cached Upstox instrument master used for resolve_instrument_key(). See BaseBroker."""
         return self._instrument_cache.resolve_lot_size(symbol)
 
-    def get_strike_step(self, symbol: str) -> Optional[float]:
+    def get_strike_step(self, symbol: str) -> float | None:
         """Real current strike interval for `symbol`, from the same cached Upstox instrument master. See BaseBroker."""
         return self._instrument_cache.resolve_strike_step(symbol)
 
@@ -104,7 +104,7 @@ class MockBroker(BaseBroker):
         product: str = "NRML",
         order_type: str = "MARKET",
         tag: str = "",
-    ) -> Optional[str]:
+    ) -> str | None:
         """
         Record a simulated SELL or BUY order. Applies slippage to the
         current LTP.
@@ -150,7 +150,7 @@ class MockBroker(BaseBroker):
 
         return order_id
 
-    def get_fill_price(self, order_id: str) -> Optional[float]:
+    def get_fill_price(self, order_id: str) -> float | None:
         """The slippage-adjusted price this simulated order actually filled at. See BaseBroker."""
         return self._fills.get(order_id)
 
@@ -161,8 +161,8 @@ class MockBroker(BaseBroker):
         product: str = "NRML",
         order_type: str = "MARKET",
         tag: str = "",
-        user_id: Optional[int] = None,
-    ) -> Optional[str]:
+        user_id: int | None = None,
+    ) -> str | None:
         """Place a SELL (write) order for one options leg. See BaseBroker. user_id unused — backtest has no wallet-balance check."""
         return self._place_order("SELL", instrument_token, quantity, product, order_type, tag)
 
@@ -173,7 +173,7 @@ class MockBroker(BaseBroker):
         product: str = "NRML",
         order_type: str = "MARKET",
         tag: str = "",
-        user_id: Optional[int] = None,
-    ) -> Optional[str]:
+        user_id: int | None = None,
+    ) -> str | None:
         """Place a BUY order to square off an options leg. See BaseBroker. user_id unused — see place_sell_order."""
         return self._place_order("BUY", instrument_token, quantity, product, order_type, tag)

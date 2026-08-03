@@ -38,8 +38,8 @@ def run_step(name: str, cmd: list) -> bool:
 
 def refresh_instrument_master() -> bool:
     """Step 1: refresh today's Upstox instrument master and bulk seed to MySQL."""
-    from automate.utils.instrument_cache import InstrumentCache
     from automate.db.engine import engine
+    from automate.utils.instrument_cache import InstrumentCache
     try:
         cache = InstrumentCache()
         # Sync all instruments (NSE, MCX, BSE) to the MySQL database
@@ -58,8 +58,9 @@ def bhavcopy_gap_range() -> tuple:
     pre-market cron run happens before today's bhavcopy is published.
     """
     yesterday = (date.today() - timedelta(days=1)).isoformat()
-    from automate.db.engine import get_session
     from sqlalchemy import text
+
+    from automate.db.engine import get_session
     try:
         with get_session() as session:
             row = session.execute(text("SELECT MAX(trade_date) FROM fno_bhavcopy")).fetchone()

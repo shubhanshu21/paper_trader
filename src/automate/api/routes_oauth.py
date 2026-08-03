@@ -26,7 +26,6 @@ import logging
 import re
 import secrets
 import urllib.parse
-from typing import Optional
 
 import requests
 from fastapi import APIRouter, HTTPException, Query
@@ -106,7 +105,7 @@ def oauth_login():
 
 
 @router.get("/callback")
-def oauth_callback(code: Optional[str] = Query(None), state: Optional[str] = Query(None), error: Optional[str] = Query(None)):
+def oauth_callback(code: str | None = Query(None), state: str | None = Query(None), error: str | None = Query(None)):
     if not GoogleOAuthConfig.is_configured():
         raise _not_configured()
 
@@ -141,7 +140,7 @@ def oauth_callback(code: Optional[str] = Query(None), state: Optional[str] = Que
         userinfo = userinfo_resp.json()
     except requests.RequestException as exc:
         log.error("Google OAuth token/userinfo exchange failed: %s", exc)
-        raise HTTPException(status_code=502, detail="Could not complete Google sign-in — please try again.")
+        raise HTTPException(status_code=502, detail="Could not complete Google sign-in — please try again.") from exc
 
     email = (userinfo.get("email") or "").strip().lower()
     if not email or not userinfo.get("email_verified", False):

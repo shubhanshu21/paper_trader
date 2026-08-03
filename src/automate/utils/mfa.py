@@ -13,7 +13,6 @@ import base64
 import io
 import json
 import secrets
-from typing import List, Optional, Tuple
 
 import pyotp
 import qrcode
@@ -51,17 +50,17 @@ def verify_totp_code(secret: str, code: str) -> bool:
     return pyotp.TOTP(secret).verify(code, valid_window=1)
 
 
-def generate_backup_codes() -> List[str]:
+def generate_backup_codes() -> list[str]:
     """Plaintext codes shown to the user ONCE at enrollment time — caller hashes them before storing (see hash_backup_codes)."""
     return [secrets.token_hex(_BACKUP_CODE_LENGTH // 2) for _ in range(_NUM_BACKUP_CODES)]
 
 
-def hash_backup_codes(codes: List[str]) -> str:
+def hash_backup_codes(codes: list[str]) -> str:
     """JSON list of bcrypt hashes, ready for User.mfa_backup_codes_json."""
     return json.dumps([get_password_hash(c) for c in codes])
 
 
-def consume_backup_code(backup_codes_json: Optional[str], code: str) -> Tuple[bool, Optional[str]]:
+def consume_backup_code(backup_codes_json: str | None, code: str) -> tuple[bool, str | None]:
     """
     Checks `code` against the stored hashed backup codes. On a match,
     returns (True, updated_json_with_that_code_removed) — the caller
@@ -72,7 +71,7 @@ def consume_backup_code(backup_codes_json: Optional[str], code: str) -> Tuple[bo
     if not backup_codes_json or not code:
         return False, None
     try:
-        hashes: List[str] = json.loads(backup_codes_json)
+        hashes: list[str] = json.loads(backup_codes_json)
     except json.JSONDecodeError:
         return False, None
 

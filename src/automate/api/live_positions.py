@@ -7,13 +7,12 @@ GET .../positions/open, kept for manual/curl inspection) so the logic
 exists in exactly one place — same pattern as api/live_greeks.py.
 """
 import json
-from typing import Dict, List
 
 from automate.db.engine import SessionLocal
 from automate.db.models import CustomStrategy, CustomStrategyPosition
 
 
-def compute_open_positions(user_id: int) -> List[dict]:
+def compute_open_positions(user_id: int) -> list[dict]:
     """Every OPEN custom-strategy leg across all of `user_id`'s strategies, as flat per-leg rows."""
     from automate.api.custom_strategy_scheduler import _get_brokers, _is_leg_for_symbol
     from automate.utils.wallet import get_charge_rates
@@ -37,15 +36,15 @@ def compute_open_positions(user_id: int) -> List[dict]:
             return []
 
         strategies = {
-            s.id: s for s in db.query(CustomStrategy).filter(CustomStrategy.id.in_({l.strategy_id for l in legs})).all()
+            s.id: s for s in db.query(CustomStrategy).filter(CustomStrategy.id.in_({leg.strategy_id for leg in legs})).all()
         }
 
         brokers = _get_brokers()
         # Batch LTP fetch per broker mode (paper/live) — one HTTP call per
         # mode instead of one per leg, same rationale as live_greeks.py.
-        ltp_by_mode: Dict[str, Dict[str, float]] = {}
+        ltp_by_mode: dict[str, dict[str, float]] = {}
         if brokers:
-            tokens_by_mode: Dict[str, list] = {}
+            tokens_by_mode: dict[str, list] = {}
             for leg in legs:
                 tokens_by_mode.setdefault(leg.mode, []).append(leg.instrument_key)
             for mode, tokens in tokens_by_mode.items():

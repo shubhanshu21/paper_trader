@@ -13,7 +13,7 @@ from automate.utils.costs import calculate_options_transaction_cost_breakdown, s
 
 def compute_strangle_pnl(
     call_entry: float, put_entry: float, call_exit: float, put_exit: float, quantity: int,
-    rates: dict = None,
+    rates: dict | None = None,
 ) -> dict:
     """
     gross/net P&L (₹) and the combined charges breakdown across all 4 legs
@@ -42,14 +42,14 @@ def compute_strangle_pnl(
     }
 
 
-def entry_charges_only(call_entry: float, put_entry: float, quantity: int, rates: dict = None) -> dict:
+def entry_charges_only(call_entry: float, put_entry: float, quantity: int, rates: dict | None = None) -> dict:
     """Charges already incurred on an open position (entry SELL legs only, no exit yet)."""
     call_entry_c = calculate_options_transaction_cost_breakdown(call_entry, quantity, "SELL", rates)
     put_entry_c = calculate_options_transaction_cost_breakdown(put_entry, quantity, "SELL", rates)
     return sum_breakdowns(call_entry_c, put_entry_c)
 
 
-def compute_basket_pnl(legs: list, rates: dict = None) -> dict:
+def compute_basket_pnl(legs: list, rates: dict | None = None) -> dict:
     """
     Generalization of compute_strangle_pnl() for a Custom Strategy Builder
     basket of N arbitrary BUY/SELL legs (not just a fixed 2-leg short

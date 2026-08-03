@@ -9,7 +9,9 @@ actually closed). This module detects — never auto-corrects — that
 drift. Pure functions, fully hermetic.
 """
 from automate.utils.position_reconciliation import (
-    compute_db_net_quantity, diff_positions, reconcile_live_positions,
+    compute_db_net_quantity,
+    diff_positions,
+    reconcile_live_positions,
 )
 
 

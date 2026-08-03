@@ -27,8 +27,7 @@ Security notes:
 """
 import logging
 import secrets
-from datetime import datetime, timedelta, timezone
-from typing import Optional
+from datetime import UTC, datetime, timedelta
 
 from fastapi import Cookie, Depends, HTTPException, Request, status
 from jose import JWTError, jwt
@@ -75,7 +74,7 @@ def create_access_token(user_id: int, username: str, role: str, token_version: i
     - iat: issued-at
     """
     secret = PanelAuthConfig.jwt_secret()
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     expire = now + timedelta(hours=PanelAuthConfig.SESSION_HOURS)
     payload = {
         "sub": str(user_id),
@@ -117,7 +116,7 @@ _MFA_PENDING_MINUTES = 5
 
 def create_mfa_pending_token(user_id: int) -> str:
     secret = PanelAuthConfig.jwt_secret()
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     payload = {
         "sub": str(user_id),
         "purpose": "mfa_pending",
@@ -150,7 +149,7 @@ _OAUTH_STATE_MINUTES = 10
 
 def create_oauth_state_token() -> str:
     secret = PanelAuthConfig.jwt_secret()
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     payload = {"purpose": "oauth_state", "iat": now, "exp": now + timedelta(minutes=_OAUTH_STATE_MINUTES)}
     return jwt.encode(payload, secret, algorithm=ALGORITHM)
 
@@ -173,7 +172,7 @@ def generate_csrf_token() -> str:
     return secrets.token_hex(32)
 
 
-def validate_csrf(request: Request, csrf_cookie: Optional[str] = Cookie(None, alias="csrf_token")) -> None:
+def validate_csrf(request: Request, csrf_cookie: str | None = Cookie(None, alias="csrf_token")) -> None:
     """
     Validate the CSRF double-submit cookie.
 
@@ -208,8 +207,8 @@ def validate_csrf(request: Request, csrf_cookie: Optional[str] = Cookie(None, al
 
 def _get_token_from_cookie(
     request: Request,
-    session_cookie: Optional[str] = Cookie(None, alias="__Host-session"),
-) -> Optional[str]:
+    session_cookie: str | None = Cookie(None, alias="__Host-session"),
+) -> str | None:
     """Extract JWT from Authorization header or __Host-session HttpOnly cookie."""
     auth_header = request.headers.get("Authorization", "")
     if auth_header.startswith("Bearer "):
@@ -220,8 +219,8 @@ def _get_token_from_cookie(
 
 
 def get_current_user_optional(
-    token: Optional[str] = Depends(_get_token_from_cookie),
-) -> Optional[dict]:
+    token: str | None = Depends(_get_token_from_cookie),
+) -> dict | None:
     """
     Dependency: return the decoded JWT payload if a valid, non-revoked
     session exists, or None if not authenticated/revoked. Suitable for
@@ -278,7 +277,7 @@ def bump_token_version(session, user: "User") -> None:  # noqa: F821 — type-on
 
 
 def get_current_user(
-    payload: Optional[dict] = Depends(get_current_user_optional),
+    payload: dict | None = Depends(get_current_user_optional),
 ) -> dict:
     """
     Dependency: require a valid session. Raises 401 if not authenticated.
@@ -307,7 +306,7 @@ def require_admin(
     return payload
 
 
-def get_current_user_ws(websocket) -> Optional[dict]:
+def get_current_user_ws(websocket) -> dict | None:
     """
     WebSocket equivalent of get_current_user_optional() — the global
     require_auth_middleware in main.py only wraps regular HTTP requests

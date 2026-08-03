@@ -7,13 +7,12 @@ order rows (CE/PE entry SELL, CE/PE exit BUY) instead of keeping a separate
 leg-level order log, matching the "single source of truth" approach the
 paper broker's own docstring already commits to.
 """
-from typing import List, Optional
 
 from automate.utils.costs import calculate_options_transaction_cost_breakdown
 from automate.utils.position_tracker import get_closed_positions, get_open_positions
 
 
-def _leg_order(pos: dict, leg: str, side: str, strike: int, price: float, order_id: Optional[str], order_date: str, rates: Optional[dict] = None) -> dict:
+def _leg_order(pos: dict, leg: str, side: str, strike: int, price: float, order_id: str | None, order_date: str, rates: dict | None = None) -> dict:
     charges = calculate_options_transaction_cost_breakdown(price, pos["quantity"], side, rates)
     return {
         "order_id": order_id,
@@ -32,7 +31,7 @@ def _leg_order(pos: dict, leg: str, side: str, strike: int, price: float, order_
     }
 
 
-def _custom_strategy_orders(user_id: Optional[int], mode: Optional[str], rates: Optional[dict] = None) -> List[dict]:
+def _custom_strategy_orders(user_id: int | None, mode: str | None, rates: dict | None = None) -> list[dict]:
     """
     Synthetic order rows for Custom Strategy Builder legs (CustomStrategyPosition)
     — same derivation approach as the option-strangle section above (positions
@@ -46,12 +45,14 @@ def _custom_strategy_orders(user_id: Optional[int], mode: Optional[str], rates: 
     if user_id is None:
         return []
     import json
+
+    from sqlalchemy import select
+
     from automate.api.custom_strategy_scheduler import _is_leg_for_symbol
     from automate.db.engine import get_session
     from automate.db.models import CustomStrategy, CustomStrategyPosition
-    from sqlalchemy import select
 
-    orders: List[dict] = []
+    orders: list[dict] = []
     with get_session() as session:
         own_ids = set(session.execute(
             select(CustomStrategy.id).where(CustomStrategy.user_id == user_id)
@@ -68,7 +69,7 @@ def _custom_strategy_orders(user_id: Optional[int], mode: Optional[str], rates: 
 
         strategies = {
             s.id: s for s in session.execute(
-                select(CustomStrategy).where(CustomStrategy.id.in_({l.strategy_id for l in legs}))
+                select(CustomStrategy).where(CustomStrategy.id.in_({leg.strategy_id for leg in legs}))
             ).scalars().all()
         }
 
@@ -125,7 +126,7 @@ def _custom_strategy_orders(user_id: Optional[int], mode: Optional[str], rates: 
     return orders
 
 
-def get_order_book(mode: Optional[str] = None, limit: int = 200, user_id: Optional[int] = None) -> List[dict]:
+def get_order_book(mode: str | None = None, limit: int = 200, user_id: int | None = None) -> list[dict]:
     rates = None
     if user_id is not None:
         from automate.utils.wallet import get_charge_rates
@@ -133,7 +134,7 @@ def get_order_book(mode: Optional[str] = None, limit: int = 200, user_id: Option
 
     # 1. Option strangles
     positions = get_open_positions(mode=mode, user_id=user_id) + get_closed_positions(limit=None, mode=mode, user_id=user_id)
-    orders: List[dict] = []
+    orders: list[dict] = []
 
     for p in positions:
         orders.append(_leg_order(p, "CE", "SELL", p["call_strike"], p["call_entry_price"], p["call_order_id"], p["entry_date"], rates))
@@ -146,9 +147,10 @@ def get_order_book(mode: Optional[str] = None, limit: int = 200, user_id: Option
     orders.extend(_custom_strategy_orders(user_id, mode, rates))
 
     # 2. Equity and manual terminal positions
+    from sqlalchemy import select
+
     from automate.db.engine import get_session
     from automate.db.models import EquityPosition
-    from sqlalchemy import select
     
     equity_positions = []
     try:

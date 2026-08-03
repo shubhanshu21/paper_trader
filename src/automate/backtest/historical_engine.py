@@ -69,20 +69,25 @@ IMPORTANT — data quality caveats (read before trusting these numbers):
 """
 import argparse
 import statistics
-from datetime import date, datetime, time as dtime
-from typing import Dict, List, Optional
+from datetime import date, datetime
+from datetime import time as dtime
+
 from sqlalchemy import text
-from automate.db.engine import SessionLocal
 
 from automate.backtest.bhavcopy_data_feed import BhavcopyDataFeed
 from automate.broker.mock_broker import MockBroker
 from automate.compliance.sebi_rules import AuditTrail, KillSwitch, OrderRateLimiter
+from automate.db.engine import SessionLocal
 from automate.strategies.registry import STRATEGIES
 from automate.utils.costs import calculate_options_transaction_cost_breakdown, sum_breakdowns
 from automate.utils.instrument_cache import InstrumentCache
-from automate.utils.margin import estimate_margin_blocked
 from automate.utils.logger import get_logger
-from automate.utils.option_utils import check_exit_trigger, strangle_pnl_pct, is_within_pre_expiry_buffer
+from automate.utils.margin import estimate_margin_blocked
+from automate.utils.option_utils import (
+    check_exit_trigger,
+    is_within_pre_expiry_buffer,
+    strangle_pnl_pct,
+)
 
 log = get_logger(__name__)
 
@@ -115,13 +120,13 @@ class HistoricalCycleEngine:
         symbol: str,
         strategy: str = "ten_percent_otm_strangle",
         num_lots: int = 1,
-        strike_step: Optional[float] = None,
+        strike_step: float | None = None,
         product: str = "NRML",
         option_instrument: str = "OPTSTK",
         future_instrument: str = "FUTSTK",
         audit_log_path: str = "logs/mock_audit_trail.log",
-        strategy_kwargs: Optional[dict] = None,
-        charge_rates: Optional[dict] = None,
+        strategy_kwargs: dict | None = None,
+        charge_rates: dict | None = None,
     ) -> None:
         if strategy not in STRATEGIES:
             raise ValueError(f"Unknown strategy '{strategy}'. Available: {list(STRATEGIES)}")
@@ -164,7 +169,7 @@ class HistoricalCycleEngine:
         self.audit = AuditTrail(audit_log_path=audit_log_path)
         self.rate_limiter = OrderRateLimiter(max_per_second=10)
 
-    def discover_cycles(self, from_date: Optional[str], to_date: Optional[str]) -> List[dict]:
+    def discover_cycles(self, from_date: str | None, to_date: str | None) -> list[dict]:
         """
         Find every historical (entry_date, expiry, exit_date) in range —
         pure calendar/data lookup (which dates the bot would have run on),
@@ -217,7 +222,7 @@ class HistoricalCycleEngine:
             cycles.append({"entry_date": entry_date, "expiry": expiry, "exit_date": exit_date})
         return cycles
 
-    def run(self, from_date: Optional[str] = None, to_date: Optional[str] = None) -> List[dict]:
+    def run(self, from_date: str | None = None, to_date: str | None = None) -> list[dict]:
         results = []
         try:
             for cycle in self.discover_cycles(from_date, to_date):
@@ -228,7 +233,7 @@ class HistoricalCycleEngine:
             self.session.close()
         return results
 
-    def _run_one_cycle(self, cycle: dict) -> Optional[dict]:
+    def _run_one_cycle(self, cycle: dict) -> dict | None:
         entry_date, expiry, exit_date = cycle["entry_date"], cycle["expiry"], cycle["exit_date"]
 
         self.feed.set_time(datetime.combine(date.fromisoformat(entry_date), _MARKET_OPEN))
@@ -325,7 +330,7 @@ class HistoricalCycleEngine:
 
         gross_pnl = 0.0
         net_pnl = 0.0
-        leg_pnl: Dict[str, float] = {}
+        leg_pnl: dict[str, float] = {}
         leg_charges = []
         liquid = True
         for sell in sells:
@@ -382,13 +387,13 @@ def _fmt_money_plain(x: float) -> str:
     return format_inr(x, signed=False)
 
 
-def compute_stats(results: List[dict]) -> dict:
+def compute_stats(results: list[dict]) -> dict:
     """Compute plain money numbers for one set of cycle results (or None fields if empty)."""
     if not results:
         return {"cycles": 0}
     net = [r["net_pnl"] for r in results]
     capital = [r["capital_needed"] for r in results]
-    pct = [(n / c * 100) if c else 0.0 for n, c in zip(net, capital)]
+    pct = [(n / c * 100) if c else 0.0 for n, c in zip(net, capital, strict=False)]
     wins = sum(1 for x in net if x > 0)
     max_capital = max(capital)
     return {
@@ -408,7 +413,7 @@ def compute_stats(results: List[dict]) -> dict:
 _EXIT_REASON_LABELS = {"EXPIRY": "Pre-Expiry Exit", "TAKE_PROFIT": "Take Profit", "STOP_LOSS": "Stop Loss"}
 
 
-def print_trade_details(results: List[dict], show_exit_reason: bool = False) -> None:
+def print_trade_details(results: list[dict], show_exit_reason: bool = False) -> None:
     """Print one row per trade taken — entry, exit, strikes, and the result."""
     from automate.utils.table import render_stats_table
 
@@ -435,9 +440,9 @@ def print_trade_details(results: List[dict], show_exit_reason: bool = False) -> 
     render_stats_table("Trades Taken", headers, rows, pnl_columns=[6, 7])
 
 
-def print_summary_table(all_results: List[dict], liquid_results: List[dict], meta: dict) -> None:
+def print_summary_table(all_results: list[dict], liquid_results: list[dict], meta: dict) -> None:
     """Print a simple, plain-language money summary — no jargon, Indian Rupee formatting."""
-    from automate.utils.table import render_stats_table, print_meta_line
+    from automate.utils.table import print_meta_line, render_stats_table
 
     stats = compute_stats(all_results)
 
@@ -467,7 +472,7 @@ def print_summary_table(all_results: List[dict], liquid_results: List[dict], met
     })
 
 
-def _pct_or_none(value: str) -> Optional[float]:
+def _pct_or_none(value: str) -> float | None:
     """argparse type: a percentage, or 'none'/'off'/'disabled' to turn the threshold off entirely."""
     if value.strip().lower() in ("none", "off", "disabled"):
         return None
@@ -477,7 +482,7 @@ def _pct_or_none(value: str) -> Optional[float]:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--symbol", required=True, help="e.g. NIFTY, BANKNIFTY, or a stock symbol like RELIANCE")
-    parser.add_argument("--strategy", choices=list(STRATEGIES), default=list(STRATEGIES)[0],
+    parser.add_argument("--strategy", choices=list(STRATEGIES), default=next(iter(STRATEGIES)),
                          help="Which strategy to simulate. Only one is implemented today.")
     parser.add_argument("--type", choices=["index", "stock"], default="index",
                          help="index -> FUTIDX/OPTIDX rows, stock -> FUTSTK/OPTSTK rows")

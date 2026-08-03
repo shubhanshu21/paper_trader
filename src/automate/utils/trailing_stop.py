@@ -9,7 +9,6 @@ run the exact same tested math instead of two copies silently drifting
 apart over time. Pure functions — no broker/DB access, easy to unit test
 exhaustively.
 """
-from typing import Optional, Tuple
 
 
 def advance_trailing_stop(
@@ -17,10 +16,10 @@ def advance_trailing_stop(
     ltp: float,
     trail_amount: float,
     trail_type: str,
-    highest_price: Optional[float],
-    lowest_price: Optional[float],
-    current_stop_price: Optional[float],
-) -> Tuple[Optional[float], Optional[float], Optional[float], bool]:
+    highest_price: float | None,
+    lowest_price: float | None,
+    current_stop_price: float | None,
+) -> tuple[float | None, float | None, float | None, bool]:
     """
     Recompute a trailing stop's ratchet state for the latest LTP.
 
@@ -56,7 +55,7 @@ def exit_transaction_type(side: str) -> str:
     return "SELL" if side == "BUY" else "BUY"
 
 
-def stop_triggered(side: str, ltp: float, current_stop_price: Optional[float]) -> bool:
+def stop_triggered(side: str, ltp: float, current_stop_price: float | None) -> bool:
     """Has price crossed back through the current trailing-stop level? side=BUY (long) -> ltp <= stop; side=SELL (short) -> ltp >= stop."""
     if current_stop_price is None:
         return False

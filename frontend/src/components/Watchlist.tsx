@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import { Search, ChevronDown, ChevronUp, Briefcase, Settings, X, AlignLeft, TrendingUp, Trash2, MoreHorizontal, Plus, Check } from "lucide-react";
 import { api, wsUrl, Instrument } from "../api";
-import { C, FONT, inr } from "./Common";
+import { C, FONT, inr } from "../lib/format";
 import MarketDepthModal from "./MarketDepthModal";
 
 interface DepthTarget {

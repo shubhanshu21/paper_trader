@@ -13,10 +13,10 @@ block anything else in this process — see market_price_broadcaster.py/
 custom_strategy_scheduler.py, which both need a working token too).
 """
 import asyncio
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeoutError
 from datetime import date
 from pathlib import Path
-from typing import Optional
 
 from automate.auth.upstox_auto_login import ensure_fresh_upstox_token
 from automate.compliance.sebi_rules import assert_market_is_open
@@ -41,7 +41,7 @@ def _market_is_open_now() -> bool:
         return False
 
 
-def _refresh_bounded() -> Optional[str]:
+def _refresh_bounded() -> str | None:
     """
     Same contract as ensure_fresh_upstox_token(), but never blocks the
     caller past _TOKEN_REFRESH_TIMEOUT_SEC. The underlying Selenium call

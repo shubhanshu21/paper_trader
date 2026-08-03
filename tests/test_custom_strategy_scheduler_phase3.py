@@ -12,8 +12,8 @@ from unittest.mock import patch
 
 import pytest
 
-from automate.db.models import CustomStrategy, CustomStrategyPosition, FnoBhavcopy
 import automate.api.custom_strategy_scheduler as sched
+from automate.db.models import CustomStrategy, CustomStrategyPosition, FnoBhavcopy
 
 
 # ---------------------------------------------------------------------------
@@ -184,11 +184,11 @@ class FakeOrderBroker:
 
 
 def _make_leg(**overrides):
-    defaults = dict(
-        id=1, strategy_id=1, leg_index=0, mode="paper", instrument_key="TOK1", instrument_type="OPTION",
-        option_type="CE", strike=100, expiry="2026-01-29", transaction_type="SELL", quantity=50,
-        entry_price=10.0, status="OPEN", leg_config_json=None, trail_state_json=None,
-    )
+    defaults = {
+        "id": 1, "strategy_id": 1, "leg_index": 0, "mode": "paper", "instrument_key": "TOK1", "instrument_type": "OPTION",
+        "option_type": "CE", "strike": 100, "expiry": "2026-01-29", "transaction_type": "SELL", "quantity": 50,
+        "entry_price": 10.0, "status": "OPEN", "leg_config_json": None, "trail_state_json": None,
+    }
     defaults.update(overrides)
     return CustomStrategyPosition(**defaults)
 

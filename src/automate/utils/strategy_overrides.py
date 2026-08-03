@@ -80,9 +80,10 @@ def set_override(strategy_name: str, path: str = OVERRIDES_PATH, **fields) -> Ef
         symbols = fields["SYMBOLS"]
         if not isinstance(symbols, list) or not symbols or not all(isinstance(s, str) and s.strip() for s in symbols):
             raise ValueError("SYMBOLS must be a non-empty list of non-empty strings")
-    if "NUM_LOTS" in fields and fields["NUM_LOTS"] is not None:
-        if not isinstance(fields["NUM_LOTS"], int) or fields["NUM_LOTS"] < 1:
-            raise ValueError("NUM_LOTS must be a positive integer")
+    if "NUM_LOTS" in fields and fields["NUM_LOTS"] is not None and (
+        not isinstance(fields["NUM_LOTS"], int) or fields["NUM_LOTS"] < 1
+    ):
+        raise ValueError("NUM_LOTS must be a positive integer")
 
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)

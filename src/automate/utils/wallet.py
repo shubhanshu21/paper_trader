@@ -17,11 +17,14 @@ docstring for why this changed from a single global row).
 Live-mode funds are real money on the real broker's account — not simulated
 here; this module only covers 'paper' positions.
 """
-from typing import List, Optional
 
 from automate.db.engine import get_session
 from automate.db.models import WalletSettings
-from automate.utils.margin import INDEX_SYMBOLS, estimate_margin_blocked, is_commodity_instrument_key
+from automate.utils.margin import (
+    INDEX_SYMBOLS,
+    estimate_margin_blocked,
+    is_commodity_instrument_key,
+)
 from automate.utils.pnl import compute_strangle_pnl, entry_charges_only
 from automate.utils.position_tracker import get_closed_positions, get_open_positions
 from automate.utils.wallet_adjustments import load_adjustments, total_adjustments
@@ -84,9 +87,9 @@ def set_starting_capital(user_id: int, value: float) -> float:
     # Reset/wipe out existing paper-trading history for THIS account only
     # (adjustments and closed positions) — resetting your own wallet must
     # never touch anyone else's.
-    from automate.utils.wallet_adjustments import clear_adjustments
-    from automate.utils.position_tracker import delete_closed_positions
     from automate.db.models import EquityPosition
+    from automate.utils.position_tracker import delete_closed_positions
+    from automate.utils.wallet_adjustments import clear_adjustments
 
     clear_adjustments(user_id)
     delete_closed_positions(mode="paper", user_id=user_id)
@@ -106,10 +109,11 @@ def set_starting_capital(user_id: int, value: float) -> float:
     return value
 
 
-def get_equity_positions(mode: str = "paper", status: str = None, user_id: Optional[int] = None) -> List[dict]:
+def get_equity_positions(mode: str = "paper", status: str | None = None, user_id: int | None = None) -> list[dict]:
+    from sqlalchemy import select
+
     from automate.db.engine import get_session
     from automate.db.models import EquityPosition
-    from sqlalchemy import select
     try:
         with get_session() as session:
             stmt = select(EquityPosition).where(EquityPosition.mode == mode)
@@ -156,12 +160,14 @@ def _custom_strategy_wallet_stats(user_id: int, mode: str = "paper") -> dict:
     per-user basket-grouping approach.
     """
     from collections import defaultdict
+
+    from sqlalchemy import select
+
     from automate.api.custom_strategy_scheduler import _is_leg_for_symbol
     from automate.db.engine import get_session
     from automate.db.models import CustomStrategy, CustomStrategyPosition
     from automate.utils.costs import calculate_options_transaction_cost_breakdown
     from automate.utils.pnl import compute_basket_pnl
-    from sqlalchemy import select
 
     rates = get_charge_rates(user_id)
 
@@ -183,7 +189,7 @@ def _custom_strategy_wallet_stats(user_id: int, mode: str = "paper") -> dict:
 
         strategies = {
             s.id: s for s in session.execute(
-                select(CustomStrategy).where(CustomStrategy.id.in_({l.strategy_id for l in legs}))
+                select(CustomStrategy).where(CustomStrategy.id.in_({leg.strategy_id for leg in legs}))
             ).scalars().all()
         }
 
@@ -207,9 +213,9 @@ def _custom_strategy_wallet_stats(user_id: int, mode: str = "paper") -> dict:
     entry_charges_open = 0.0
     broker = _paper_broker()
     for basket_legs in open_baskets.values():
-        legs_only = [l for l, _ in basket_legs]
+        legs_only = [leg for leg, _ in basket_legs]
         symbol = basket_legs[0][1]
-        sell_legs = [l for l in legs_only if l.transaction_type == "SELL"]
+        sell_legs = [leg for leg in legs_only if leg.transaction_type == "SELL"]
 
         # Prefer the REAL Upstox-calculated NETTED margin for this whole
         # basket (a strangle's two SELL legs together need meaningfully
@@ -221,8 +227,8 @@ def _custom_strategy_wallet_stats(user_id: int, mode: str = "paper") -> dict:
         if broker is not None and sell_legs:
             try:
                 instruments = [
-                    {"instrument_key": l.instrument_key, "quantity": l.quantity, "transaction_type": "SELL", "product": "D"}
-                    for l in sell_legs
+                    {"instrument_key": leg.instrument_key, "quantity": leg.quantity, "transaction_type": "SELL", "product": "D"}
+                    for leg in sell_legs
                 ]
                 real_margin = broker.get_basket_required_margin(instruments)
             except Exception:
@@ -231,11 +237,11 @@ def _custom_strategy_wallet_stats(user_id: int, mode: str = "paper") -> dict:
         if real_margin is not None and real_margin > 0:
             margin_blocked += real_margin
         else:
-            strikes = [float(l.strike) for l in legs_only if l.strike is not None]
+            strikes = [float(leg.strike) for leg in legs_only if leg.strike is not None]
             spot_proxy = sum(strikes) / len(strikes) if strikes else 0.0
             is_index = symbol.upper() in INDEX_SYMBOLS
             is_commodity = is_commodity_instrument_key(sell_legs[0].instrument_key) if sell_legs else False
-            short_qty = max((l.quantity for l in sell_legs), default=0)
+            short_qty = max((leg.quantity for leg in sell_legs), default=0)
             if short_qty > 0 and spot_proxy > 0:
                 margin_blocked += estimate_margin_blocked(spot_proxy, short_qty, is_index, is_commodity)
 
@@ -247,10 +253,10 @@ def _custom_strategy_wallet_stats(user_id: int, mode: str = "paper") -> dict:
     realized_pnl = 0.0
     charges_closed = 0.0
     for basket_legs in closed_baskets.values():
-        legs_only = [l for l, _ in basket_legs]
+        legs_only = [leg for leg, _ in basket_legs]
         result = compute_basket_pnl([
-            {"entry_price": l.entry_price, "exit_price": l.exit_price, "quantity": l.quantity, "transaction_type": l.transaction_type}
-            for l in legs_only if l.exit_price is not None
+            {"entry_price": leg.entry_price, "exit_price": leg.exit_price, "quantity": leg.quantity, "transaction_type": leg.transaction_type}
+            for leg in legs_only if leg.exit_price is not None
         ], rates)
         realized_pnl += result["net_pnl"]
         charges_closed += result["charges"]["total"]
@@ -341,7 +347,7 @@ def get_wallet_summary(user_id: int) -> dict:
     }
 
 
-def get_ledger(user_id: int) -> List[dict]:
+def get_ledger(user_id: int) -> list[dict]:
     """
     Chronological funds-statement rows (one OPEN + one CLOSE event per position,
     CLOSE omitted for still-open positions) for both options and equities,

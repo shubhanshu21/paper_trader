@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { X, RotateCcw, Layers, Tag, ChevronDown } from "lucide-react";
-import { C, FONT, inr } from "./Common";
+import { C, FONT, inr } from "../lib/format";
 
 interface OrderWindowProps {
   order: { symbol: string; exch: string; side: "BUY" | "SELL"; instrument_key: string; last_price: number };

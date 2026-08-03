@@ -18,8 +18,8 @@ import json
 import pytest
 from fastapi import HTTPException
 
+from automate.api.routes_custom_strategies import StrategyStatusUpdate, update_strategy_status
 from automate.db.models import CustomStrategy
-from automate.api.routes_custom_strategies import update_strategy_status, StrategyStatusUpdate
 
 USER = {"sub": "1"}
 
@@ -30,10 +30,10 @@ def db(db_session):
 
 
 def _make_strategy(db, **overrides):
-    defaults = dict(
-        user_id=1, name="Strangle", instrument_type="INDEX", strategy_type="CUSTOM", option_type="BOTH",
-        symbols=json.dumps(["NIFTY"]), status="DRAFT", rules_json=json.dumps({"legs": [{"action": "SELL"}]}),
-    )
+    defaults = {
+        "user_id": 1, "name": "Strangle", "instrument_type": "INDEX", "strategy_type": "CUSTOM", "option_type": "BOTH",
+        "symbols": json.dumps(["NIFTY"]), "status": "DRAFT", "rules_json": json.dumps({"legs": [{"action": "SELL"}]}),
+    }
     defaults.update(overrides)
     s = CustomStrategy(**defaults)
     db.add(s)

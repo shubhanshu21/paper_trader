@@ -2,13 +2,13 @@
 scripts/fill_bhavcopy_gap.py — Download official F&O bhavcopies and load directly into MySQL fno_bhavcopy table.
 """
 import argparse
+import contextlib
 import csv
 import io
 import sys
 import time
 import zipfile
 from datetime import date, datetime, timedelta
-from typing import Optional
 
 import requests
 from sqlalchemy import text
@@ -48,7 +48,7 @@ def _new_url(d: date) -> str:
     )
 
 
-def _fetch_zip_csv(session: requests.Session, url: str) -> Optional[bytes]:
+def _fetch_zip_csv(session: requests.Session, url: str) -> bytes | None:
     for attempt in range(1, _MAX_RETRIES + 1):
         try:
             resp = session.get(url, timeout=_TIMEOUT)
@@ -123,7 +123,7 @@ def _rows_from_new_format(raw: bytes, trade_date: date):
         }
 
 
-def _parse_old_date(raw: str) -> Optional[str]:
+def _parse_old_date(raw: str) -> str | None:
     for fmt in ["%d-%b-%Y", "%d-%b-%y"]:
         try:
             return datetime.strptime(raw.strip(), fmt).date().isoformat()
@@ -132,14 +132,14 @@ def _parse_old_date(raw: str) -> Optional[str]:
     return None
 
 
-def _to_float(raw) -> Optional[float]:
+def _to_float(raw) -> float | None:
     try:
         return float(raw)
     except (ValueError, TypeError):
         return None
 
 
-def _to_int(raw) -> Optional[int]:
+def _to_int(raw) -> int | None:
     try:
         return int(float(raw))
     except (ValueError, TypeError):
@@ -189,10 +189,8 @@ def main():
 
     http_session = requests.Session()
     http_session.headers.update(NSE_HEADERS)
-    try:
+    with contextlib.suppress(requests.exceptions.RequestException):
         http_session.get("https://www.nseindia.com", timeout=15)  # Warm-up for cookies.
-    except requests.exceptions.RequestException:
-        pass
 
     start = datetime.strptime(args.from_date, "%Y-%m-%d").date()
     end = datetime.strptime(args.to_date, "%Y-%m-%d").date()

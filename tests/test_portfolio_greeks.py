@@ -23,9 +23,9 @@ from datetime import date, timedelta
 
 import pytest
 
-from automate.db.models import CustomStrategy, CustomStrategyPosition
 import automate.api.live_greeks as live_greeks
 from automate.api.live_greeks import compute_portfolio_greeks
+from automate.db.models import CustomStrategy, CustomStrategyPosition
 
 NEAR_EXPIRY = (date.today() + timedelta(days=14)).isoformat()
 
@@ -50,10 +50,10 @@ class FakeBroker:
 
 
 def _make_strategy(session, **overrides):
-    defaults = dict(
-        user_id=1, name="S", instrument_type="INDEX", strategy_type="CUSTOM", option_type="BOTH",
-        symbols=json.dumps(["NIFTY"]), status="PAPER_TRADING",
-    )
+    defaults = {
+        "user_id": 1, "name": "S", "instrument_type": "INDEX", "strategy_type": "CUSTOM", "option_type": "BOTH",
+        "symbols": json.dumps(["NIFTY"]), "status": "PAPER_TRADING",
+    }
     defaults.update(overrides)
     s = CustomStrategy(**defaults)
     session.add(s)

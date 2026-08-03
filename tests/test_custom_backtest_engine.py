@@ -23,7 +23,7 @@ import pytest
 from automate.backtest.custom_engine import CustomRuleBacktestEngine
 from automate.backtest.data_feed import DataFeed
 from automate.broker.mock_broker import MockBroker
-from automate.compliance.sebi_rules import AuditTrail, KillSwitch, OrderRateLimiter
+from automate.compliance.sebi_rules import AuditTrail, OrderRateLimiter
 from automate.utils.option_utils import calculate_strangle_strikes
 
 EQUITY_KEY = "NSE_EQ|TEST_ISIN"
@@ -69,6 +69,7 @@ def _build_engine(feed: _TestFeed, rules: dict) -> CustomRuleBacktestEngine:
     engine.broker = MockBroker(data_feed=feed, slippage_pct=SLIPPAGE_PCT)
     engine.audit = AuditTrail(audit_log_path="logs/test_audit_trail.log")
     engine.rate_limiter = OrderRateLimiter(max_per_second=10)
+    engine.charge_rates = None
     return engine
 
 

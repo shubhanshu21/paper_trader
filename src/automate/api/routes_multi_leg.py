@@ -5,7 +5,7 @@ Supports complex options strategies like iron condors, butterflies,
 spreads, and other multi-leg combinations as single orders.
 """
 from datetime import datetime
-from typing import Optional, List, Dict
+
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
@@ -25,17 +25,17 @@ class OptionLeg(BaseModel):
 class MultiLegOrderRequest(BaseModel):
     """Multi-leg options strategy order request."""
     strategy_type: str  # "iron_condor", "butterfly", "spread", "straddle", "strangle", etc.
-    legs: List[OptionLeg]
-    user_id: Optional[int] = None
-    strategy_name: Optional[str] = None
-    notes: Optional[str] = None
+    legs: list[OptionLeg]
+    user_id: int | None = None
+    strategy_name: str | None = None
+    notes: str | None = None
 
 
 class StrategyTemplate(BaseModel):
     """Pre-defined strategy template."""
     name: str
     description: str
-    legs: List[Dict]
+    legs: list[dict]
     risk_profile: str  # "low", "medium", "high"
 
 
@@ -217,7 +217,7 @@ def cancel_multi_leg_order(order_id: str):
 
 
 @router.get("/orders")
-def list_multi_leg_orders(user_id: Optional[int] = None, strategy_type: Optional[str] = None):
+def list_multi_leg_orders(user_id: int | None = None, strategy_type: str | None = None):
     """List multi-leg orders, optionally filtered by user or strategy type."""
     filtered_orders = list(multi_leg_orders.values())
     
@@ -271,7 +271,7 @@ def analyze_risk_profile(req: MultiLegOrderRequest):
     }
 
 
-def _generate_risk_recommendations(risk_level: str, greeks: dict) -> List[str]:
+def _generate_risk_recommendations(risk_level: str, greeks: dict) -> list[str]:
     """Generate risk recommendations based on analysis."""
     recommendations = []
     

@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Search, AlertTriangle } from "lucide-react";
-import { C, FONT } from "./Common";
+import { C, FONT } from "../lib/format";
 
 interface IpoItem {
   symbol: string;

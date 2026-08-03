@@ -1,5 +1,5 @@
 import { useRef, useState } from "react";
-import { C } from "./Common";
+import { C } from "../lib/format";
 
 interface PayoffCurvePoint {
   price: number;

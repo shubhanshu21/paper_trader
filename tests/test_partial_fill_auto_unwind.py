@@ -11,8 +11,6 @@ cache/upstox_instruments_*.csv exists).
 from types import SimpleNamespace
 from unittest.mock import patch
 
-import pytest
-
 from automate.backtest.data_feed import DataFeed
 from automate.broker.mock_broker import MockBroker
 from automate.compliance.sebi_rules import AuditTrail, KillSwitch, OrderRateLimiter
@@ -114,7 +112,7 @@ class TestPartialFillTriggersAutoUnwind:
 
     def test_reverse_case_pe_fills_ce_fails(self):
         feed = _build_feed(ce_has_ltp=False, pe_has_ltp=True)
-        strategy, broker, kill_switch = _build_strategy(feed)
+        strategy, broker, _kill_switch = _build_strategy(feed)
 
         result = strategy.run()
 
@@ -140,7 +138,7 @@ class TestUnwindRetryAndEscalation:
 
     def test_unwind_succeeds_after_transient_failure(self):
         feed = _build_feed(ce_has_ltp=True, pe_has_ltp=False)
-        strategy, broker, kill_switch = _build_strategy(feed)
+        strategy, broker, _kill_switch = _build_strategy(feed)
 
         real_place_buy_order = broker.place_buy_order
         calls = {"n": 0}
@@ -153,18 +151,18 @@ class TestUnwindRetryAndEscalation:
 
         with patch.object(broker, "place_buy_order", side_effect=flaky_place_buy_order), \
              patch("automate.strategies.custom.rule_strategy.RuleBasedStrategy._UNWIND_RETRY_DELAY_SEC", 0.0):
-            result = strategy.run()
+            strategy.run()
 
         assert calls["n"] == 2  # failed once, succeeded on retry
         buys = [o for o in broker.orders if o["transaction_type"] == "BUY"]
         assert len(buys) == 1  # the unwind did eventually complete
-        for token, qty in broker.positions.items():
+        for _token, qty in broker.positions.items():
             assert qty == 0
 
     def test_writes_alert_file_when_all_retries_exhausted(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)  # so logs/ writes land in a throwaway dir
         feed = _build_feed(ce_has_ltp=True, pe_has_ltp=False)
-        strategy, broker, kill_switch = _build_strategy(feed)
+        strategy, broker, _kill_switch = _build_strategy(feed)
 
         with patch.object(broker, "place_buy_order", side_effect=RuntimeError("simulated permanent failure")), \
              patch("automate.strategies.custom.rule_strategy.RuleBasedStrategy._UNWIND_RETRY_DELAY_SEC", 0.0):

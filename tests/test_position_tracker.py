@@ -10,7 +10,10 @@ import pytest
 
 import automate.utils.position_tracker
 from automate.utils.position_tracker import (
-    record_open_position, get_open_positions, close_position, has_open_position,
+    close_position,
+    get_open_positions,
+    has_open_position,
+    record_open_position,
 )
 
 
@@ -35,14 +38,14 @@ def mock_db(db_session_factory):
 
 
 def _record(**overrides):
-    defaults = dict(
-        strategy_name="ten_percent_otm_strangle", mode="paper", symbol="RELIANCE",
-        entry_date="2026-01-01", expiry="2026-01-29",
-        call_token="BHAV|RELIANCE|2026-01-29|1700|CE", call_strike=1700, call_entry_price=5.0, call_order_id="ORD-CE",
-        put_token="BHAV|RELIANCE|2026-01-29|1400|PE", put_strike=1400, put_entry_price=4.0, put_order_id="ORD-PE",
-        quantity=500, product="NRML", take_profit_pct=60.0, stop_loss_pct=150.0,
-        exit_days_before_expiry=1,
-    )
+    defaults = {
+        "strategy_name": "ten_percent_otm_strangle", "mode": "paper", "symbol": "RELIANCE",
+        "entry_date": "2026-01-01", "expiry": "2026-01-29",
+        "call_token": "BHAV|RELIANCE|2026-01-29|1700|CE", "call_strike": 1700, "call_entry_price": 5.0, "call_order_id": "ORD-CE",
+        "put_token": "BHAV|RELIANCE|2026-01-29|1400|PE", "put_strike": 1400, "put_entry_price": 4.0, "put_order_id": "ORD-PE",
+        "quantity": 500, "product": "NRML", "take_profit_pct": 60.0, "stop_loss_pct": 150.0,
+        "exit_days_before_expiry": 1,
+    }
     defaults.update(overrides)
     return record_open_position(**defaults)
 

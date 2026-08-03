@@ -17,7 +17,6 @@ not S&P 500 or any other index.
 import math
 import statistics
 from datetime import date
-from typing import List, Optional
 
 from automate.utils import black76
 
@@ -30,7 +29,7 @@ from automate.utils import black76
 _NOTIONAL_START = 100_000.0
 
 
-def _cycles_per_year(rules: Optional[dict]) -> float:
+def _cycles_per_year(rules: dict | None) -> float:
     """
     How many entry cycles a year this strategy's expiry mode implies —
     needed to annualize Sharpe/Sortino (their per-cycle mean/stdev must be
@@ -44,12 +43,12 @@ def _cycles_per_year(rules: Optional[dict]) -> float:
     return 52.0 if mode == "WEEKLY" else 12.0
 
 
-def _merge_intervals_total_days(intervals: List[tuple]) -> int:
+def _merge_intervals_total_days(intervals: list[tuple]) -> int:
     """Union of [start, end] date-interval day-spans, merging overlaps — used for exposure_pct so overlapping multi-symbol cycles aren't double-counted."""
     if not intervals:
         return 0
     ordered = sorted(intervals)
-    merged: List[list] = [list(ordered[0])]
+    merged: list[list] = [list(ordered[0])]
     for start, end in ordered[1:]:
         last = merged[-1]
         if start <= last[1]:
@@ -60,9 +59,9 @@ def _merge_intervals_total_days(intervals: List[tuple]) -> int:
 
 
 def compute_backtest_stats(
-    cycles: List[dict],
-    rules: Optional[dict] = None,
-    benchmark_return_pct: Optional[float] = None,
+    cycles: list[dict],
+    rules: dict | None = None,
+    benchmark_return_pct: float | None = None,
 ) -> dict:
     """
     Args:

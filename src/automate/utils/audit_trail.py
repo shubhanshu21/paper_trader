@@ -4,18 +4,19 @@ utils/audit_trail.py — Audit trail logging for compliance and security.
 Provides comprehensive audit logging for all critical operations
 including user actions, data changes, and system events.
 """
+import json
 import logging
 from datetime import datetime
-from typing import Optional, Dict, Any, List
-from enum import Enum
+from enum import StrEnum
+from typing import Any
+
 from sqlalchemy import text
-import json
 
-from automate.db.engine import get_db
 from automate.config.environment import get_settings
+from automate.db.engine import get_db
 
 
-class AuditAction(str, Enum):
+class AuditAction(StrEnum):
     """Audit action types."""
     CREATE = "CREATE"
     READ = "READ"
@@ -41,14 +42,14 @@ class AuditLogger:
     def log(
         self,
         action: AuditAction,
-        user_id: Optional[int],
+        user_id: int | None,
         resource_type: str,
-        resource_id: Optional[str],
-        details: Optional[Dict[str, Any]] = None,
-        ip_address: Optional[str] = None,
-        user_agent: Optional[str] = None,
+        resource_id: str | None,
+        details: dict[str, Any] | None = None,
+        ip_address: str | None = None,
+        user_agent: str | None = None,
         success: bool = True,
-        error_message: Optional[str] = None
+        error_message: str | None = None
     ) -> bool:
         """
         Log an audit event.
@@ -94,7 +95,7 @@ class AuditLogger:
             self.logger.error(f"Failed to log audit event: {e}")
             return False
     
-    def _store_in_database(self, audit_data: Dict[str, Any]) -> bool:
+    def _store_in_database(self, audit_data: dict[str, Any]) -> bool:
         """
         Store audit event in database.
         
@@ -162,7 +163,7 @@ class AuditLogger:
         user_id: int,
         limit: int = 100,
         offset: int = 0
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """
         Get audit trail for a specific user.
         
@@ -193,7 +194,7 @@ class AuditLogger:
         resource_type: str,
         resource_id: str,
         limit: int = 100
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """
         Get audit trail for a specific resource.
         
@@ -220,7 +221,7 @@ class AuditLogger:
             self.logger.error(f"Failed to get resource history: {e}")
             return []
     
-    def get_failed_logins(self, hours: int = 24) -> List[Dict[str, Any]]:
+    def get_failed_logins(self, hours: int = 24) -> list[dict[str, Any]]:
         """
         Get failed login attempts for security monitoring.
         
@@ -249,9 +250,9 @@ class AuditLogger:
 def audit_log(
     action: AuditAction,
     resource_type: str,
-    resource_id: Optional[str] = None,
-    details: Optional[Dict[str, Any]] = None,
-    user_id: Optional[int] = None,
+    resource_id: str | None = None,
+    details: dict[str, Any] | None = None,
+    user_id: int | None = None,
     **kwargs
 ) -> bool:
     """

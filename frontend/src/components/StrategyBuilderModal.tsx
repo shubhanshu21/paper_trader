@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, lazy, Suspense } from "react";
 import { X, ChevronRight, Check, Search, LayoutTemplate, AlertTriangle, RefreshCw, Trash2, Zap, Plus, GitBranch, Table2 } from "lucide-react";
-import { C, FONT, formatTime12h, fmtDate, Select } from "./Common";
+import { Select } from "./Common";
+import { C, FONT, formatTime12h, fmtDate } from "../lib/format";
 import type { CustomStrategy, CustomStrategyRules } from "../types/customStrategy";
 import {
   type LegForm, newLeg, type ConditionForm, newCondition, type EntryMode, type StrikeMode, strikeLabel,

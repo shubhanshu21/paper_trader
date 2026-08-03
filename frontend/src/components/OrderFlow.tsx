@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { ArrowUp, ArrowDown } from 'lucide-react';
-import { C, FONT } from './Common';
+import { C, FONT } from '../lib/format';
 
 interface DOMLevel {
   price: number;

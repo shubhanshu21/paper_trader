@@ -23,7 +23,6 @@ import csv
 import sys
 import time
 from datetime import datetime
-from typing import Optional
 
 from sqlalchemy import text
 
@@ -33,7 +32,7 @@ from automate.db.engine import engine as _default_engine
 _DATE_FORMATS = ["%d-%b-%Y", "%d-%b-%y"]
 
 
-def _parse_date_iso(raw: str) -> Optional[str]:
+def _parse_date_iso(raw: str) -> str | None:
     raw = raw.strip()
     for fmt in _DATE_FORMATS:
         try:
@@ -43,14 +42,14 @@ def _parse_date_iso(raw: str) -> Optional[str]:
     return None
 
 
-def _to_float(raw: str) -> Optional[float]:
+def _to_float(raw: str) -> float | None:
     try:
         return float(raw)
     except (ValueError, TypeError):
         return None
 
 
-def _to_int(raw: str) -> Optional[int]:
+def _to_int(raw: str) -> int | None:
     try:
         return int(float(raw))
     except (ValueError, TypeError):

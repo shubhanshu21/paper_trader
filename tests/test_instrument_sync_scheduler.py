@@ -13,7 +13,7 @@ Real automate_test MySQL schema (see tests/conftest.py) — no network
 """
 import pandas as pd
 import pytest
-from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 
 import automate.api.instrument_sync_scheduler as sched
 from automate.db.models import Instrument
@@ -93,7 +93,7 @@ class TestSyncOnce:
                                     "tick_size": None, "lot_size": None, "instrument_type": None,
                                     "option_type": None, "exchange": None}])
         monkeypatch.setattr(sched._instrument_cache, "get_or_refresh", lambda: broken_df)
-        with pytest.raises(Exception):
+        with pytest.raises(IntegrityError):
             sched._sync_once()
 
         # A NOT NULL violation on instrument_key must roll back the DELETE

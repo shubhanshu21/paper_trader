@@ -11,7 +11,8 @@ Sensibull's payoff chart or any options calculator shows) — not a
 probability-weighted forecast, just "if the stock settles at X on expiry
 day, this basket is worth Y".
 """
-from typing import Callable, List, Optional, TypedDict
+from collections.abc import Callable
+from typing import TypedDict
 
 
 class PayoffLeg(TypedDict):
@@ -23,9 +24,9 @@ class PayoffLeg(TypedDict):
 
 
 class PayoffResult(TypedDict):
-    max_profit: Optional[float]   # None = unbounded (e.g. a naked long call/put)
-    max_loss: Optional[float]     # None = unbounded (e.g. a naked short call/put); negative number otherwise
-    breakevens: List[float]
+    max_profit: float | None   # None = unbounded (e.g. a naked long call/put)
+    max_loss: float | None     # None = unbounded (e.g. a naked short call/put); negative number otherwise
+    breakevens: list[float]
     net_premium: float            # positive = net credit collected, negative = net debit paid
 
 
@@ -42,7 +43,7 @@ def _leg_payoff(leg: PayoffLeg, spot: float) -> float:
     return (leg["premium"] - intrinsic) * leg["quantity"]
 
 
-def total_payoff(legs: List[PayoffLeg], spot: float) -> float:
+def total_payoff(legs: list[PayoffLeg], spot: float) -> float:
     return sum(_leg_payoff(leg, spot) for leg in legs)
 
 
@@ -51,7 +52,7 @@ class PayoffCurvePoint(TypedDict):
     pnl: float
 
 
-def compute_payoff_curve(legs: List[PayoffLeg], spot: float, num_points: int = 41) -> List[PayoffCurvePoint]:
+def compute_payoff_curve(legs: list[PayoffLeg], spot: float, num_points: int = 41) -> list[PayoffCurvePoint]:
     """
     Sample total_payoff() across a price range around `spot` — the actual
     payoff-DIAGRAM data (P&L vs underlying price at expiry), for charting.
@@ -78,7 +79,7 @@ def compute_payoff_curve(legs: List[PayoffLeg], spot: float, num_points: int = 4
     return [{"price": p, "pnl": round(total_payoff(legs, p), 2)} for p in sorted(prices)]
 
 
-def compute_payoff(legs: List[PayoffLeg]) -> PayoffResult:
+def compute_payoff(legs: list[PayoffLeg]) -> PayoffResult:
     if not legs:
         return {"max_profit": None, "max_loss": None, "breakevens": [], "net_premium": 0.0}
 
@@ -92,7 +93,7 @@ def compute_payoff(legs: List[PayoffLeg]) -> PayoffResult:
     # flat to sloped or vice versa) — so its extremes occur only at
     # spot=0 or at one of those strikes; nowhere else needs checking.
     strikes = sorted({leg["strike"] for leg in legs})
-    candidates = [0.0] + strikes
+    candidates = [0.0, *strikes]
     values = [(s, total_payoff(legs, s)) for s in candidates]
 
     # Slope of the payoff line as spot -> +infinity: only CE legs
@@ -123,7 +124,7 @@ def compute_payoff(legs: List[PayoffLeg]) -> PayoffResult:
         far_value = values[-1][1] + slope_at_infinity * (far_spot - candidates[-1])
         scan_points.append((far_spot, far_value))
 
-    breakevens: List[float] = []
+    breakevens: list[float] = []
     for i in range(len(scan_points) - 1):
         s1, v1 = scan_points[i]
         s2, v2 = scan_points[i + 1]
@@ -144,9 +145,9 @@ def compute_payoff(legs: List[PayoffLeg]) -> PayoffResult:
 
 
 def probability_of_profit(
-    legs: List[PayoffLeg], breakevens: List[float], forward: float, iv: float, years_to_expiry: float,
-    iv_lookup: Optional[Callable[[float], Optional[float]]] = None,
-) -> Optional[float]:
+    legs: list[PayoffLeg], breakevens: list[float], forward: float, iv: float, years_to_expiry: float,
+    iv_lookup: Callable[[float], float | None] | None = None,
+) -> float | None:
     """
     Market-implied ("risk-neutral") probability this basket is profitable
     at expiry — NOT a real-world forecast, just what the current option
@@ -187,7 +188,7 @@ def probability_of_profit(
             return 1.0
         return prob_underlying_above(forward, k, years_to_expiry, resolve_iv(k))
 
-    bounds = [0.0] + sorted(set(b for b in breakevens if b > 0)) + [None]  # None = +infinity
+    bounds = [0.0, *sorted({b for b in breakevens if b > 0}), None]  # None = +infinity
     total_prob = 0.0
     for i in range(len(bounds) - 1):
         lo, hi = bounds[i], bounds[i + 1]

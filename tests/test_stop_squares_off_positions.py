@@ -18,8 +18,8 @@ import json
 import pytest
 from fastapi import HTTPException
 
+from automate.api.routes_custom_strategies import StrategyStatusUpdate, update_strategy_status
 from automate.db.models import CustomStrategy, CustomStrategyPosition
-from automate.api.routes_custom_strategies import update_strategy_status, StrategyStatusUpdate
 
 USER = {"sub": "1"}
 
@@ -30,10 +30,10 @@ def db(db_session):
 
 
 def _make_strategy(db, **overrides):
-    defaults = dict(
-        user_id=1, name="Live Strangle", instrument_type="INDEX", strategy_type="CUSTOM", option_type="BOTH",
-        symbols=json.dumps(["NIFTY"]), status="LIVE",
-    )
+    defaults = {
+        "user_id": 1, "name": "Live Strangle", "instrument_type": "INDEX", "strategy_type": "CUSTOM", "option_type": "BOTH",
+        "symbols": json.dumps(["NIFTY"]), "status": "LIVE",
+    }
     defaults.update(overrides)
     s = CustomStrategy(**defaults)
     db.add(s)
@@ -56,7 +56,7 @@ class FakeBroker:
         self.orders_placed = []
 
     def get_ltp_batch(self, tokens):
-        return {t: 90.0 for t in tokens}
+        return dict.fromkeys(tokens, 90.0)
 
     def place_buy_order(self, instrument_token, quantity, order_type, tag, user_id=None):
         if self._fail:

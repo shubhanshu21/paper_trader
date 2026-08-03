@@ -4,7 +4,7 @@ import { useDispatch } from "react-redux";
 import { Eye, EyeOff, Play, Apple } from "lucide-react";
 import { api } from "./api";
 import { loginSuccess } from "./store/slices/authSlice";
-import { C, FONT } from "./components/Common";
+import { C, FONT } from "./lib/format";
 
 export default function Login() {
   const navigate = useNavigate();

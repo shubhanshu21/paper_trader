@@ -41,15 +41,23 @@ import sys
 import time
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Optional
 
+from automate.broker.broker_factory import BrokerFactory
+from automate.compliance.sebi_rules import (
+    AuditTrail,
+    OrderRateLimiter,
+    assert_market_is_open,
+    init_market_calendar,
+)
 from automate.config import LogConfig, UpstoxConfig
 from automate.utils.logger import setup_logger
-from automate.utils.option_utils import strangle_pnl_pct, check_exit_trigger, is_within_pre_expiry_buffer
-from automate.utils.position_tracker import get_open_positions, get_position, close_position
-from automate.utils.telegram_alert import alert_trade_closed, alert_manual_intervention
-from automate.broker.broker_factory import BrokerFactory
-from automate.compliance.sebi_rules import AuditTrail, OrderRateLimiter, assert_market_is_open, init_market_calendar
+from automate.utils.option_utils import (
+    check_exit_trigger,
+    is_within_pre_expiry_buffer,
+    strangle_pnl_pct,
+)
+from automate.utils.position_tracker import close_position, get_open_positions, get_position
+from automate.utils.telegram_alert import alert_manual_intervention, alert_trade_closed
 
 _EXIT_MAX_ATTEMPTS = 3
 _EXIT_RETRY_DELAY_SEC = 2.0
@@ -58,8 +66,8 @@ _EXIT_RETRY_DELAY_SEC = 2.0
 def _close_leg(
     broker, rate_limiter: OrderRateLimiter, audit: AuditTrail,
     symbol: str, token: str, option_type: str, quantity: int, product: str, tag_prefix: str,
-    log: logging.Logger, user_id: Optional[int] = None,
-) -> Optional[str]:
+    log: logging.Logger, user_id: int | None = None,
+) -> str | None:
     """Buy back one leg, retrying like the live strategy's own auto-unwind (see TenPercentOTMStrangle._unwind_filled_legs)."""
     for attempt in range(1, _EXIT_MAX_ATTEMPTS + 1):
         try:

@@ -6,7 +6,6 @@ endpoint. Uses the same security model as routes_positions.py (ORM queries,
 no string SQL, parameterized access).
 """
 import logging
-from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
@@ -58,7 +57,7 @@ def _resolve_paper_exit_price(pos: EquityPosition) -> float:
     return float(pos.entry_price)
 
 
-def _position_with_live_price(pos_dict: dict, brokers: Optional[dict]) -> dict:
+def _position_with_live_price(pos_dict: dict, brokers: dict | None) -> dict:
     """
     Attach mark-to-market data to an open equity position.
 

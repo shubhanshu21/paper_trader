@@ -5,16 +5,15 @@ Allows users to maintain custom watchlists that persist across sessions.
 Integrates with the real broker for live price updates.
 """
 import logging
-from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import select
 
-from automate.db.engine import get_session
-from automate.db.models import UserWatchlist, Instrument
-from automate.api.deps import get_brokers
 from automate.api.auth import get_current_user_optional
+from automate.api.deps import get_brokers
+from automate.db.engine import get_session
+from automate.db.models import Instrument, UserWatchlist
 
 log = logging.getLogger("api.watchlist")
 router = APIRouter(prefix="/api/watchlist", tags=["watchlist"])
@@ -35,7 +34,7 @@ class WatchlistReorderRequest(BaseModel):
 
 
 @router.get("")
-def get_user_watchlist(page: int = 1, payload: Optional[dict] = Depends(get_current_user_optional)):
+def get_user_watchlist(page: int = 1, payload: dict | None = Depends(get_current_user_optional)):
     """
     Get user's watchlist for a specific page with instrument details.
     If user is not authenticated, falls back to default user_id = 1.
@@ -67,7 +66,7 @@ def get_user_watchlist(page: int = 1, payload: Optional[dict] = Depends(get_curr
 
 
 @router.post("/add")
-def add_to_watchlist(req: WatchlistAddRequest, payload: Optional[dict] = Depends(get_current_user_optional)):
+def add_to_watchlist(req: WatchlistAddRequest, payload: dict | None = Depends(get_current_user_optional)):
     """Add an instrument to user's watchlist for a specific page."""
     user_id = int(payload["sub"]) if payload else 1
     
@@ -112,7 +111,7 @@ def add_to_watchlist(req: WatchlistAddRequest, payload: Optional[dict] = Depends
 
 
 @router.post("/remove")
-def remove_from_watchlist(req: WatchlistRemoveRequest, payload: Optional[dict] = Depends(get_current_user_optional)):
+def remove_from_watchlist(req: WatchlistRemoveRequest, payload: dict | None = Depends(get_current_user_optional)):
     """Remove an instrument from user's watchlist for a specific page."""
     user_id = int(payload["sub"]) if payload else 1
     
@@ -135,7 +134,7 @@ def remove_from_watchlist(req: WatchlistRemoveRequest, payload: Optional[dict] =
 
 
 @router.post("/reorder")
-def reorder_watchlist(req: WatchlistReorderRequest, payload: Optional[dict] = Depends(get_current_user_optional)):
+def reorder_watchlist(req: WatchlistReorderRequest, payload: dict | None = Depends(get_current_user_optional)):
     """Reorder items in user's watchlist."""
     user_id = int(payload["sub"]) if payload else 1
     
@@ -170,7 +169,7 @@ def get_watchlist_ltp(instrument_key: str, mode: str = "paper"):
             raise HTTPException(status_code=404, detail="LTP quote unavailable.")
         return {"instrument_key": instrument_key, "ltp": ltp}
     except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"Broker quote error: {exc}")
+        raise HTTPException(status_code=502, detail=f"Broker quote error: {exc}") from exc
 
 
 @router.post("/ltp/batch")

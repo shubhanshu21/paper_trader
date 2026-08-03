@@ -12,7 +12,6 @@ exist here too (paper_trades.db) but was a redundant duplicate consumed by
 nothing except the now-deleted run_paper_tracker.py.
 """
 import uuid
-from typing import Optional, List
 
 from automate.broker.base_broker import BaseBroker
 from automate.utils.logger import get_logger
@@ -37,20 +36,20 @@ class PaperBroker(BaseBroker):
         # _place_order() — see get_fill_price().
         self._fills: dict[str, float] = {}
 
-    def get_ltp(self, instrument_key: str) -> Optional[float]:
+    def get_ltp(self, instrument_key: str) -> float | None:
         return self.real_broker.get_ltp(instrument_key)
 
-    def get_ltp_batch(self, instrument_keys: List[str]) -> dict:
+    def get_ltp_batch(self, instrument_keys: list[str]) -> dict:
         return self.real_broker.get_ltp_batch(instrument_keys)
 
-    def get_market_depth(self, instrument_key: str) -> Optional[dict]:
+    def get_market_depth(self, instrument_key: str) -> dict | None:
         # Real order-book snapshot from the live market, even in paper mode
         # (matches get_ltp's "real quotes, simulated fills" split) — a paper
         # account has no order book of its own to show.
         return self.real_broker.get_market_depth(instrument_key)
 
 
-    def get_option_contracts(self, instrument_key: str) -> List[str]:
+    def get_option_contracts(self, instrument_key: str) -> list[str]:
         return self.real_broker.get_option_contracts(instrument_key)
         
     def get_option_chain(self, instrument_key: str, expiry_date: str) -> list:
@@ -62,22 +61,22 @@ class PaperBroker(BaseBroker):
     def resolve_instrument_key(self, symbol: str) -> str:
         return self.real_broker.resolve_instrument_key(symbol)
 
-    def get_lot_size(self, symbol: str) -> Optional[int]:
+    def get_lot_size(self, symbol: str) -> int | None:
         return self.real_broker.get_lot_size(symbol)
 
-    def get_strike_step(self, symbol: str) -> Optional[float]:
+    def get_strike_step(self, symbol: str) -> float | None:
         return self.real_broker.get_strike_step(symbol)
 
     def get_required_margin(
         self, instrument_key: str, quantity: int, transaction_type: str, product: str = "D",
-    ) -> Optional[float]:
+    ) -> float | None:
         # Paper trading should validate against the SAME real margin
         # numbers a live order would need — delegates to the wrapped real
         # broker's Margin Calculator call, same "real quotes, simulated
         # fills" split get_ltp()/get_market_depth() already use.
         return self.real_broker.get_required_margin(instrument_key, quantity, transaction_type, product)
 
-    def get_basket_required_margin(self, instruments: List[dict]) -> Optional[float]:
+    def get_basket_required_margin(self, instruments: list[dict]) -> float | None:
         return self.real_broker.get_basket_required_margin(instruments)
 
     def _place_order(
@@ -88,8 +87,8 @@ class PaperBroker(BaseBroker):
         product: str = "NRML",
         order_type: str = "MARKET",
         tag: str = "",
-        user_id: Optional[int] = None,
-    ) -> Optional[str]:
+        user_id: int | None = None,
+    ) -> str | None:
         """
         Simulate a paper fill: validates virtual balance/margin for both spot equities
         and options/futures, applies slippage, and generates a synthetic order_id.
@@ -100,9 +99,14 @@ class PaperBroker(BaseBroker):
             return None
 
         # --- Real broker simulation: balance and margin validations ---
-        from automate.utils.margin import resolve_required_margin, is_commodity_instrument_key, INDEX_SYMBOLS
-        from automate.utils.wallet import get_wallet_summary
         import re
+
+        from automate.utils.margin import (
+            INDEX_SYMBOLS,
+            is_commodity_instrument_key,
+            resolve_required_margin,
+        )
+        from automate.utils.wallet import get_wallet_summary
 
         # 1. Resolve instrument details from master cache — REFUSE the
         # order (never a fabricated guess) if this lookup fails. This used
@@ -114,8 +118,8 @@ class PaperBroker(BaseBroker):
         # margin/index-rate off the wrong underlying's price entirely.
         # "Refuse rather than guess" is this codebase's standing rule for
         # exactly this class of lookup (see lot_size/strike_step).
-        base_symbol: Optional[str] = None
-        inst_type: Optional[str] = None
+        base_symbol: str | None = None
+        inst_type: str | None = None
         if hasattr(self.real_broker, "_cache"):
             try:
                 df = self.real_broker._cache.get_or_refresh()
@@ -232,7 +236,7 @@ class PaperBroker(BaseBroker):
         )
         return order_id
 
-    def get_fill_price(self, order_id: str) -> Optional[float]:
+    def get_fill_price(self, order_id: str) -> float | None:
         """The slippage-adjusted price this simulated order actually filled at. See BaseBroker."""
         return self._fills.get(order_id)
 
@@ -243,8 +247,8 @@ class PaperBroker(BaseBroker):
         product: str = "NRML",
         order_type: str = "MARKET",
         tag: str = "",
-        user_id: Optional[int] = None,
-    ) -> Optional[str]:
+        user_id: int | None = None,
+    ) -> str | None:
         """Place a SELL (write) order for one options leg. See BaseBroker."""
         return self._place_order("SELL", instrument_token, quantity, product, order_type, tag, user_id)
 
@@ -255,7 +259,7 @@ class PaperBroker(BaseBroker):
         product: str = "NRML",
         order_type: str = "MARKET",
         tag: str = "",
-        user_id: Optional[int] = None,
-    ) -> Optional[str]:
+        user_id: int | None = None,
+    ) -> str | None:
         """Place a BUY order to square off an options leg. See BaseBroker."""
         return self._place_order("BUY", instrument_token, quantity, product, order_type, tag, user_id)

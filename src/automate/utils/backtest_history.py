@@ -2,7 +2,6 @@
 utils/backtest_history.py — Persists historical backtest runs in MySQL.
 """
 from datetime import datetime
-from typing import Optional, List
 from decimal import Decimal
 
 from automate.db.engine import get_session
@@ -11,7 +10,7 @@ from automate.db.models import BacktestRun
 
 def record_backtest_run(
     strategy_name: str, symbol: str, contract_type: str, from_date: str, to_date: str,
-    cycles: int, wins: int, win_rate_pct: Optional[float], total_pnl: float, total_return_pct: Optional[float],
+    cycles: int, wins: int, win_rate_pct: float | None, total_pnl: float, total_return_pct: float | None,
 ) -> int:
     """Record a completed backtest run in the MySQL database."""
     with get_session() as session:
@@ -33,7 +32,7 @@ def record_backtest_run(
         return run.id
 
 
-def get_latest_backtest_per_symbol() -> List[dict]:
+def get_latest_backtest_per_symbol() -> list[dict]:
     """
     Most recent backtest run for each (strategy, symbol) pair.
     Uses subqueries in SQLAlchemy to resolve the max run_at for each pair.

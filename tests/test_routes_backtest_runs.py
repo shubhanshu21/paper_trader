@@ -19,12 +19,16 @@ from unittest.mock import patch
 import pytest
 from fastapi import HTTPException
 
-from automate.db.models import CustomBacktestRun, CustomStrategy
 import automate.api.routes_custom_strategies as routes
 from automate.api.routes_custom_strategies import (
-    BacktestRequest, _run_backtest_sync, _run_backtest_symbols,
-    backtest_strategy, get_backtest_run, list_backtest_runs,
+    BacktestRequest,
+    _run_backtest_symbols,
+    _run_backtest_sync,
+    backtest_strategy,
+    get_backtest_run,
+    list_backtest_runs,
 )
+from automate.db.models import CustomBacktestRun, CustomStrategy
 
 USER = {"sub": "1"}
 OTHER_USER = {"sub": "2"}
@@ -51,7 +55,7 @@ class FakeEngine:
         "BROKEN": None,  # triggers RuntimeError below
     }
 
-    def __init__(self, symbol, rules, option_instrument=None, future_instrument=None):
+    def __init__(self, symbol, rules, option_instrument=None, future_instrument=None, charge_rates=None):
         self.symbol = symbol
         if self._CYCLES_BY_SYMBOL.get(symbol) is None and symbol == "BROKEN":
             raise RuntimeError("could not resolve instrument key for BROKEN")
@@ -81,10 +85,10 @@ def db(db_session):
 
 
 def _make_strategy(db, **overrides):
-    defaults = dict(
-        user_id=1, name="Test Strategy", instrument_type="STOCK", strategy_type="CUSTOM", option_type="BOTH",
-        symbols=json.dumps(["RELIANCE", "TCS"]), rules_json=json.dumps(_RULES), status="DRAFT",
-    )
+    defaults = {
+        "user_id": 1, "name": "Test Strategy", "instrument_type": "STOCK", "strategy_type": "CUSTOM", "option_type": "BOTH",
+        "symbols": json.dumps(["RELIANCE", "TCS"]), "rules_json": json.dumps(_RULES), "status": "DRAFT",
+    }
     defaults.update(overrides)
     s = CustomStrategy(**defaults)
     db.add(s)
@@ -205,7 +209,10 @@ class TestBacktestStrategyEndpoint:
         row = db.query(CustomBacktestRun).filter(CustomBacktestRun.id == resp["run_id"]).first()
         assert row is not None
         assert row.status == "QUEUED"
-        assert json.loads(row.rules_snapshot_json) == _RULES
+        # backtest_strategy() stamps the request's slippage_pct onto the rules
+        # snapshot (see routes_custom_strategies.py) so a later re-run knows
+        # exactly what slippage the original run used.
+        assert json.loads(row.rules_snapshot_json) == {**_RULES, "slippage_pct": BacktestRequest().slippage_pct}
 
     def test_rejects_strategy_with_no_rules(self, db):
         s = _make_strategy(db, name="No rules", symbols=json.dumps(["RELIANCE"]), rules_json=None)
@@ -222,7 +229,7 @@ class TestBacktestStrategyEndpoint:
 
 class TestRunHistoryEndpoints:
     def test_list_returns_newest_first_without_full_result(self, db, strategy):
-        for i in range(3):
+        for _i in range(3):
             db.add(CustomBacktestRun(strategy_id=strategy.id, user_id=1, status="COMPLETED", rules_snapshot_json="{}", result_json=json.dumps({"big": "blob"})))
         db.commit()
 

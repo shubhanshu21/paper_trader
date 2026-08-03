@@ -6,8 +6,8 @@ but only when the check actually confirms a hit — a network failure
 must never block registration). No real network access — requests.get
 is mocked throughout.
 """
-from contextlib import contextmanager
 import hashlib
+from contextlib import contextmanager
 
 import pytest
 from fastapi import HTTPException
@@ -15,8 +15,8 @@ from starlette.requests import Request
 
 import automate.api.routes_auth as routes_auth
 import automate.utils.pwned_passwords as pwned
-from automate.utils.pwned_passwords import check_password_pwned
 from automate.db.models import User
+from automate.utils.pwned_passwords import check_password_pwned
 
 
 def _fake_request() -> Request:

@@ -4,7 +4,7 @@ routes_advanced_orders.py (creation) and advanced_orders_scheduler.py
 (tick-driven monitoring), so both sides agree on exactly what a "leg"
 looks like and how it gets placed/evaluated.
 """
-from typing import Literal, Optional
+from typing import Literal
 
 from pydantic import BaseModel
 
@@ -30,7 +30,7 @@ class OrderLeg(BaseModel):
     product: str = "D"
 
 
-def validate_leg(broker, leg: dict) -> Optional[str]:
+def validate_leg(broker, leg: dict) -> str | None:
     """
     Creation-time sanity check, called from routes_advanced_orders.py
     before persisting/placing a leg — returns an error string (caller
@@ -58,7 +58,7 @@ def validate_leg(broker, leg: dict) -> Optional[str]:
     return None
 
 
-def place_leg(broker, leg: dict, tag: str, user_id: Optional[int] = None) -> Optional[str]:
+def place_leg(broker, leg: dict, tag: str, user_id: int | None = None) -> str | None:
     """
     Place one leg (dict shape matching OrderLeg.dict()) at `broker`.
     Returns the broker order_id, or None (PaperBroker/UpstoxBroker
@@ -97,7 +97,7 @@ def leg_triggered(leg: dict, ltp: float) -> bool:
     return False
 
 
-def simulate_paper_fill(broker, leg: dict, tag: str, user_id: Optional[int] = None) -> Optional[str]:
+def simulate_paper_fill(broker, leg: dict, tag: str, user_id: int | None = None) -> str | None:
     """
     Paper-mode fill: leg_triggered() said the condition is met, so
     actually record the (virtual) fill via PaperBroker — always a MARKET

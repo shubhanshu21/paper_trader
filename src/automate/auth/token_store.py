@@ -11,9 +11,6 @@ MySQL DB both processes already talk to fixes that class of staleness and
 keeps the credential out of a general-purpose config file.
 """
 import logging
-from typing import Optional
-
-from sqlalchemy import select
 
 from automate.db.engine import get_session
 from automate.db.models import BrokerToken
@@ -23,7 +20,7 @@ log = logging.getLogger("auth.token_store")
 DEFAULT_BROKER = "upstox"
 
 
-def get_access_token(broker: str = DEFAULT_BROKER) -> Optional[str]:
+def get_access_token(broker: str = DEFAULT_BROKER) -> str | None:
     try:
         with get_session() as session:
             row = session.get(BrokerToken, broker)

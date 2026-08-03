@@ -10,20 +10,20 @@ import csv
 from bisect import bisect_right
 from datetime import datetime
 from types import SimpleNamespace
-from typing import Optional, List, Dict, Tuple, Any
+from typing import Any
 
 from automate.utils.logger import get_logger
 
 log = get_logger(__name__)
 
 
-def _parse_candle_csv(path: str) -> List[Tuple[datetime, float]]:
+def _parse_candle_csv(path: str) -> list[tuple[datetime, float]]:
     """
     Load a candle CSV written by scripts/download_real_history.py
     (columns: timestamp, open, high, low, close, volume, open_interest)
     into a list of (timestamp, close) pairs sorted ascending by time.
     """
-    series: List[Tuple[datetime, float]] = []
+    series: list[tuple[datetime, float]] = []
     with open(path, newline="", encoding="utf-8") as f:
         for row in csv.DictReader(f):
             ts = datetime.fromisoformat(row["timestamp"])
@@ -32,7 +32,7 @@ def _parse_candle_csv(path: str) -> List[Tuple[datetime, float]]:
     return series
 
 
-def _price_at(series: List[Tuple[datetime, float]], at_time: Optional[datetime]) -> Optional[float]:
+def _price_at(series: list[tuple[datetime, float]], at_time: datetime | None) -> float | None:
     """Return the most recent candle close at or before `at_time`."""
     if not series or at_time is None:
         return None
@@ -53,26 +53,26 @@ class DataFeed:
     """
 
     def __init__(self):
-        self.current_time: Optional[datetime] = None
+        self.current_time: datetime | None = None
 
         # Real historical time series, keyed by instrument_key/token.
-        self._series: Dict[str, List[Tuple[datetime, float]]] = {}
+        self._series: dict[str, list[tuple[datetime, float]]] = {}
 
         # Sorted spot timestamps — drives the simulation clock.
-        self.timestamps: List[datetime] = []
+        self.timestamps: list[datetime] = []
 
         # First timestamp at which spot AND both option legs all already
         # have at least one real print — set by load_from_csv(). A sensible
         # default entry time: entering any earlier is guaranteed to fail
         # for whichever leg hasn't traded yet that day (common for
         # deep-OTM/illiquid strikes right at market open).
-        self.earliest_viable_time: Optional[datetime] = None
+        self.earliest_viable_time: datetime | None = None
 
         # Static overrides set directly via set_ltp/set_option_chain/etc.
         # (kept for unit-testing DataFeed itself without real CSVs).
-        self._ltps: Dict[str, float] = {}
-        self._expiries: Dict[str, List[str]] = {}
-        self._option_chains: Dict[tuple, List[Any]] = {}
+        self._ltps: dict[str, float] = {}
+        self._expiries: dict[str, list[str]] = {}
+        self._option_chains: dict[tuple, list[Any]] = {}
 
     def set_time(self, new_time: datetime) -> None:
         """Advance the simulated clock."""
@@ -83,11 +83,11 @@ class DataFeed:
         """Set a static LTP override for an instrument (test-only helper)."""
         self._ltps[instrument_key] = ltp
 
-    def set_option_contracts(self, instrument_key: str, expiries: List[str]) -> None:
+    def set_option_contracts(self, instrument_key: str, expiries: list[str]) -> None:
         """Set the available expiries for an underlying (test-only helper)."""
         self._expiries[instrument_key] = expiries
 
-    def set_option_chain(self, instrument_key: str, expiry: str, chain: List[Any]) -> None:
+    def set_option_chain(self, instrument_key: str, expiry: str, chain: list[Any]) -> None:
         """Set the option chain for a given underlying and expiry (test-only helper)."""
         self._option_chains[(instrument_key, expiry)] = chain
 
@@ -174,7 +174,7 @@ class DataFeed:
     # Methods called by MockBroker
     # ------------------------------------------------------------------
 
-    def get_ltp(self, instrument_key: str) -> Optional[float]:
+    def get_ltp(self, instrument_key: str) -> float | None:
         """
         Return the real historical price at `self.current_time` for a loaded
         series, falling back to a static override if one was set directly.
@@ -183,8 +183,8 @@ class DataFeed:
             return _price_at(self._series[instrument_key], self.current_time)
         return self._ltps.get(instrument_key)
 
-    def get_option_contracts(self, instrument_key: str) -> List[str]:
+    def get_option_contracts(self, instrument_key: str) -> list[str]:
         return self._expiries.get(instrument_key, [])
 
-    def get_option_chain(self, instrument_key: str, expiry: str) -> List[Any]:
+    def get_option_chain(self, instrument_key: str, expiry: str) -> list[Any]:
         return self._option_chains.get((instrument_key, expiry), [])

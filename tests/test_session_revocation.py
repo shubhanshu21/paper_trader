@@ -11,12 +11,11 @@ early.
 
 Real automate_test MySQL schema (see tests/conftest.py) — no network.
 """
+import sys
 from contextlib import contextmanager
 
 import pytest
 from fastapi import HTTPException
-
-import sys
 
 import automate.api.auth as auth
 import automate.api.routes_auth as routes_auth
@@ -28,7 +27,9 @@ from automate.db.models import User
 # Engine, not the module. Go through sys.modules instead.
 db_engine = sys.modules["automate.db.engine"]
 from automate.api.auth import (
-    create_access_token, get_current_user_optional, bump_token_version,
+    bump_token_version,
+    create_access_token,
+    get_current_user_optional,
 )
 
 
@@ -55,10 +56,10 @@ def db(db_session_factory, monkeypatch):
 
 
 def _make_user(db, **overrides):
-    defaults = dict(
-        username="alice", email="alice@example.com", hashed_password="x",
-        role="viewer", is_active=1, token_version=0,
-    )
+    defaults = {
+        "username": "alice", "email": "alice@example.com", "hashed_password": "x",
+        "role": "viewer", "is_active": 1, "token_version": 0,
+    }
     defaults.update(overrides)
     u = User(**defaults)
     db.add(u)

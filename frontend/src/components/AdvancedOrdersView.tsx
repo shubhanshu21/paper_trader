@@ -1,7 +1,9 @@
 import { useState, useRef, useEffect } from "react";
 import { Plus, X, Search, Repeat, TrendingDown, Layers, RefreshCw } from "lucide-react";
 import { OcoOrder, TrailingStopOrder, BracketOrder, OrderLeg, Instrument, api } from "../api";
-import { C, FONT, useToast, Select, Banner } from "./Common";
+import { Select, Banner } from "./Common";
+import { C, FONT } from "../lib/format";
+import { useToast } from "../hooks/useToast";
 
 type OrderKind = "OCO" | "TRAILING_STOP" | "BRACKET";
 

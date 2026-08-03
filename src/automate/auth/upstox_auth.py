@@ -24,8 +24,8 @@ Security notes:
     instead of this interactive CLI flow.
 """
 
-import sys
 import logging
+import sys
 import urllib.parse
 
 import requests
@@ -129,8 +129,8 @@ class UpstoxAuthClient:
                 timeout=15,
             )
             response.raise_for_status()
-        except requests.exceptions.Timeout:
-            raise RuntimeError("Token exchange timed out. Check network connectivity.")
+        except requests.exceptions.Timeout as exc:
+            raise RuntimeError("Token exchange timed out. Check network connectivity.") from exc
         except requests.exceptions.HTTPError as exc:
             # Log the response body for debugging, but never log the payload
             # (it contains client_secret).

@@ -3,7 +3,6 @@ backtest/bhavcopy_data_feed.py — DataFeed backed by MySQL fno_bhavcopy table.
 """
 from datetime import datetime
 from types import SimpleNamespace
-from typing import Dict, List, Optional, Tuple
 
 from sqlalchemy import text
 from sqlalchemy.orm import Session
@@ -19,7 +18,7 @@ def _make_token(symbol: str, expiry: str, strike: int, option_type: str) -> str:
     return f"{_TOKEN_PREFIX}|{symbol}|{expiry}|{strike}|{option_type}"
 
 
-def _parse_option_token(token: str) -> Optional[Tuple[str, str, int, str]]:
+def _parse_option_token(token: str) -> tuple[str, str, int, str] | None:
     """Return (symbol, expiry, strike, option_type), or None if not one of our option tokens."""
     parts = token.split("|")
     if len(parts) != 5 or parts[0] != _TOKEN_PREFIX:
@@ -46,7 +45,7 @@ class BhavcopyDataFeed:
         self.equity_key = equity_key
         self.option_instrument = option_instrument
         self.future_instrument = future_instrument
-        self.current_time: Optional[datetime] = None
+        self.current_time: datetime | None = None
 
     def set_time(self, new_time: datetime) -> None:
         self.current_time = new_time
@@ -57,7 +56,7 @@ class BhavcopyDataFeed:
             raise RuntimeError("BhavcopyDataFeed.set_time() must be called before use.")
         return self.current_time.date().isoformat()
 
-    def get_ltp(self, instrument_key: str) -> Optional[float]:
+    def get_ltp(self, instrument_key: str) -> float | None:
         trade_date = self._current_date_str()
 
         if instrument_key == self.equity_key:
@@ -90,7 +89,7 @@ class BhavcopyDataFeed:
         ).fetchone()
         return float(row[0]) if row and row[0] is not None else None
 
-    def get_option_contracts(self, instrument_key: str) -> List[str]:
+    def get_option_contracts(self, instrument_key: str) -> list[str]:
         """Every expiry currently listed (>= the simulated date)."""
         if instrument_key != self.equity_key:
             return []
@@ -104,7 +103,7 @@ class BhavcopyDataFeed:
         ).fetchall()
         return [r[0] for r in rows]
 
-    def get_option_chain(self, instrument_key: str, expiry_date: str) -> List[SimpleNamespace]:
+    def get_option_chain(self, instrument_key: str, expiry_date: str) -> list[SimpleNamespace]:
         if instrument_key != self.equity_key:
             return []
         trade_date = self._current_date_str()
@@ -121,7 +120,7 @@ class BhavcopyDataFeed:
             },
         ).fetchall()
 
-        by_strike: Dict[int, Dict[str, Optional[str]]] = {}
+        by_strike: dict[int, dict[str, str | None]] = {}
         for strike_pr, option_typ in rows:
             strike = int(strike_pr)
             entry = by_strike.setdefault(strike, {"CE": None, "PE": None})

@@ -5,12 +5,13 @@ Provides query optimization techniques including indexing hints,
 query analysis, and performance monitoring.
 """
 import logging
-from typing import List, Dict, Any, Optional
-from sqlalchemy import text
-from sqlalchemy.orm import Session
-from sqlalchemy.engine import Engine
-from contextlib import contextmanager
 import time
+from contextlib import contextmanager
+from typing import Any
+
+from sqlalchemy import text
+from sqlalchemy.engine import Engine
+from sqlalchemy.orm import Session
 
 log = logging.getLogger(__name__)
 
@@ -21,7 +22,7 @@ class QueryOptimizer:
     def __init__(self, engine: Engine):
         self.engine = engine
     
-    def analyze_query(self, query: str) -> Dict[str, Any]:
+    def analyze_query(self, query: str) -> dict[str, Any]:
         """
         Analyze a query using EXPLAIN.
         
@@ -46,7 +47,7 @@ class QueryOptimizer:
             log.error(f"Query analysis failed: {e}")
             return {"error": str(e)}
     
-    def get_table_indexes(self, table_name: str) -> List[Dict[str, Any]]:
+    def get_table_indexes(self, table_name: str) -> list[dict[str, Any]]:
         """
         Get indexes for a specific table.
         
@@ -75,7 +76,7 @@ class QueryOptimizer:
             log.error(f"Failed to get indexes for {table_name}: {e}")
             return []
     
-    def get_slow_queries(self, threshold_seconds: float = 1.0) -> List[Dict[str, Any]]:
+    def get_slow_queries(self, threshold_seconds: float = 1.0) -> list[dict[str, Any]]:
         """
         Get slow queries from MySQL slow query log.
         
@@ -104,7 +105,7 @@ class QueryOptimizer:
             log.error(f"Failed to get slow queries: {e}")
             return []
     
-    def get_table_stats(self, table_name: str) -> Dict[str, Any]:
+    def get_table_stats(self, table_name: str) -> dict[str, Any]:
         """
         Get table statistics for optimization.
         
@@ -178,7 +179,7 @@ def optimize_query(session: Session, query) -> Any:
     return query
 
 
-def suggest_indexes(session: Session, table_name: str) -> List[Dict[str, Any]]:
+def suggest_indexes(session: Session, table_name: str) -> list[dict[str, Any]]:
     """
     Suggest indexes based on query patterns.
     
@@ -226,10 +227,10 @@ class QueryCache:
     """Simple query result caching."""
     
     def __init__(self, max_size: int = 100):
-        self.cache: Dict[str, Any] = {}
+        self.cache: dict[str, Any] = {}
         self.max_size = max_size
     
-    def get(self, key: str) -> Optional[Any]:
+    def get(self, key: str) -> Any | None:
         """Get cached query result."""
         return self.cache.get(key)
     
@@ -247,7 +248,7 @@ class QueryCache:
 
 
 # Global query optimizer instance
-_query_optimizer: Optional[QueryOptimizer] = None
+_query_optimizer: QueryOptimizer | None = None
 
 
 def get_query_optimizer(engine: Engine) -> QueryOptimizer:

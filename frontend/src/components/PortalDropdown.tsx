@@ -4,7 +4,7 @@ import {
   FloatingPortal, offset, flip, shift, size, autoUpdate,
 } from "@floating-ui/react";
 import { ChevronDown, Check as CheckIcon } from "lucide-react";
-import { C } from "./Common";
+import { C } from "../lib/format";
 
 /**
  * PortalDropdown — a canvas-safe dropdown, used ONLY by in-canvas node

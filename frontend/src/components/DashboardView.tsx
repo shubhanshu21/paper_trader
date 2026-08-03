@@ -1,7 +1,8 @@
 import { PieChart, Briefcase, Layers, TrendingUp, FileText } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { WalletSummary, EquityPosition, OptionsPosition, User } from "../api";
-import { C, FONT, withSign, sign, Banner, SectionTitle, ColorBar, inrWithSignNoPlus } from "./Common";
+import { Banner, SectionTitle, ColorBar } from "./Common";
+import { C, FONT, withSign, sign, inrWithSignNoPlus } from "../lib/format";
 
 interface DashboardProps {
   currentUser?: User | null;

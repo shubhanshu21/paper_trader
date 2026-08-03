@@ -29,7 +29,7 @@ def calculate_options_transaction_cost_breakdown(
     price: float,
     quantity: int,
     transaction_type: str = "SELL",
-    rates: dict = None,
+    rates: dict | None = None,
 ) -> dict:
     """
     Calculate the itemised transaction costs for an options trade (NSE).
@@ -92,7 +92,7 @@ def calculate_options_transaction_cost(
     price: float,
     quantity: int,
     transaction_type: str = "SELL",
-    rates: dict = None,
+    rates: dict | None = None,
 ) -> float:
     """Total-only convenience wrapper around calculate_options_transaction_cost_breakdown()."""
     return calculate_options_transaction_cost_breakdown(

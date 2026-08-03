@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Trophy, TrendingUp, Filter, BarChart3, Award, Users, Percent } from "lucide-react";
 import { api } from "../api";
-import { C, FONT, withSign, sign } from "./Common";
+import { C, FONT, withSign, sign } from "../lib/format";
 
 interface LeaderboardRow {
   strategy: string;

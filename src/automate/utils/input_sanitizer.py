@@ -4,9 +4,9 @@ utils/input_sanitizer.py — Input sanitization and validation.
 Provides production-grade input sanitization to prevent injection attacks
 and ensure data integrity.
 """
-import re
 import html
-from typing import Any, Optional, List, Dict
+import re
+from typing import Any
 from urllib.parse import urlparse
 
 
@@ -67,7 +67,7 @@ class InputSanitizer:
         return sanitized
     
     @classmethod
-    def sanitize_number(cls, input_val: Any, min_val: Optional[float] = None, max_val: Optional[float] = None) -> Optional[float]:
+    def sanitize_number(cls, input_val: Any, min_val: float | None = None, max_val: float | None = None) -> float | None:
         """
         Sanitize numeric input.
         
@@ -92,7 +92,7 @@ class InputSanitizer:
             return None
     
     @classmethod
-    def sanitize_integer(cls, input_val: Any, min_val: Optional[int] = None, max_val: Optional[int] = None) -> Optional[int]:
+    def sanitize_integer(cls, input_val: Any, min_val: int | None = None, max_val: int | None = None) -> int | None:
         """
         Sanitize integer input.
         
@@ -117,7 +117,7 @@ class InputSanitizer:
             return None
     
     @classmethod
-    def sanitize_email(cls, email: str) -> Optional[str]:
+    def sanitize_email(cls, email: str) -> str | None:
         """
         Sanitize and validate email address.
         
@@ -141,7 +141,7 @@ class InputSanitizer:
         return email
     
     @classmethod
-    def sanitize_url(cls, url: str, allowed_schemes: List[str] = None) -> Optional[str]:
+    def sanitize_url(cls, url: str, allowed_schemes: list[str] | None = None) -> str | None:
         """
         Sanitize and validate URL.
         
@@ -168,7 +168,7 @@ class InputSanitizer:
             return None
     
     @classmethod
-    def sanitize_list(cls, input_list: Any, item_type: type = str, max_items: int = 100) -> List:
+    def sanitize_list(cls, input_list: Any, item_type: type = str, max_items: int = 100) -> list:
         """
         Sanitize list input.
         
@@ -186,11 +186,11 @@ class InputSanitizer:
         sanitized = []
         
         for item in input_list[:max_items]:
-            if item_type == str:
+            if item_type is str:
                 sanitized.append(cls.sanitize_string(item))
-            elif item_type == int:
+            elif item_type is int:
                 sanitized.append(cls.sanitize_integer(item))
-            elif item_type == float:
+            elif item_type is float:
                 sanitized.append(cls.sanitize_number(item))
             else:
                 sanitized.append(item)
@@ -198,7 +198,7 @@ class InputSanitizer:
         return sanitized
     
     @classmethod
-    def sanitize_dict(cls, input_dict: Any, allowed_keys: Optional[List[str]] = None) -> Dict:
+    def sanitize_dict(cls, input_dict: Any, allowed_keys: list[str] | None = None) -> dict:
         """
         Sanitize dictionary input.
         

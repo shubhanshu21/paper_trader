@@ -19,7 +19,6 @@ does, so this doesn't gate on assert_market_is_open()).
 import asyncio
 from datetime import date
 from pathlib import Path
-from typing import Optional
 
 from sqlalchemy import text
 
@@ -48,7 +47,7 @@ def _marker_path() -> Path:
     return Path("logs") / f".instrument_sync_done_{date.today().isoformat()}"
 
 
-def _clean(value) -> Optional[object]:
+def _clean(value) -> object | None:
     """InstrumentCache._load_csv() pre-fills every NaN with '' (for safe string ops elsewhere) — convert that back to real NULL for the DB columns that are genuinely optional (futures/equities have no strike/option_type, etc.)."""
     if value == "" or value is None:
         return None

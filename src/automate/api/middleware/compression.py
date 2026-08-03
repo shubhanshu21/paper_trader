@@ -5,11 +5,12 @@ Provides gzip compression for API responses to reduce bandwidth
 and improve performance.
 """
 import gzip
-from typing import Callable
+import os
+from collections.abc import Callable
+
 from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.types import ASGIApp
-import os
 
 
 class CompressionMiddleware(BaseHTTPMiddleware):

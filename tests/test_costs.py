@@ -13,9 +13,9 @@ def test_sell_side_includes_stt_not_stamp_duty():
     turnover = 100.0 * 500  # 50,000
     brokerage = 20.0
     exchange = turnover * 0.0003503
-    gst = (brokerage + exchange) * 0.18
-    stt = turnover * 0.0015
     sebi = turnover * 0.000001
+    gst = (brokerage + exchange + sebi) * 0.18  # GST base includes SEBI charges too
+    stt = turnover * 0.0015
     expected = round(brokerage + exchange + gst + stt + sebi, 2)
     assert cost == expected
 
@@ -25,9 +25,9 @@ def test_buy_side_includes_stamp_duty_not_stt():
     turnover = 100.0 * 500
     brokerage = 20.0
     exchange = turnover * 0.0003503
-    gst = (brokerage + exchange) * 0.18
-    stamp_duty = turnover * 0.00003
     sebi = turnover * 0.000001
+    gst = (brokerage + exchange + sebi) * 0.18  # GST base includes SEBI charges too
+    stamp_duty = turnover * 0.00003
     expected = round(brokerage + exchange + gst + stamp_duty + sebi, 2)
     assert cost == expected
 

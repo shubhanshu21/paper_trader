@@ -17,7 +17,6 @@ gives (aggregate Greeks, not per-leg) instead of Kite's plain per-leg list.
 import json
 from collections import defaultdict
 from datetime import date
-from typing import Dict, Optional
 
 from automate.db.engine import SessionLocal
 from automate.db.models import CustomStrategy, CustomStrategyPosition
@@ -25,7 +24,7 @@ from automate.utils import black76
 from automate.utils.instrument_cache import InstrumentCache
 
 
-def compute_live_greeks(strategy_id: int, owner_user_id: Optional[int] = None) -> Optional[dict]:
+def compute_live_greeks(strategy_id: int, owner_user_id: int | None = None) -> dict | None:
     """
     Returns None if the strategy doesn't exist (or, when `owner_user_id` is
     given, doesn't belong to that user — same None/404 either way, so a
@@ -34,7 +33,11 @@ def compute_live_greeks(strategy_id: int, owner_user_id: Optional[int] = None) -
     legs right now — both are normal outcomes, not errors, since this is
     called on a timer regardless of what state the strategy happens to be in.
     """
-    from automate.api.custom_strategy_scheduler import _get_brokers, _mode_for_status, _is_leg_for_symbol
+    from automate.api.custom_strategy_scheduler import (
+        _get_brokers,
+        _is_leg_for_symbol,
+        _mode_for_status,
+    )
 
     db = SessionLocal()
     try:
@@ -63,7 +66,7 @@ def compute_live_greeks(strategy_id: int, owner_user_id: Optional[int] = None) -
         tokens = [leg.instrument_key for leg in open_legs]
         now_prices = broker.get_ltp_batch(tokens)
 
-        futures_price_by_symbol: Dict[str, Optional[float]] = {}
+        futures_price_by_symbol: dict[str, float | None] = {}
         for symbol in symbols:
             resolved = instrument_cache.resolve_nearest_future_key(symbol)
             futures_price_by_symbol[symbol] = broker.get_ltp(resolved[0]) if resolved else None
@@ -125,7 +128,11 @@ def compute_portfolio_greeks(owner_user_id: int) -> dict:
     state (no active strategies, or none with open legs right now), not
     an error.
     """
-    from automate.api.custom_strategy_scheduler import _get_brokers, _mode_for_status, _is_leg_for_symbol
+    from automate.api.custom_strategy_scheduler import (
+        _get_brokers,
+        _is_leg_for_symbol,
+        _mode_for_status,
+    )
 
     db = SessionLocal()
     try:
@@ -152,26 +159,26 @@ def compute_portfolio_greeks(owner_user_id: int) -> dict:
         # own broker) rather than per leg, same reasoning as
         # compute_live_greeks — this just also spans multiple strategies'
         # legs in one pass instead of one strategy's.
-        legs_by_mode: Dict[str, list] = defaultdict(list)
+        legs_by_mode: dict[str, list] = defaultdict(list)
         for leg in open_legs:
             legs_by_mode[_mode_for_status(strategy_by_id[leg.strategy_id].status)].append(leg)
 
-        now_prices: Dict[str, Optional[float]] = {}
+        now_prices: dict[str, float | None] = {}
         for mode, mode_legs in legs_by_mode.items():
-            now_prices.update(brokers[mode].get_ltp_batch([l.instrument_key for l in mode_legs]))
+            now_prices.update(brokers[mode].get_ltp_batch([leg.instrument_key for leg in mode_legs]))
 
         instrument_cache = InstrumentCache()
         today = date.today()
-        futures_price_cache: Dict[str, Optional[float]] = {}
+        futures_price_cache: dict[str, float | None] = {}
 
-        def _futures_price(symbol: str, broker) -> Optional[float]:
+        def _futures_price(symbol: str, broker) -> float | None:
             if symbol not in futures_price_cache:
                 resolved = instrument_cache.resolve_nearest_future_key(symbol)
                 futures_price_cache[symbol] = broker.get_ltp(resolved[0]) if resolved else None
             return futures_price_cache[symbol]
 
         net_delta = net_gamma = net_theta = net_vega = 0.0
-        per_strategy: Dict[int, dict] = {}
+        per_strategy: dict[int, dict] = {}
         for leg in open_legs:
             strategy = strategy_by_id[leg.strategy_id]
             broker = brokers[_mode_for_status(strategy.status)]

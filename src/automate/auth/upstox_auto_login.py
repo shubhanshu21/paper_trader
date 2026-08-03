@@ -36,22 +36,21 @@ import logging
 import sys
 import urllib.parse
 from pathlib import Path
-from typing import Optional
 
 import pyotp
 import upstox_client
-from upstox_client.rest import ApiException
 from selenium import webdriver
-from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.common.by import By
 from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.support.ui import WebDriverWait
+from upstox_client.rest import ApiException
 
+from automate.auth.upstox_auth import UpstoxAuthClient
 from automate.config import UpstoxConfig
 from automate.utils.logger import get_logger
-from automate.utils.telegram_alert import send_telegram_alert
 from automate.utils.notify import notify
-from automate.auth.upstox_auth import UpstoxAuthClient
+from automate.utils.telegram_alert import send_telegram_alert
 
 log = get_logger(__name__)
 
@@ -196,13 +195,15 @@ def _invalidate_broker_caches() -> None:
     except Exception:
         pass
     try:
-        from automate.api.custom_strategy_scheduler import reset_brokers_cache as _reset_scheduler_brokers
+        from automate.api.custom_strategy_scheduler import (
+            reset_brokers_cache as _reset_scheduler_brokers,
+        )
         _reset_scheduler_brokers()
     except Exception:
         pass
 
 
-def ensure_fresh_upstox_token(force: bool = False) -> Optional[str]:
+def ensure_fresh_upstox_token(force: bool = False) -> str | None:
     """
     Ensure UpstoxConfig.ACCESS_TOKEN is valid, refreshing it headlessly if
     needed. No-ops (returns None immediately, no Selenium/network call) if

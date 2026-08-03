@@ -18,7 +18,6 @@ import fcntl
 import json
 from datetime import date
 from pathlib import Path
-from typing import List
 
 _ADJUSTMENTS_DIR = "data/runtime"
 
@@ -27,7 +26,7 @@ def _path_for(user_id: int) -> str:
     return f"{_ADJUSTMENTS_DIR}/wallet_adjustments_{user_id}.json"
 
 
-def load_adjustments(user_id: int) -> List[dict]:
+def load_adjustments(user_id: int) -> list[dict]:
     p = Path(_path_for(user_id))
     if not p.exists():
         return []

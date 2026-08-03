@@ -2,7 +2,7 @@
 utils/table.py — Colorful terminal table rendering for backtest reports,
 built on `rich` (https://github.com/Textualize/rich).
 """
-from typing import Optional, Sequence
+from collections.abc import Sequence
 
 from rich.console import Console
 from rich.table import Table
@@ -15,7 +15,7 @@ def render_stats_table(
     headers: Sequence[str],
     rows: Sequence[Sequence[str]],
     *,
-    pnl_columns: Optional[Sequence[int]] = None,
+    pnl_columns: Sequence[int] | None = None,
 ) -> None:
     """
     Print a colorful rich table to the terminal.

@@ -4,10 +4,10 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException
 
 from automate.api.auth import get_current_user
+from automate.api.deps import compute_mtm_economics, get_audit_trail, get_brokers, get_rate_limiter
 from automate.utils.pnl import compute_strangle_pnl
-from automate.utils.position_tracker import get_open_positions, get_closed_positions, get_position
+from automate.utils.position_tracker import get_closed_positions, get_open_positions, get_position
 from automate.utils.wallet import get_charge_rates
-from automate.api.deps import get_brokers, get_audit_trail, get_rate_limiter, compute_mtm_economics
 
 log = logging.getLogger("api.positions")
 router = APIRouter(prefix="/api/positions", tags=["positions"])
@@ -71,7 +71,7 @@ def close_position_now(position_id: int, user: dict = Depends(get_current_user))
     try:
         result = close_position_manual(position_id, brokers, get_audit_trail(), get_rate_limiter(), log)
     except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc))
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
     except RuntimeError as exc:
-        raise HTTPException(status_code=502, detail=str(exc))
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
     return result

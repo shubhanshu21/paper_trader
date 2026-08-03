@@ -5,10 +5,9 @@ Revises: 0009
 Create Date: 2026-07-30 14:00:00.000000
 
 """
-from alembic import op
 import sqlalchemy as sa
+from alembic import op
 from sqlalchemy import BigInteger, Boolean, Column, DateTime, String, Text, func
-
 
 revision = '0010'
 down_revision = '0009'

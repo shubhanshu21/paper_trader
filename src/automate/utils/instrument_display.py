@@ -11,7 +11,7 @@ extracts the EXCHANGE SEGMENT ("NSE_EQ"), not the ticker — instrument_key's
 second half is an ISIN, not the symbol. Real display symbols only live in
 the Instrument master table, keyed by the same instrument_key.
 """
-from typing import Iterable
+from collections.abc import Iterable
 
 from sqlalchemy import select
 
@@ -36,7 +36,7 @@ def resolve_display_symbols(instrument_keys: Iterable[str]) -> dict[str, str]:
             select(Instrument.instrument_key, Instrument.symbol).where(Instrument.instrument_key.in_(keys))
         ).all()
 
-    mapping = {key: symbol for key, symbol in rows}
+    mapping = dict(rows)
     for key in keys:
         if key not in mapping:
             mapping[key] = key.split("|")[-1]

@@ -19,12 +19,10 @@ the frontend to display as-is.
 import statistics
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Optional
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from automate.strategies.registry import STRATEGIES
 from automate.utils.costs import sum_breakdowns
 
 router = APIRouter(prefix="/api/backtest", tags=["backtest"])
@@ -38,23 +36,23 @@ _INDEX_SYMBOLS = {"NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY"}
 
 class BacktestRequest(BaseModel):
     symbol: str
-    type: Optional[str] = None
+    type: str | None = None
     # No hand-written strategies are registered anymore (see
     # strategies/registry.py) — this field only still matters for the
     # custom_strategy_id path below, which overwrites it from the DB row.
     strategy: str = "custom"
-    custom_strategy_id: Optional[int] = None  # Custom strategy ID if using custom strategy
+    custom_strategy_id: int | None = None  # Custom strategy ID if using custom strategy
     from_date: str
     to_date: str
     num_lots: int = 1
-    take_profit_pct: Optional[float] = None
-    stop_loss_pct: Optional[float] = None
+    take_profit_pct: float | None = None
+    stop_loss_pct: float | None = None
     exit_days_before_expiry: int = 1
     # Realistic fill simulation parameters
-    slippage_bps: Optional[float] = 5.0  # Slippage in basis points
-    partial_fill_pct: Optional[float] = 100.0  # Percentage of order that fills
-    market_impact: Optional[float] = 0.1  # Market impact factor
-    latency_ms: Optional[int] = 50  # Simulated execution latency in milliseconds
+    slippage_bps: float | None = 5.0  # Slippage in basis points
+    partial_fill_pct: float | None = 100.0  # Percentage of order that fills
+    market_impact: float | None = 0.1  # Market impact factor
+    latency_ms: int | None = 50  # Simulated execution latency in milliseconds
 
 
 def _apply_realistic_fills(results: list, req: BacktestRequest) -> list:
@@ -234,4 +232,4 @@ def run_backtest(req: BacktestRequest):
             return _run_recent(req, contract_type)
         return _run_historical(req, contract_type)
     except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"Backtest failed: {exc}")
+        raise HTTPException(status_code=502, detail=f"Backtest failed: {exc}") from exc

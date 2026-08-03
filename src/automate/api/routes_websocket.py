@@ -6,7 +6,9 @@ and other real-time trading events.
 """
 import logging
 import uuid
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Query
+
+from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
+
 from automate.api.websocket_manager import manager
 
 log = logging.getLogger("api.websocket")
@@ -101,6 +103,6 @@ def websocket_stats():
         "active_connections": manager.get_connection_count(),
         "symbol_subscriptions": {
             symbol: manager.get_subscriber_count(symbol)
-            for symbol in manager.symbol_subscriptions.keys()
+            for symbol in manager.symbol_subscriptions
         }
     }

@@ -6,6 +6,7 @@ cross-origin requests.
 """
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+
 from automate.config.environment import get_settings
 
 
@@ -20,12 +21,8 @@ def setup_cors(app: FastAPI):
     api_config = settings.api
     
     # Get allowed origins from configuration
-    if settings.is_production:
-        # Production: strict CORS
-        allowed_origins = api_config.CORS_ORIGINS
-    else:
-        # Development: allow all origins for convenience
-        allowed_origins = ["*"]
+    # Production: strict CORS. Development: allow all origins for convenience.
+    allowed_origins = api_config.CORS_ORIGINS if settings.is_production else ["*"]
     
     app.add_middleware(
         CORSMiddleware,

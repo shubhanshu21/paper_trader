@@ -27,9 +27,9 @@ import pytest
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker
 
+import automate.db.models  # noqa: F401 — import registers every model's table on Base.metadata before create_all() below
 from automate.config import DatabaseConfig as db_config
 from automate.db.engine import Base
-import automate.db.models  # noqa: F401 — import registers every model's table on Base.metadata before create_all() below
 
 TEST_DB_NAME = "automate_test"
 
@@ -148,6 +148,7 @@ def _never_touch_real_notifications(db_session_factory, monkeypatch):
     the path notify() itself would otherwise take under the hood.
     """
     import sys
+
     import automate.utils.telegram_alert as telegram_alert
     # automate/db/__init__.py does `from .engine import engine`, which
     # shadows the `automate.db.engine` package ATTRIBUTE with the Engine

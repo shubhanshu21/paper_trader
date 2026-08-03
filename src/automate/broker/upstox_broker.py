@@ -18,7 +18,6 @@ Error handling strategy:
 """
 
 import time
-from typing import Dict, Optional
 
 import upstox_client
 from upstox_client.rest import ApiException
@@ -170,17 +169,17 @@ class UpstoxBroker(BaseBroker):
             )
         return key
 
-    def get_lot_size(self, symbol: str) -> Optional[int]:
+    def get_lot_size(self, symbol: str) -> int | None:
         """Real current F&O lot size for `symbol`, from today's instrument master. See BaseBroker."""
         return self._cache.resolve_lot_size(symbol)
 
-    def get_strike_step(self, symbol: str) -> Optional[float]:
+    def get_strike_step(self, symbol: str) -> float | None:
         """Real current strike interval for `symbol`, from today's instrument master. See BaseBroker."""
         return self._cache.resolve_strike_step(symbol)
 
     def get_required_margin(
         self, instrument_key: str, quantity: int, transaction_type: str, product: str = "D",
-    ) -> Optional[float]:
+    ) -> float | None:
         """
         Real SPAN + exposure margin via Upstox's Margin Calculator API
         (POST /charges/margin) — the actual figure the exchange/broker
@@ -191,7 +190,7 @@ class UpstoxBroker(BaseBroker):
         instrument = {"instrument_key": instrument_key, "quantity": quantity, "transaction_type": transaction_type, "product": product}
         return self.get_basket_required_margin([instrument])
 
-    def get_basket_required_margin(self, instruments: list[dict]) -> Optional[float]:
+    def get_basket_required_margin(self, instruments: list[dict]) -> float | None:
         """
         Real NETTED SPAN + exposure margin for a whole basket of legs in
         ONE call via Upstox's Margin Calculator API (POST /charges/margin)
@@ -220,7 +219,7 @@ class UpstoxBroker(BaseBroker):
             log.warning("UpstoxBroker: margin calculator call failed for basket of %d instrument(s): %s", len(instruments), exc)
             return None
 
-    def get_broker_positions(self) -> Optional[Dict[str, int]]:
+    def get_broker_positions(self) -> dict[str, int] | None:
         """
         Real broker-side NET open quantity per instrument_token, straight
         from Upstox's own books (GET /v2/portfolio/short-term-positions) —
@@ -244,7 +243,7 @@ class UpstoxBroker(BaseBroker):
             log.warning("UpstoxBroker: could not fetch broker positions for reconciliation: %s", exc)
             return None
 
-    def get_order_status(self, order_id: str) -> Optional[str]:
+    def get_order_status(self, order_id: str) -> str | None:
         """
         Query the real order status via GET /v2/order/history — an order
         API call returning an order_id does NOT guarantee the exchange
@@ -267,7 +266,7 @@ class UpstoxBroker(BaseBroker):
         # last entry is the most recent/current state.
         return str(history[-1].status).lower()
 
-    def get_fill_price(self, order_id: str) -> Optional[float]:
+    def get_fill_price(self, order_id: str) -> float | None:
         """
         Query the real average fill price via the same GET /v2/order/history
         call get_order_status() uses. Only meaningful once the exchange has
@@ -298,7 +297,7 @@ class UpstoxBroker(BaseBroker):
     # Market Data: Spot Price (LTP)
     # ------------------------------------------------------------------
 
-    def get_ltp(self, instrument_key: str) -> Optional[float]:
+    def get_ltp(self, instrument_key: str) -> float | None:
         """
         Fetch the Last Traded Price (LTP) for an equity instrument.
 
@@ -338,7 +337,7 @@ class UpstoxBroker(BaseBroker):
                 if len(quote_map) == 1:
                     # Upstox sometimes changes the dict key in the response (e.g., from ISIN to symbol). 
                     # If we only asked for 1 quote, just grab the only value in the dict.
-                    ltp_obj = list(quote_map.values())[0]
+                    ltp_obj = next(iter(quote_map.values()))
                 else:
                     # Fallback to key lookup if multiple requested (we only ever request 1 here)
                     normalised_key = instrument_key.replace("|", ":")
@@ -376,7 +375,7 @@ class UpstoxBroker(BaseBroker):
 
         return None
 
-    def get_ltp_batch(self, instrument_keys: list[str]) -> dict[str, Optional[float]]:
+    def get_ltp_batch(self, instrument_keys: list[str]) -> dict[str, float | None]:
         """
         Fetch LTPs for many instruments in as few HTTP calls as possible
         (Upstox's v3 LTP endpoint accepts a comma-separated instrument_key
@@ -397,7 +396,7 @@ class UpstoxBroker(BaseBroker):
         Returns a dict with every requested key present; value is None for
         any instrument Upstox didn't return a quote for.
         """
-        results: dict[str, Optional[float]] = {key: None for key in instrument_keys}
+        results: dict[str, float | None] = dict.fromkeys(instrument_keys)
         if not instrument_keys:
             return results
 
@@ -438,7 +437,7 @@ class UpstoxBroker(BaseBroker):
 
         return results
 
-    def get_market_depth(self, instrument_key: str) -> Optional[dict]:
+    def get_market_depth(self, instrument_key: str) -> dict | None:
         """
         Fetch the 5-level bid/offer order book plus OHLC, volume, average
         price, and circuit limits for one instrument — everything a market
@@ -465,7 +464,7 @@ class UpstoxBroker(BaseBroker):
                 quote = q
                 break
         if quote is None and len(quote_map) == 1:
-            quote = list(quote_map.values())[0]
+            quote = next(iter(quote_map.values()))
         if quote is None:
             return None
 
@@ -641,7 +640,7 @@ class UpstoxBroker(BaseBroker):
         tag: str = "",
         price: float = 0,
         trigger_price: float = 0,
-    ) -> Optional[str]:
+    ) -> str | None:
         """
         Place a SELL or BUY order for one options leg via the v3 OrderApi.
 
@@ -749,10 +748,10 @@ class UpstoxBroker(BaseBroker):
         product: str = "D",
         order_type: str = "MARKET",
         tag: str = "",
-        user_id: Optional[int] = None,
+        user_id: int | None = None,
         price: float = 0,
         trigger_price: float = 0,
-    ) -> Optional[str]:
+    ) -> str | None:
         """Place a SELL (write) order for one options leg. See BaseBroker. user_id unused — a live order is checked against the real broker's own real margin, not a simulated wallet. price/trigger_price: see _place_order — only meaningful for order_type 'LIMIT'/'SL'/'SL-M'."""
         return self._place_order("SELL", instrument_token, quantity, product, order_type, tag, price, trigger_price)
 
@@ -763,10 +762,10 @@ class UpstoxBroker(BaseBroker):
         product: str = "D",
         order_type: str = "MARKET",
         tag: str = "",
-        user_id: Optional[int] = None,
+        user_id: int | None = None,
         price: float = 0,
         trigger_price: float = 0,
-    ) -> Optional[str]:
+    ) -> str | None:
         """Place a BUY order to square off an options leg. See BaseBroker. user_id unused — see place_sell_order. price/trigger_price: see _place_order."""
         return self._place_order("BUY", instrument_token, quantity, product, order_type, tag, price, trigger_price)
 
@@ -798,7 +797,7 @@ class UpstoxBroker(BaseBroker):
         order_type: str,
         price: float = 0,
         trigger_price: float = 0,
-        quantity: Optional[int] = None,
+        quantity: int | None = None,
     ) -> bool:
         """
         Modify a resting order's price/trigger/quantity in place, via the v3

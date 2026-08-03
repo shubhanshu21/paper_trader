@@ -10,8 +10,6 @@ test_partial_fill_auto_unwind.py — no network/DB.
 from types import SimpleNamespace
 from unittest.mock import patch
 
-import pytest
-
 from automate.backtest.data_feed import DataFeed
 from automate.broker.mock_broker import MockBroker
 from automate.compliance.sebi_rules import AuditTrail, KillSwitch, OrderRateLimiter
@@ -89,7 +87,7 @@ class TestRuleStrategyExecution:
     def test_equity_only_strategy_never_needs_a_real_lot_size(self):
         """__init__ must not call broker.get_lot_size() at all when there are no OPTION legs."""
         rules = {"legs": [{"instrument_type": "EQUITY", "action": "BUY", "lots": 10}]}
-        strategy, broker = _build_strategy(rules)
+        strategy, _broker = _build_strategy(rules)
         assert strategy.real_lot_size == 1
         assert strategy.strike_step is None
 
@@ -162,5 +160,6 @@ class TestSchedulerCycleGating:
 
     def test_resolve_current_expiry_equity_mode_returns_todays_date_without_a_broker_call(self):
         from datetime import date
+
         from automate.api.custom_strategy_scheduler import _resolve_current_expiry
         assert _resolve_current_expiry(broker=None, symbol="TESTSTOCK", mode="EQUITY") == date.today().isoformat()

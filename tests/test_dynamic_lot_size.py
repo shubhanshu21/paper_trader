@@ -101,7 +101,7 @@ class TestRealInstrumentMasterResolution:
         if steel is not None:  # only assert if both are actually listed today
             bsl = cache.resolve_lot_size("TATASTEELBSL")
             if bsl is not None:
-                assert steel != bsl or True  # different contracts; just must not crash/cross-contaminate
+                assert True  # different contracts; just must not crash/cross-contaminate
 
     def test_reliance_strike_step(self):
         assert InstrumentCache().resolve_strike_step("RELIANCE") == 10
@@ -128,13 +128,15 @@ class TestStrategyRefusesToGuess:
         audit = AuditTrail(audit_log_path="logs/test_audit_trail.log")
         rules = {"legs": [{"action": "SELL", "option_type": "CE", "strike_selection": {"mode": "ATM"}, "lots": 1}]}
 
-        with patch("automate.utils.instrument_cache.InstrumentCache.resolve_equity_key", return_value="NSE_EQ|TEST"):
-            with pytest.raises(RuntimeError, match="lot size"):
-                RuleBasedStrategy(
-                    broker=broker, audit=audit, kill_switch=KillSwitch(),
-                    rate_limiter=OrderRateLimiter(max_per_second=10),
-                    symbol="TESTSTOCK", rules=rules, strike_step=20, product="NRML",
-                )
+        with (
+            patch("automate.utils.instrument_cache.InstrumentCache.resolve_equity_key", return_value="NSE_EQ|TEST"),
+            pytest.raises(RuntimeError, match="lot size"),
+        ):
+            RuleBasedStrategy(
+                broker=broker, audit=audit, kill_switch=KillSwitch(),
+                rate_limiter=OrderRateLimiter(max_per_second=10),
+                symbol="TESTSTOCK", rules=rules, strike_step=20, product="NRML",
+            )
 
     def test_raises_when_broker_cannot_resolve_strike_step(self):
         """strike_step=None (the live/paper default — see config.py) with a broker
@@ -146,12 +148,14 @@ class TestStrategyRefusesToGuess:
         audit = AuditTrail(audit_log_path="logs/test_audit_trail.log")
         rules = {"legs": [{"action": "SELL", "option_type": "CE", "strike_selection": {"mode": "ATM"}, "lots": 1}]}
 
-        with patch("automate.utils.instrument_cache.InstrumentCache.resolve_equity_key", return_value="NSE_EQ|TEST"), \
-             patch("automate.broker.mock_broker.MockBroker.get_lot_size", return_value=500), \
-             patch("automate.broker.mock_broker.MockBroker.get_strike_step", return_value=None):
-            with pytest.raises(RuntimeError, match="strike step"):
-                RuleBasedStrategy(
-                    broker=broker, audit=audit, kill_switch=KillSwitch(),
-                    rate_limiter=OrderRateLimiter(max_per_second=10),
-                    symbol="TESTSTOCK", rules=rules, strike_step=None, product="NRML",
-                )
+        with (
+            patch("automate.utils.instrument_cache.InstrumentCache.resolve_equity_key", return_value="NSE_EQ|TEST"),
+            patch("automate.broker.mock_broker.MockBroker.get_lot_size", return_value=500),
+            patch("automate.broker.mock_broker.MockBroker.get_strike_step", return_value=None),
+            pytest.raises(RuntimeError, match="strike step"),
+        ):
+            RuleBasedStrategy(
+                broker=broker, audit=audit, kill_switch=KillSwitch(),
+                rate_limiter=OrderRateLimiter(max_per_second=10),
+                symbol="TESTSTOCK", rules=rules, strike_step=None, product="NRML",
+            )

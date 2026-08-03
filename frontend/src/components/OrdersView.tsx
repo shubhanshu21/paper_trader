@@ -1,7 +1,8 @@
 import { useState } from "react";
 import { Search, Download, Clock, FileText, ChevronDown, ChevronUp } from "lucide-react";
 import { Order } from "../api";
-import { C, FONT, inr, StatusPill, TypeTag, Td, Th } from "./Common";
+import { StatusPill, TypeTag, Td, Th } from "./Common";
+import { C, FONT, inr } from "../lib/format";
 
 interface OrdersProps {
   orders: Order[];

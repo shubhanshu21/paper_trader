@@ -43,10 +43,16 @@ import json
 import threading
 import time
 from datetime import date, datetime
-from typing import Dict, Optional
 from zoneinfo import ZoneInfo
 
-from automate.compliance.sebi_rules import AuditTrail, KillSwitch, OrderRateLimiter, assert_market_is_open
+from sqlalchemy import text, update
+
+from automate.compliance.sebi_rules import (
+    AuditTrail,
+    KillSwitch,
+    OrderRateLimiter,
+    assert_market_is_open,
+)
 from automate.db.engine import SessionLocal
 from automate.db.models import CustomStrategy, CustomStrategyPosition
 from automate.strategies.custom.rule_strategy import RuleBasedStrategy
@@ -55,7 +61,6 @@ from automate.utils.logger import get_logger
 from automate.utils.notify import notify
 from automate.utils.option_utils import check_exit_trigger, is_within_pre_expiry_buffer
 from automate.utils.trailing_stop import advance_trailing_stop, stop_triggered
-from sqlalchemy import text, update
 
 log = get_logger(__name__)
 
@@ -67,7 +72,7 @@ _TICK_SEC_CLOSED = 300
 # trading tick itself; it exists to catch drift from a rare crash-window
 # event, not to run on every tick and hammer the broker's positions API.
 _RECONCILE_INTERVAL_SEC = 600
-_last_reconcile_at: Optional[float] = None
+_last_reconcile_at: float | None = None
 
 # entry/exit "time" rules (e.g. "10:00") are entered by the user as NSE
 # market-hours-of-day (IST) — the server itself runs on UTC, so comparing
@@ -79,7 +84,7 @@ _IST = ZoneInfo("Asia/Kolkata")
 _audit = AuditTrail(audit_log_path="logs/custom_strategy_audit.log")
 _kill_switch = KillSwitch()
 _rate_limiter = OrderRateLimiter(max_per_second=10)
-_brokers: Optional[dict] = None
+_brokers: dict | None = None
 # Lock protecting _brokers — the asyncio scheduler loop reads it from
 # the event-loop thread, while reset_brokers_cache() (called from the
 # token_refresh_scheduler, which runs in a ThreadPoolExecutor thread)
@@ -102,7 +107,7 @@ def _market_is_open_now() -> bool:
         return False
 
 
-def _get_brokers() -> Optional[dict]:
+def _get_brokers() -> dict | None:
     """Lazily build the paper/live broker pair; retried every tick until it succeeds (e.g. token not ready yet)."""
     global _brokers
     with _brokers_lock:
@@ -215,7 +220,7 @@ def _leg_groups(rules: dict) -> dict:
     return dict(groups)
 
 
-def _get_last_entered_expiry(strategy: CustomStrategy, symbol: str, mode: str) -> Optional[str]:
+def _get_last_entered_expiry(strategy: CustomStrategy, symbol: str, mode: str) -> str | None:
     """
     The expiry date this symbol's `mode`-cycle basket (see _leg_groups)
     was last entered for, or None. Stored in the same last_entry_date
@@ -261,7 +266,7 @@ def _set_last_entered_expiry(strategy: CustomStrategy, symbol: str, mode: str, e
     strategy.last_entry_date = json.dumps(data)
 
 
-def _resolve_current_expiry(broker, symbol: str, mode: str) -> Optional[str]:
+def _resolve_current_expiry(broker, symbol: str, mode: str) -> str | None:
     """
     Lightweight pre-flight expiry resolution for ONE expiry mode — used
     ONLY to decide whether this symbol's `mode`-cycle has already been
@@ -447,7 +452,7 @@ def _try_entry(db, strategy: CustomStrategy, broker) -> None:
             _set_last_entered_expiry(strategy, symbol, mode, entered_expiry)
 
             db_mode = _mode_for_status(strategy.status)
-            for original_idx, leg in zip(result["leg_indices"], result["legs"]):
+            for original_idx, leg in zip(result["leg_indices"], result["legs"], strict=False):
                 leg_exit_config = rules["legs"][original_idx].get("exit")
                 trail_state = None
                 if leg_exit_config and (leg_exit_config.get("trailing") or {}).get("enabled"):
@@ -466,7 +471,7 @@ def _try_entry(db, strategy: CustomStrategy, broker) -> None:
                      strategy.id, strategy.name, symbol, mode, len(result["legs"]))
 
 
-def _combined_pnl_pct(legs: list[CustomStrategyPosition], now_prices: dict, rates: Optional[dict] = None) -> Optional[float]:
+def _combined_pnl_pct(legs: list[CustomStrategyPosition], now_prices: dict, rates: dict | None = None) -> float | None:
     """
     NET P&L (of the combined premium at entry) — includes real Upstox
     transaction costs (brokerage/STT/exchange charges/GST/SEBI charges/
@@ -663,7 +668,7 @@ def _try_exit(db, strategy: CustomStrategy, broker) -> None:
         # 2. Strategy-level combined TP/SL — only over legs WITHOUT their
         #    own exit config (today's exact behavior when no leg has a
         #    per-leg config: combined_managed == still_open == symbol_legs).
-        combined_managed = [l for l in still_open if not l.leg_config_json]
+        combined_managed = [leg for leg in still_open if not leg.leg_config_json]
         pnl_pct = _combined_pnl_pct(combined_managed, now_prices, rates) if combined_managed else None
         trigger = check_exit_trigger(pnl_pct, take_profit_pct, stop_loss_pct) if pnl_pct is not None else None
 
@@ -688,7 +693,7 @@ def _try_exit(db, strategy: CustomStrategy, broker) -> None:
             continue
 
         closed_legs = [leg for leg in legs_to_close if _close_leg(db, strategy, broker, leg, trigger, now_prices)]
-        combined_closed = [l for l in closed_legs if l in combined_managed]
+        combined_closed = [leg for leg in closed_legs if leg in combined_managed]
 
         # Only record a return_pct when every COMBINED-managed leg
         # actually closed — with one leg left OPEN (a failed exit above),
@@ -769,7 +774,7 @@ def square_off_all_open_legs(db, strategy: CustomStrategy, brokers: dict, reason
     return closed_count
 
 
-def dtime_or_none(expiry_str: Optional[str]):
+def dtime_or_none(expiry_str: str | None):
     if not expiry_str:
         return None
     try:
@@ -805,7 +810,7 @@ def _reconcile_live_positions(db, brokers: dict) -> None:
 
     broker_net = live_broker.get_broker_positions()
     mismatches = reconcile_live_positions(
-        [{"instrument_key": l.instrument_key, "transaction_type": l.transaction_type, "quantity": l.quantity} for l in live_legs],
+        [{"instrument_key": leg.instrument_key, "transaction_type": leg.transaction_type, "quantity": leg.quantity} for leg in live_legs],
         broker_net,
     )
     if mismatches is None:
@@ -818,7 +823,7 @@ def _reconcile_live_positions(db, brokers: dict) -> None:
 
     strategy_ids = {leg.strategy_id for leg in live_legs}
     strategies = {s.id: s for s in db.query(CustomStrategy).filter(CustomStrategy.id.in_(strategy_ids)).all()}
-    legs_by_instrument: Dict[str, list] = defaultdict(list)
+    legs_by_instrument: dict[str, list] = defaultdict(list)
     for leg in live_legs:
         legs_by_instrument[leg.instrument_key].append(leg)
 
@@ -826,10 +831,10 @@ def _reconcile_live_positions(db, brokers: dict) -> None:
     # strategy -> user_id) so each account only ever sees its own drift —
     # a mismatch with NO matching DB leg at all (a fully orphaned broker
     # position) has no owner to attribute it to and goes out system-wide.
-    mismatches_by_user: Dict[Optional[int], list] = defaultdict(list)
+    mismatches_by_user: dict[int | None, list] = defaultdict(list)
     for m in mismatches:
         owning_legs = legs_by_instrument.get(m["instrument_key"], [])
-        user_ids = {strategies[l.strategy_id].user_id for l in owning_legs if l.strategy_id in strategies} or {None}
+        user_ids = {strategies[leg.strategy_id].user_id for leg in owning_legs if leg.strategy_id in strategies} or {None}
         for uid in user_ids:
             mismatches_by_user[uid].append(m)
 

@@ -7,22 +7,20 @@ committed config file.
 
 Supports both online (live DB) and offline (SQL-script) migration modes.
 """
-import sys
 import os
+import sys
 from logging.config import fileConfig
 
-from sqlalchemy import engine_from_config, pool
-
 from alembic import context
+from sqlalchemy import engine_from_config, pool
 
 # ── Add project root to sys.path so `automate` package is importable ─────────
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', '..', '..'))
 
-from automate.config import DatabaseConfig
-from automate.db.engine import Base
-
 # Import ALL models so Alembic's autogenerate can detect them
 import automate.db.models  # noqa: F401
+from automate.config import DatabaseConfig
+from automate.db.engine import Base
 
 # Alembic config object
 config = context.config

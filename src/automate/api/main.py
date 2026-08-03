@@ -17,6 +17,7 @@ For public-facing deployment (with auth enabled):
 """
 import logging
 from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from slowapi import Limiter, _rate_limit_exceeded_handler
@@ -24,15 +25,31 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
 from automate.api import (
-    routes_positions, routes_strategies, routes_daemon,
-    routes_backtest, routes_logs, routes_dashboard,
-    routes_leaderboard, routes_wallet, ws_positions,
-    routes_auth, routes_oauth, routes_equity, routes_terminal,
-    routes_watchlist, routes_websocket,
-    routes_advanced_orders, routes_multi_leg, routes_performance,
-    routes_custom_strategies, routes_health,
-    ws_custom_strategy_greeks, routes_notifications, ws_notifications,
-    ws_custom_strategy_positions, ws_market_depth,
+    routes_advanced_orders,
+    routes_auth,
+    routes_backtest,
+    routes_custom_strategies,
+    routes_daemon,
+    routes_dashboard,
+    routes_equity,
+    routes_health,
+    routes_leaderboard,
+    routes_logs,
+    routes_multi_leg,
+    routes_notifications,
+    routes_oauth,
+    routes_performance,
+    routes_positions,
+    routes_strategies,
+    routes_terminal,
+    routes_wallet,
+    routes_watchlist,
+    routes_websocket,
+    ws_custom_strategy_greeks,
+    ws_custom_strategy_positions,
+    ws_market_depth,
+    ws_notifications,
+    ws_positions,
 )
 from automate.config import LogConfig, PanelAuthConfig
 from automate.utils.logger import setup_logger
@@ -53,17 +70,21 @@ log = logging.getLogger("api")
 # ---------------------------------------------------------------------------
 # Background tasks lifespan
 # ---------------------------------------------------------------------------
+_background_tasks: set = set()
+
+
 @asynccontextmanager
 async def _lifespan(application: FastAPI):
     """Start long-running background tasks on startup (replaces the deprecated
     @app.on_event('startup') pattern removed in FastAPI 0.109+)."""
     import asyncio
-    from automate.api.market_broadcaster import market_price_broadcaster
-    from automate.api.custom_strategy_scheduler import custom_strategy_scheduler
-    from automate.api.token_refresh_scheduler import token_refresh_scheduler
+
     from automate.api.advanced_orders_scheduler import advanced_orders_scheduler
-    from automate.api.iv_history_scheduler import iv_history_scheduler
+    from automate.api.custom_strategy_scheduler import custom_strategy_scheduler
     from automate.api.instrument_sync_scheduler import instrument_sync_scheduler
+    from automate.api.iv_history_scheduler import iv_history_scheduler
+    from automate.api.market_broadcaster import market_price_broadcaster
+    from automate.api.token_refresh_scheduler import token_refresh_scheduler
 
     # run_daemon.py (the old cron/systemd-style CLI daemon) is retired —
     # it only ever ran hand-written strategies (strategies/registry.py,
@@ -73,12 +94,21 @@ async def _lifespan(application: FastAPI):
     # token auto-login — the other thing run_daemon.py used to do — moved
     # to its own task (token_refresh_scheduler) so retiring the daemon
     # doesn't silently break login too.
-    asyncio.create_task(market_price_broadcaster())
-    asyncio.create_task(custom_strategy_scheduler())
-    asyncio.create_task(token_refresh_scheduler())
-    asyncio.create_task(advanced_orders_scheduler())
-    asyncio.create_task(iv_history_scheduler())
-    asyncio.create_task(instrument_sync_scheduler())
+    # Tasks must be referenced for their lifetime — asyncio's event loop only
+    # holds a weak reference, so an unreferenced task can be garbage-collected
+    # mid-run (see asyncio.create_task docs). _background_tasks keeps them alive
+    # and self-cleans via the done_callback.
+    tasks = [
+        asyncio.create_task(market_price_broadcaster()),
+        asyncio.create_task(custom_strategy_scheduler()),
+        asyncio.create_task(token_refresh_scheduler()),
+        asyncio.create_task(advanced_orders_scheduler()),
+        asyncio.create_task(iv_history_scheduler()),
+        asyncio.create_task(instrument_sync_scheduler()),
+    ]
+    _background_tasks.update(tasks)
+    for task in tasks:
+        task.add_done_callback(_background_tasks.discard)
     yield  # application is running
     # (shutdown cleanup would go here if needed)
 
@@ -198,6 +228,7 @@ if PanelAuthConfig.ENABLED:
             return await call_next(request)
         # Validate session cookie
         from jose import JWTError
+
         from automate.api.auth import decode_access_token
         session_cookie = request.cookies.get("__Host-session")
         if not session_cookie:
@@ -222,6 +253,7 @@ if PanelAuthConfig.ENABLED:
             return await call_next(request)
 
         from fastapi import HTTPException
+
         from automate.api.auth import validate_csrf
         try:
             validate_csrf(request, request.cookies.get("csrf_token"))
@@ -285,6 +317,7 @@ def market_status():
     """
     from datetime import datetime
     from zoneinfo import ZoneInfo
+
     from automate.compliance.sebi_rules import assert_market_is_open
 
     now_ist = datetime.now(ZoneInfo("Asia/Kolkata"))
@@ -299,8 +332,9 @@ def market_status():
 # Serve built React frontend (production)
 # ---------------------------------------------------------------------------
 from pathlib import Path
-from fastapi.staticfiles import StaticFiles
+
 from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 _FRONTEND_DIST = Path(__file__).resolve().parent.parent.parent.parent / "frontend" / "dist"

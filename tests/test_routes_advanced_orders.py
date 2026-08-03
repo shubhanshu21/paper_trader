@@ -14,14 +14,19 @@ import json
 import pytest
 from fastapi import HTTPException
 
-from automate.db.models import AdvancedOrder
 import automate.api.routes_advanced_orders as routes
 from automate.api.routes_advanced_orders import (
-    BracketOrderRequest, OCOOrderRequest, TrailingStopRequest,
-    cancel_bracket_order, cancel_oco_order, cancel_trailing_stop,
-    create_bracket_order, create_oco_order, create_trailing_stop,
-    get_bracket_order, get_oco_order, get_trailing_stop, list_advanced_orders,
+    BracketOrderRequest,
+    OCOOrderRequest,
+    TrailingStopRequest,
+    cancel_oco_order,
+    create_bracket_order,
+    create_oco_order,
+    create_trailing_stop,
+    get_oco_order,
+    list_advanced_orders,
 )
+from automate.db.models import AdvancedOrder
 
 
 class FakeBroker:
@@ -138,7 +143,6 @@ class TestCreateOco:
             secondary_order={"instrument_token": "X", "transaction_type": "BUY", "quantity": 1,
                               "order_type": "SL-M", "trigger_price": 90},
         )
-        real_place_buy = brokers["live"].place_buy_order
         brokers["live"].place_sell_order = lambda *a, **k: "SELL-1"
 
         def failing_buy(*a, **k):

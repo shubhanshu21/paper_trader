@@ -22,29 +22,30 @@ this is the entry point users actually hit from the strategy builder's
   - Equity/future legs use the daily future close as a spot proxy (no
     cash-equity close in this dataset).
 """
-from datetime import date, datetime, time as dtime
-from typing import Callable, Dict, List, Optional
+from collections.abc import Callable
+from datetime import date, datetime
+from datetime import time as dtime
 
 from sqlalchemy import text
-from automate.db.engine import SessionLocal
 
 from automate.backtest.bhavcopy_data_feed import BhavcopyDataFeed
 from automate.broker.mock_broker import MockBroker
 from automate.compliance.sebi_rules import AuditTrail, KillSwitch, OrderRateLimiter
+from automate.db.engine import SessionLocal
 from automate.strategies.custom.rule_strategy import RuleBasedStrategy
+from automate.utils import black76
 from automate.utils.costs import calculate_options_transaction_cost_breakdown, sum_breakdowns
 from automate.utils.instrument_cache import InstrumentCache
 from automate.utils.logger import get_logger
 from automate.utils.option_utils import check_exit_trigger, is_within_pre_expiry_buffer
 from automate.utils.trailing_stop import advance_trailing_stop, stop_triggered
-from automate.utils import black76
 
 log = get_logger(__name__)
 
 _MARKET_OPEN = dtime(9, 20)
 
 
-def compute_nifty_benchmark_return(from_date: str, to_date: str) -> Optional[float]:
+def compute_nifty_benchmark_return(from_date: str, to_date: str) -> float | None:
     """
     NIFTY 50 buy-and-hold %% return over [from_date, to_date] — the
     standard Indian-market benchmark a strategy backtest is compared
@@ -91,12 +92,12 @@ class CustomRuleBacktestEngine:
         self,
         symbol: str,
         rules: dict,
-        strike_step: Optional[float] = None,
+        strike_step: float | None = None,
         product: str = "NRML",
         option_instrument: str = "OPTSTK",
         future_instrument: str = "FUTSTK",
         audit_log_path: str = "logs/mock_audit_trail.log",
-        charge_rates: Optional[dict] = None,
+        charge_rates: dict | None = None,
     ) -> None:
         self.symbol = symbol.upper()
         self.rules = rules
@@ -143,7 +144,7 @@ class CustomRuleBacktestEngine:
         }
         return "WEEKLY" if "WEEKLY" in modes else "MONTHLY"
 
-    def _natural_exit_date(self, expiry: str, cache: Dict[str, Optional[str]]) -> Optional[str]:
+    def _natural_exit_date(self, expiry: str, cache: dict[str, str | None]) -> str | None:
         """The last real trading day for a given expiry_dt — a leg's own contract lifetime end, memoized per cycle."""
         if expiry in cache:
             return cache[expiry]
@@ -158,7 +159,7 @@ class CustomRuleBacktestEngine:
         cache[expiry] = result
         return result
 
-    def _trading_days(self, expiry: str, entry_date: str, exit_date: str) -> List[str]:
+    def _trading_days(self, expiry: str, entry_date: str, exit_date: str) -> list[str]:
         return [
             r[0] for r in self.session.execute(
                 text(
@@ -170,7 +171,7 @@ class CustomRuleBacktestEngine:
             ).fetchall()
         ]
 
-    def _leg_pnl_pct(self, leg: dict, now_price: Optional[float]) -> Optional[float]:
+    def _leg_pnl_pct(self, leg: dict, now_price: float | None) -> float | None:
         """Single-leg version of _combined_pnl_pct, for an individually-managed leg's own TP/SL (see rule_schema.py's leg.exit)."""
         if now_price is None:
             return None
@@ -181,7 +182,7 @@ class CustomRuleBacktestEngine:
             return 0.0
         return pnl_amount / denom * 100.0
 
-    def discover_cycles(self, from_date: Optional[str], to_date: Optional[str]) -> List[dict]:
+    def discover_cycles(self, from_date: str | None, to_date: str | None) -> list[dict]:
         driving_mode = self._driving_expiry_mode()
         expiries = [
             r[0] for r in self.session.execute(
@@ -239,10 +240,10 @@ class CustomRuleBacktestEngine:
 
     def run(
         self,
-        from_date: Optional[str] = None,
-        to_date: Optional[str] = None,
-        on_progress: Optional[Callable[[int, int], None]] = None,
-    ) -> List[dict]:
+        from_date: str | None = None,
+        to_date: str | None = None,
+        on_progress: Callable[[int, int], None] | None = None,
+    ) -> list[dict]:
         """
         `on_progress(done, total)`, if given, is called after each cycle —
         used by the async /backtest route to update BacktestRun.progress_
@@ -263,7 +264,7 @@ class CustomRuleBacktestEngine:
             self.session.close()
         return results
 
-    def _combined_pnl_pct(self, legs: List[dict], now_prices: Dict[str, Optional[float]]) -> Optional[float]:
+    def _combined_pnl_pct(self, legs: list[dict], now_prices: dict[str, float | None]) -> float | None:
         """
         Generalization of strangle_pnl_pct() to N legs of mixed BUY/SELL:
         signed mark-to-market P&L (in currency) divided by total premium
@@ -284,7 +285,7 @@ class CustomRuleBacktestEngine:
             return 0.0
         return pnl_amount / denom * 100.0
 
-    def _attach_entry_greeks(self, legs: List[dict], futures_price_at_entry: float, entry_date: str) -> None:
+    def _attach_entry_greeks(self, legs: list[dict], futures_price_at_entry: float, entry_date: str) -> None:
         """
         Mutates each leg dict in place, adding a "greeks_at_entry" key —
         IV/Delta/Gamma/Theta/Vega/Rho solved from the leg's real entry
@@ -317,7 +318,7 @@ class CustomRuleBacktestEngine:
                 option_type=leg["option_type"],
             )
 
-    def _run_one_cycle(self, cycle: dict) -> Optional[dict]:
+    def _run_one_cycle(self, cycle: dict) -> dict | None:
         entry_date = cycle["entry_date"]
         self.feed.set_time(datetime.combine(date.fromisoformat(entry_date), _MARKET_OPEN))
 
@@ -365,7 +366,7 @@ class CustomRuleBacktestEngine:
         # re-querying. Only a genuine calendar spread (legs whose resolved
         # `expiry` actually differ from each other) needs its own per-leg
         # DB lookup here.
-        natural_exit_cache: Dict[str, Optional[str]] = {}
+        natural_exit_cache: dict[str, str | None] = {}
         cycle_exit_date = cycle.get("exit_date")
         leg_expiries = {leg.get("expiry") for leg in legs if leg.get("expiry")}
         uniform_expiry = len(leg_expiries) <= 1
@@ -395,15 +396,15 @@ class CustomRuleBacktestEngine:
 
         individually_managed = []
         combined_managed = []
-        for idx, leg in enumerate(legs):
+        for idx, _leg in enumerate(legs):
             rules_leg = self.rules["legs"][idx] if idx < len(self.rules["legs"]) else {}
             if rules_leg.get("exit"):
                 individually_managed.append(idx)
             else:
                 combined_managed.append(idx)
 
-        leg_exit_date: Dict[int, str] = {}
-        leg_exit_reason: Dict[int, str] = {}
+        leg_exit_date: dict[int, str] = {}
+        leg_exit_reason: dict[int, str] = {}
 
         # --- Individually-managed legs: each walked independently against
         # its OWN exit config and OWN contract's trading days. ---
@@ -455,12 +456,12 @@ class CustomRuleBacktestEngine:
         # one shared expiry, byte-identical to the old behavior. ---
         if combined_managed:
             combined_legs = [legs[i] for i in combined_managed]
-            earliest_leg = min(combined_legs, key=lambda l: l["_natural_exit_date"])
+            earliest_leg = min(combined_legs, key=lambda leg: leg["_natural_exit_date"])
             min_natural = earliest_leg["_natural_exit_date"]
             combined_exit_day, combined_exit_reason = min_natural, "EXPIRY"
 
             if strategy_take_profit_pct is not None or strategy_stop_loss_pct is not None or strategy_exit_days_before_expiry:
-                combined_tokens = [l["instrument_token"] for l in combined_legs]
+                combined_tokens = [leg["instrument_token"] for leg in combined_legs]
                 expiry_date_obj = date.fromisoformat(earliest_leg["expiry"])
                 for day in self._trading_days(earliest_leg["expiry"], entry_date, min_natural):
                     self.feed.set_time(datetime.combine(date.fromisoformat(day), _MARKET_OPEN))
@@ -554,12 +555,12 @@ class CustomRuleBacktestEngine:
             "exit_reason": overall_exit_reason,
             "spot_at_entry": result["spot_price"],
             "legs": [
-                {"instrument_type": l["instrument_type"], "option_type": l["option_type"], "strike": l["strike"],
-                 "transaction_type": l["transaction_type"], "quantity": l["quantity"], "entry_price": l["entry_price"],
-                 "expiry": l.get("expiry"), "exit_date": l.get("exit_date"), "exit_reason": l.get("exit_reason"),
-                 "exit_price": l.get("exit_price"), "exit_order_id": l.get("exit_order_id"),
-                 "greeks_at_entry": l.get("greeks_at_entry")}
-                for l in legs
+                {"instrument_type": leg["instrument_type"], "option_type": leg["option_type"], "strike": leg["strike"],
+                 "transaction_type": leg["transaction_type"], "quantity": leg["quantity"], "entry_price": leg["entry_price"],
+                 "expiry": leg.get("expiry"), "exit_date": leg.get("exit_date"), "exit_reason": leg.get("exit_reason"),
+                 "exit_price": leg.get("exit_price"), "exit_order_id": leg.get("exit_order_id"),
+                 "greeks_at_entry": leg.get("greeks_at_entry")}
+                for leg in legs
             ],
             "gross_pnl": round(gross_pnl, 2),
             "charges": round(charges_total, 2),

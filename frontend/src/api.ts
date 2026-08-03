@@ -8,6 +8,133 @@ export function wsUrl(path: string): string {
   return `${protocol}//${window.location.host}${path}`;
 }
 
+export interface BacktestCycle {
+  entry_date: string;
+  expiry: string;
+  exit_date: string;
+  exit_reason: string;
+  net_pnl: number;
+  pnl_pct_of_premium: number;
+  won: boolean;
+  liquid: boolean;
+  symbol?: string;
+}
+
+export interface PerSymbolBreakdown {
+  cycles_tested: number;
+  avg_return_pct: number;
+  win_rate_pct: number;
+}
+
+export interface BacktestResult {
+  run_id?: number;
+  strategy_id?: number;
+  cycles_tested: number;
+  avg_return_pct_of_premium: number;
+  win_rate_pct: number;
+  cycles: BacktestCycle[];
+  from_date?: string | null;
+  to_date?: string | null;
+  run_at?: string;
+  total_net_pnl?: number;
+  max_drawdown_pct?: number;
+  profit_factor?: number | null;
+  max_consecutive_wins?: number;
+  max_consecutive_losses?: number;
+  best_cycle_pct?: number | null;
+  worst_cycle_pct?: number | null;
+  avg_win_pct?: number | null;
+  avg_loss_pct?: number | null;
+  equity_curve?: number[];
+  // Added for the "world-class" backtest pass — Indian-market-specific
+  // (NIFTY 50 benchmark, India risk-free rate) risk/return stats.
+  equity_curve_compounded?: number[];
+  total_return_pct?: number | null;
+  cagr_pct?: number | null;
+  sharpe_ratio?: number | null;
+  sortino_ratio?: number | null;
+  calmar_ratio?: number | null;
+  max_drawdown_duration_days?: number | null;
+  max_drawdown_ongoing?: boolean;
+  exposure_pct?: number | null;
+  benchmark_return_pct?: number | null;
+  alpha_pct?: number | null;
+  sample_size_warning?: "limited" | "very_limited" | null;
+  per_symbol?: Record<string, PerSymbolBreakdown>;
+  skipped_symbols?: Record<string, string>;
+}
+
+export interface BacktestRunSummary {
+  run_id: number;
+  strategy_id: number;
+  status: "QUEUED" | "RUNNING" | "COMPLETED" | "FAILED";
+  from_date: string | null;
+  to_date: string | null;
+  progress_current: number;
+  progress_total: number | null;
+  error_message: string | null;
+  created_at: string | null;
+  completed_at: string | null;
+}
+
+export interface BacktestRunDetail extends BacktestRunSummary {
+  result: BacktestResult | null;
+}
+
+export interface PayoffSymbolResult {
+  max_profit: number | null;
+  max_profit_pct: number | null;
+  max_loss: number | null;
+  capital_basis?: number | null;
+  breakevens: number[];
+  breakevens_detail?: { price: number; pct_from_spot: number }[];
+  payoff_curve?: { price: number; pnl: number }[];
+  risk_reward_ratio: number | null;
+  probability_of_profit_pct: number | null;
+  net_premium: number;
+  spot_price?: number;
+  expiry?: string;
+  legs?: {
+    strike: number;
+    option_type: "CE" | "PE";
+    action: "BUY" | "SELL";
+    quantity: number;
+    current_price: number;
+  }[];
+  error?: string;
+}
+
+export interface PayoffResponse {
+  strategy_id: number;
+  symbols: Record<string, PayoffSymbolResult>;
+}
+
+export interface ExpiriesResponse {
+  symbol: string;
+  expiries: { date: string; label: "Weekly" | "Monthly" }[];
+}
+
+export interface PositionLeg {
+  id: number;
+  leg_index: number;
+  mode: "paper" | "live";
+  instrument_key: string;
+  instrument_type: string;
+  option_type: string | null;
+  strike: number | null;
+  expiry: string | null;
+  transaction_type: "BUY" | "SELL";
+  quantity: number;
+  entry_price: number;
+  exit_price: number | null;
+  order_id: string | null;
+  exit_order_id: string | null;
+  status: "OPEN" | "CLOSED";
+  exit_reason: string | null;
+  opened_at: string;
+  closed_at: string | null;
+}
+
 export interface User {
   id: number;
   username: string;
@@ -618,16 +745,16 @@ export const api = {
   getPortfolioGreeks: () => request<PortfolioGreeksResponse>('/api/custom-strategies/portfolio/greeks'),
   closeCustomStrategyPosition: (id: number) =>
     request<{ message: string }>(`/api/custom-strategies/positions/${id}/close`, { method: 'POST' }),
-  getCustomStrategyPositions: (id: number) => request<{ open: any[]; closed: any[] }>(`/api/custom-strategies/${id}/positions`),
-  getCustomStrategyPayoff: (id: number) => request<any>(`/api/custom-strategies/${id}/payoff`),
+  getCustomStrategyPositions: (id: number) => request<{ open: PositionLeg[]; closed: PositionLeg[] }>(`/api/custom-strategies/${id}/positions`),
+  getCustomStrategyPayoff: (id: number) => request<PayoffResponse>(`/api/custom-strategies/${id}/payoff`),
   getCustomStrategyBacktestRun: (strategyId: number, runId: number, options?: RequestInit) =>
-    request<any>(`/api/custom-strategies/${strategyId}/backtest/runs/${runId}`, options),
+    request<BacktestRunDetail>(`/api/custom-strategies/${strategyId}/backtest/runs/${runId}`, options),
   getCustomStrategyTemplateExpiries: (symbol: string) =>
-    request<string[]>(`/api/custom-strategies/templates/expiries?symbol=${encodeURIComponent(symbol)}`),
+    request<ExpiriesResponse>(`/api/custom-strategies/templates/expiries?symbol=${encodeURIComponent(symbol)}`),
   getCustomStrategyBacktestStatus: (id: number) =>
-    request<any>(`/api/custom-strategies/${id}/backtest`),
+    request<BacktestResult>(`/api/custom-strategies/${id}/backtest`),
   getCustomStrategyBacktestRuns: (id: number) =>
-    request<{ runs: any[] }>(`/api/custom-strategies/${id}/backtest/runs`),
+    request<{ runs: BacktestRunSummary[] }>(`/api/custom-strategies/${id}/backtest/runs`),
   runCustomStrategyBacktest: (id: number, fromDate: string | null, toDate: string | null, slippagePct: number = 0.1) =>
     request<{ run_id: number }>(`/api/custom-strategies/${id}/backtest`, {
       method: 'POST',

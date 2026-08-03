@@ -4,7 +4,6 @@ utils/position_tracker.py — Position tracking powered by SQLAlchemy & MySQL.
 Broker-agnostic and strategy-level — records what a strategy actually sold,
 independent of which broker executed it.
 """
-from typing import Optional, List
 
 from automate.db.engine import get_session
 from automate.db.models import Position
@@ -12,12 +11,12 @@ from automate.db.models import Position
 
 def record_open_position(
     strategy_name: str, mode: str, symbol: str, entry_date: str, expiry: str,
-    call_token: str, call_strike: int, call_entry_price: float, call_order_id: Optional[str],
-    put_token: str, put_strike: int, put_entry_price: float, put_order_id: Optional[str],
+    call_token: str, call_strike: int, call_entry_price: float, call_order_id: str | None,
+    put_token: str, put_strike: int, put_entry_price: float, put_order_id: str | None,
     quantity: int, product: str,
-    take_profit_pct: Optional[float], stop_loss_pct: Optional[float],
+    take_profit_pct: float | None, stop_loss_pct: float | None,
     exit_days_before_expiry: int = 1,
-    user_id: Optional[int] = None,
+    user_id: int | None = None,
 ) -> int:
     """
     Record a newly-opened strangle position in the MySQL database.
@@ -56,7 +55,7 @@ def record_open_position(
         return pos.id
 
 
-def get_open_positions(strategy_name: Optional[str] = None, mode: Optional[str] = None, user_id: Optional[int] = None) -> List[dict]:
+def get_open_positions(strategy_name: str | None = None, mode: str | None = None, user_id: int | None = None) -> list[dict]:
     """
     Return open positions as a list of dicts, optionally filtered by
     strategy and/or mode. user_id: pass a real id to scope to one
@@ -74,7 +73,7 @@ def get_open_positions(strategy_name: Optional[str] = None, mode: Optional[str] 
         return [p.to_dict() for p in query.all()]
 
 
-def get_closed_positions(limit: Optional[int] = 50, mode: Optional[str] = None, user_id: Optional[int] = None) -> List[dict]:
+def get_closed_positions(limit: int | None = 50, mode: str | None = None, user_id: int | None = None) -> list[dict]:
     """Most-recently-closed positions first. limit=None returns the full history (e.g. for wallet/ledger math)."""
     with get_session() as session:
         query = session.query(Position).filter_by(status="CLOSED")
@@ -88,7 +87,7 @@ def get_closed_positions(limit: Optional[int] = 50, mode: Optional[str] = None, 
         return [r.to_dict() for r in query.all()]
 
 
-def get_position(position_id: int) -> Optional[dict]:
+def get_position(position_id: int) -> dict | None:
     """Fetch a single position by ID (any status)."""
     with get_session() as session:
         pos = session.query(Position).filter_by(id=position_id).first()
@@ -106,7 +105,7 @@ def has_open_position(strategy_name: str, symbol: str) -> bool:
         return exists is not None
 
 
-def delete_closed_positions(mode: str, user_id: Optional[int] = None) -> int:
+def delete_closed_positions(mode: str, user_id: int | None = None) -> int:
     """
     Permanently delete every CLOSED position for one mode (used by the
     "reset paper trading history" control-panel action). Open positions are
@@ -128,7 +127,7 @@ def delete_closed_positions(mode: str, user_id: Optional[int] = None) -> int:
 def close_position(
     position_id: int, exit_date: str, exit_reason: str,
     call_exit_price: float, put_exit_price: float,
-    call_exit_order_id: Optional[str], put_exit_order_id: Optional[str],
+    call_exit_order_id: str | None, put_exit_order_id: str | None,
 ) -> None:
     """Mark a position CLOSED with its exit details."""
     with get_session() as session:

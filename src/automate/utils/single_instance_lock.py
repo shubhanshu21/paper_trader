@@ -22,7 +22,7 @@ BEFORE it happens.
 import fcntl
 import os
 from pathlib import Path
-from typing import Dict, IO
+from typing import IO
 
 from automate.utils.logger import get_logger
 
@@ -32,7 +32,7 @@ _LOCK_DIR = Path("logs")
 # Keeps each acquired lock's file handle open for the whole process
 # lifetime — closing it (or letting it get garbage collected) would
 # release the flock early. Never read, only holds references.
-_held_locks: Dict[str, IO] = {}
+_held_locks: dict[str, IO] = {}
 
 
 def acquire_singleton_lock(name: str) -> bool:
@@ -45,7 +45,7 @@ def acquire_singleton_lock(name: str) -> bool:
     """
     _LOCK_DIR.mkdir(parents=True, exist_ok=True)
     path = _LOCK_DIR / f"{name}.lock"
-    fh = open(path, "w")
+    fh = open(path, "w")  # noqa: SIM115 — must outlive this function; see _held_locks docstring above
     try:
         fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
