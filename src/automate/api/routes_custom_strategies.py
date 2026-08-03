@@ -372,6 +372,7 @@ def update_performance(strategy_id: int, performance: PerformanceUpdate, db: Ses
 class BacktestRequest(BaseModel):
     from_date: Optional[str] = None  # 'YYYY-MM-DD'
     to_date: Optional[str] = None
+    slippage_pct: Optional[float] = 0.1
 
 
 def _run_backtest_symbols(
@@ -581,9 +582,11 @@ async def backtest_strategy(strategy_id: int, request: BacktestRequest, db: Sess
                    "backtest, or paper-trade this strategy directly.",
         )
 
+    rules_for_check["slippage_pct"] = request.slippage_pct
+    rules_snapshot = json.dumps(rules_for_check)
     run = CustomBacktestRun(
         strategy_id=strategy_id, user_id=_current_user_id(user), status="QUEUED",
-        from_date=request.from_date, to_date=request.to_date, rules_snapshot_json=db_strategy.rules_json,
+        from_date=request.from_date, to_date=request.to_date, rules_snapshot_json=rules_snapshot,
     )
     db.add(run)
     db.commit()

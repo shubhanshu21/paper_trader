@@ -6,37 +6,59 @@ interface PayoffCurvePoint {
   pnl: number;
 }
 
+interface PayoffLeg {
+  strike: number;
+  option_type: "CE" | "PE";
+  action: "BUY" | "SELL";
+  quantity: number;
+  current_price: number;
+}
+
 interface PayoffDiagramChartProps {
   curve: PayoffCurvePoint[];
   spotPrice: number;
   breakevens: number[];
   height?: number;
+  legs?: PayoffLeg[];
+  expiry?: string;
+  daysRemaining?: number;
+  ivShift?: number;
 }
 
-/**
- * Hand-rolled SVG, not lightweight-charts (see TradingChart.tsx/
- * BacktestEquityChart.tsx for that library's usage elsewhere) —
- * lightweight-charts' x-axis is fundamentally time-based; a payoff
- * diagram's x-axis is the underlying PRICE at expiry, not time, so it's
- * the wrong tool here. Same hand-rolled-SVG approach this codebase
- * already uses for EquityCurveChart in StrategiesView.tsx.
- *
- * The profit/loss region is split into two colors (green above zero, red
- * below) via one clipPath per half rather than finding each zero-crossing
- * manually — the SAME area-under-curve polygon is filled twice, once
- * clipped to the y<0 half and once to the y>=0 half, which is correct
- * regardless of how many times a multi-leg strategy's piecewise-linear
- * payoff crosses zero (an iron condor crosses twice, a naked leg once).
- *
- * Interactive: hovering/touching the plot snaps a crosshair to the
- * nearest computed curve point and shows its exact price/P&L in a
- * floating tooltip — mouse position arrives in on-screen pixels
- * (clientX/clientY) but the curve is drawn in the SVG's own viewBox
- * units, so every pointer event is first converted via the SVG
- * element's live bounding rect (works under preserveAspectRatio="none"
- * responsive scaling, and needs no redraw-time coordinate caching).
- */
-export default function PayoffDiagramChart({ curve, spotPrice, breakevens, height = 220 }: PayoffDiagramChartProps) {
+function stdNormalCDF(x: number): number {
+  const t = 1 / (1 + 0.2316419 * Math.abs(x));
+  const d = 0.39894228 * Math.exp(-x * x / 2);
+  const p = d * t * (0.31938153 + t * (-0.356563782 + t * (1.781477937 + t * (-1.821255978 + t * 1.330274429))));
+  return x >= 0 ? 1 - p : p;
+}
+
+function blackScholes(S: number, K: number, T: number, r: number, sigma: number, type: "CE" | "PE"): number {
+  if (T <= 0) {
+    if (type === "CE") return Math.max(0, S - K);
+    return Math.max(0, K - S);
+  }
+  const d1 = (Math.log(S / K) + (r + (sigma * sigma) / 2) * T) / (sigma * Math.sqrt(T));
+  const d2 = d1 - sigma * Math.sqrt(T);
+  if (type === "CE") {
+    return S * stdNormalCDF(d1) - K * Math.exp(-r * T) * stdNormalCDF(d2);
+  } else {
+    return K * Math.exp(-r * T) * stdNormalCDF(-d2) - S * stdNormalCDF(-d1);
+  }
+}
+
+function solveIV(S: number, K: number, T: number, r: number, marketPrice: number, type: "CE" | "PE"): number {
+  let low = 0.0001, high = 5.0, mid = 0.2;
+  for (let i = 0; i < 40; i++) {
+    mid = (low + high) / 2;
+    const price = blackScholes(S, K, T, r, mid, type);
+    if (Math.abs(price - marketPrice) < 0.0001) return mid;
+    if (price > marketPrice) high = mid;
+    else low = mid;
+  }
+  return mid;
+}
+
+export default function PayoffDiagramChart({ curve, spotPrice, breakevens, height = 220, legs, expiry, daysRemaining, ivShift = 0 }: PayoffDiagramChartProps) {
   const svgRef = useRef<SVGSVGElement>(null);
   const [hoverIdx, setHoverIdx] = useState<number | null>(null);
 
@@ -59,10 +81,35 @@ export default function PayoffDiagramChart({ curve, spotPrice, breakevens, heigh
 
   const clipId = `payoff-clip-${Math.round(spotPrice * 100)}`;
 
+  const calculateT0Pnl = (price: number) => {
+    if (!legs || !expiry) return 0;
+    const r = 0.065; 
+    const totalDays = Math.max((new Date(expiry).getTime() - new Date().getTime()) / (1000 * 3600 * 24), 1);
+    const targetDays = daysRemaining !== undefined ? daysRemaining : totalDays;
+    const T_target = Math.max(targetDays, 0.001) / 365.0;
+    const T_initial = totalDays / 365.0;
+
+    let totalPnl = 0;
+    for (const leg of legs) {
+      const iv = solveIV(spotPrice, leg.strike, T_initial, r, leg.current_price, leg.option_type);
+      const adjustedIv = Math.max(0.01, iv * (1 + ivShift));
+      const theoreticalPrice = blackScholes(price, leg.strike, T_target, r, adjustedIv, leg.option_type);
+      const sign = leg.action === "BUY" ? 1 : -1;
+      const legPnl = (theoreticalPrice - leg.current_price) * leg.quantity * sign;
+      totalPnl += legPnl;
+    }
+    return totalPnl;
+  };
+
+  const t0Points = curve.map((p) => {
+    const t0Pnl = calculateT0Pnl(p.price);
+    return `${x(p.price)},${y(t0Pnl)}`;
+  }).join(" ");
+
   const nearestIndexForClientX = (clientX: number): number => {
     const rect = svgRef.current!.getBoundingClientRect();
-    const frac = (clientX - rect.left) / rect.width; // 0..1 across the rendered SVG
-    const svgX = frac * w; // back into viewBox units
+    const frac = (clientX - rect.left) / rect.width; 
+    const svgX = frac * w; 
     const price = minPrice + ((svgX - padX) / (w - padX * 2)) * (maxPrice - minPrice || 1);
     let nearest = 0, best = Infinity;
     for (let i = 0; i < curve.length; i++) {
@@ -82,7 +129,7 @@ export default function PayoffDiagramChart({ curve, spotPrice, breakevens, heigh
   const hoverX = hover ? x(hover.price) : 0;
   const hoverY = hover ? y(hover.pnl) : 0;
   const tooltipLeftPct = hover ? (hoverX / w) * 100 : 0;
-  const tooltipFlip = tooltipLeftPct > 65; // keep the tooltip on-screen near the right edge
+  const tooltipFlip = tooltipLeftPct > 65; 
 
   return (
     <div className="w-full relative select-none">
@@ -103,14 +150,11 @@ export default function PayoffDiagramChart({ curve, spotPrice, breakevens, heigh
           <clipPath id={`${clipId}-loss`}><rect x={0} y={yZero} width={w} height={height - yZero} /></clipPath>
         </defs>
 
-        {/* Zero P&L baseline */}
         <line x1={padX} y1={yZero} x2={w - padX} y2={yZero} stroke={C.border2} strokeWidth={1} />
 
-        {/* Current spot marker */}
         <line x1={spotX} y1={padY} x2={spotX} y2={height - padY} stroke={C.blue} strokeWidth={1} strokeDasharray="4,3" />
         <text x={spotX} y={padY - 4} fontSize={9} textAnchor="middle" fill={C.blue}>Spot ₹{spotPrice.toFixed(0)}</text>
 
-        {/* Breakeven markers */}
         {breakevens.filter((b) => b >= minPrice && b <= maxPrice).map((b) => (
           <g key={b}>
             <line x1={x(b)} y1={padY} x2={x(b)} y2={height - padY} stroke={C.faint} strokeWidth={1} strokeDasharray="2,3" />
@@ -118,13 +162,23 @@ export default function PayoffDiagramChart({ curve, spotPrice, breakevens, heigh
           </g>
         ))}
 
-        {/* Profit region (green) and loss region (red) — same polygon, clipped twice */}
         <polygon points={areaPoints} fill={C.green} opacity={0.15} clipPath={`url(#${clipId}-profit)`} />
         <polygon points={areaPoints} fill={C.red} opacity={0.15} clipPath={`url(#${clipId}-loss)`} />
 
         <polyline points={linePoints} fill="none" stroke={C.text} strokeWidth={1.5} strokeLinejoin="round" strokeLinecap="round" />
 
-        {/* Hover crosshair */}
+        {legs && expiry && (
+          <polyline
+            points={t0Points}
+            fill="none"
+            stroke={C.blue}
+            strokeWidth={1.5}
+            strokeDasharray="4,3"
+            strokeLinejoin="round"
+            strokeLinecap="round"
+          />
+        )}
+
         {hover && (
           <g pointerEvents="none">
             <line x1={hoverX} y1={padY} x2={hoverX} y2={height - padY} stroke={C.muted} strokeWidth={1} strokeDasharray="3,3" />
@@ -132,7 +186,6 @@ export default function PayoffDiagramChart({ curve, spotPrice, breakevens, heigh
           </g>
         )}
 
-        {/* Y-axis labels */}
         <text x={padX - 6} y={y(maxPnl) + 3} fontSize={9} textAnchor="end" fill={C.muted}>₹{maxPnl.toFixed(0)}</text>
         <text x={padX - 6} y={y(minPnl) + 3} fontSize={9} textAnchor="end" fill={C.muted}>₹{minPnl.toFixed(0)}</text>
       </svg>
@@ -148,9 +201,18 @@ export default function PayoffDiagramChart({ curve, spotPrice, breakevens, heigh
           }}
         >
           <div className="font-semibold text-gray-700">₹{hover.price.toFixed(2)}</div>
+          <div className="text-[10px] text-gray-400">At Expiry:</div>
           <div className="font-bold" style={{ color: hover.pnl >= 0 ? C.green : C.red }}>
             {hover.pnl >= 0 ? "+₹" : "-₹"}{Math.abs(hover.pnl).toFixed(2)}
           </div>
+          {legs && expiry && (
+            <>
+              <div className="text-[10px] text-gray-400 mt-1">Theoretical (T+0):</div>
+              <div className="font-bold text-blue-600">
+                {calculateT0Pnl(hover.price) >= 0 ? "+₹" : "-₹"}{Math.abs(calculateT0Pnl(hover.price)).toFixed(2)}
+              </div>
+            </>
+          )}
         </div>
       )}
     </div>

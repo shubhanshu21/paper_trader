@@ -605,10 +605,10 @@ export const api = {
     request<any>(`/api/custom-strategies/${id}/backtest`),
   getCustomStrategyBacktestRuns: (id: number) =>
     request<{ runs: any[] }>(`/api/custom-strategies/${id}/backtest/runs`),
-  runCustomStrategyBacktest: (id: number, fromDate: string | null, toDate: string | null) =>
+  runCustomStrategyBacktest: (id: number, fromDate: string | null, toDate: string | null, slippagePct: number = 0.1) =>
     request<{ run_id: number }>(`/api/custom-strategies/${id}/backtest`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ from_date: fromDate, to_date: toDate }),
+      body: JSON.stringify({ from_date: fromDate, to_date: toDate, slippage_pct: slippagePct }),
     }),
 };

@@ -1,9 +1,10 @@
 import { useState, useEffect, useRef, lazy, Suspense } from "react";
-import { X, ChevronRight, Check, Search, LayoutTemplate, AlertTriangle, RefreshCw } from "lucide-react";
+import { X, ChevronRight, Check, Search, LayoutTemplate, AlertTriangle, RefreshCw, Trash2, Zap, Plus, GitBranch, Table2 } from "lucide-react";
 import { C, FONT, formatTime12h, fmtDate, Select } from "./Common";
 import type { CustomStrategy, CustomStrategyRules } from "../types/customStrategy";
 import {
-  type LegForm, newLeg, type ConditionForm, newCondition, type EntryMode, type StrikeMode,
+  type LegForm, newLeg, type ConditionForm, newCondition, type EntryMode, type StrikeMode, strikeLabel,
+  type ExpiryModeOverride, type ConditionType,
 } from "../types/strategyBuilder";
 
 // @xyflow/react (the node canvas) is a sizeable dependency only needed
@@ -140,6 +141,7 @@ export default function StrategyBuilderModal({ onClose, onSuccess, editStrategy,
   const isEditing = !!editStrategy;
   const [step, setStep] = useState(1);
   const [canvasFullscreen, setCanvasFullscreen] = useState(false);
+  const [editorMode, setEditorMode] = useState<"canvas" | "table">("canvas");
   const modalRef = useRef<HTMLDivElement>(null);
 
   // Real browser Fullscreen API (hides the tab/address bar too — CSS
@@ -375,7 +377,415 @@ export default function StrategyBuilderModal({ onClose, onSuccess, editStrategy,
       setLoading(false);
     }
   };
+  const renderTableEditor = () => {
+    return (
+      <div className="space-y-4 overflow-y-auto flex-1 min-h-0 pr-1">
+        {/* Entry & Exit Cards */}
+        <div className="grid grid-cols-2 gap-4">
+          {/* Entry Trigger Card */}
+          <div className="rounded-xl border p-4 bg-white shadow-sm" style={{ borderColor: C.border2 }}>
+            <div className="flex items-center gap-1.5 text-xs font-bold text-indigo-700 uppercase tracking-wider mb-3">
+              <Zap size={13} /> Entry Trigger
+            </div>
+            <div className="space-y-3">
+              <div>
+                <label style={{ fontSize: 10, color: C.muted, marginBottom: 4, display: "block" }}>Entry Mode</label>
+                <Select
+                  value={entryMode}
+                  onChange={(v) => setEntryMode(v as EntryMode)}
+                  options={[
+                    { value: "IMMEDIATE", label: "Immediately" },
+                    { value: "AT_TIME", label: "At a specific time" },
+                    { value: "CONDITIONAL", label: "On a condition" },
+                  ]}
+                />
+              </div>
 
+              {entryMode === "AT_TIME" && (
+                <div>
+                  <label style={{ fontSize: 10, color: C.muted, marginBottom: 4, display: "block" }}>Entry Time (IST)</label>
+                  <input
+                    type="time"
+                    value={entryTime}
+                    onChange={(e) => setEntryTime(e.target.value)}
+                    className="w-full px-2.5 py-1.5 border rounded-lg text-xs font-semibold outline-none focus:border-orange-500"
+                    style={{ borderColor: C.border2 }}
+                  />
+                </div>
+              )}
+
+              {entryMode === "CONDITIONAL" && (
+                <div className="space-y-3 pt-2.5 border-t" style={{ borderColor: C.border }}>
+                  <div className="text-[11px] font-semibold text-indigo-600">Trigger Condition</div>
+                  <Select
+                    value={condition.type}
+                    onChange={(v) => setCondition(c => ({ ...c, type: v as ConditionType }))}
+                    options={[
+                      { value: "MA_CROSSOVER", label: "Moving-average crossover" },
+                      { value: "IV_RANK", label: "IV rank" },
+                    ]}
+                  />
+                  {condition.type === "MA_CROSSOVER" ? (
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <label style={{ fontSize: 10, color: C.muted, marginBottom: 4, display: "block" }}>Period (days)</label>
+                        <input
+                          type="number"
+                          min={2}
+                          value={condition.ma_period_days}
+                          onChange={(e) => setCondition(c => ({ ...c, ma_period_days: e.target.value }))}
+                          className="w-full px-2 py-1.5 border rounded-lg text-xs font-semibold outline-none focus:border-orange-500"
+                          style={{ borderColor: C.border2 }}
+                        />
+                      </div>
+                      <div>
+                        <label style={{ fontSize: 10, color: C.muted, marginBottom: 4, display: "block" }}>Price direction</label>
+                        <Select
+                          value={condition.ma_direction}
+                          onChange={(v) => setCondition(c => ({ ...c, ma_direction: v as "ABOVE" | "BELOW" }))}
+                          options={[
+                            { value: "ABOVE", label: "Above MA" },
+                            { value: "BELOW", label: "Below MA" },
+                          ]}
+                        />
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <label style={{ fontSize: 10, color: C.muted, marginBottom: 4, display: "block" }}>IV rank is</label>
+                        <Select
+                          value={condition.iv_operator}
+                          onChange={(v) => setCondition(c => ({ ...c, iv_operator: v as "ABOVE" | "BELOW" }))}
+                          options={[
+                            { value: "ABOVE", label: "Above" },
+                            { value: "BELOW", label: "Below" },
+                          ]}
+                        />
+                      </div>
+                      <div>
+                        <label style={{ fontSize: 10, color: C.muted, marginBottom: 4, display: "block" }}>Threshold (0-100)</label>
+                        <input
+                          type="number"
+                          min={0}
+                          max={100}
+                          value={condition.iv_threshold}
+                          onChange={(e) => setCondition(c => ({ ...c, iv_threshold: e.target.value }))}
+                          className="w-full px-2 py-1.5 border rounded-lg text-xs font-semibold outline-none focus:border-orange-500"
+                          style={{ borderColor: C.border2 }}
+                        />
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Combined Exit Rules Card */}
+          <div className="rounded-xl border p-4 bg-white shadow-sm" style={{ borderColor: C.border2 }}>
+            <div className="flex items-center gap-1.5 text-xs font-bold text-emerald-700 uppercase tracking-wider mb-3">
+              <ChevronRight size={13} className="rotate-90" /> Combined Exit Rules
+            </div>
+            <div className="space-y-3">
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label style={{ fontSize: 10, color: C.muted, marginBottom: 4, display: "block" }}>Take Profit %</label>
+                  <input
+                    type="number"
+                    value={takeProfitPct}
+                    onChange={(e) => setTakeProfitPct(e.target.value)}
+                    placeholder="None"
+                    className="w-full px-2.5 py-1.5 border rounded-lg text-xs font-semibold outline-none focus:border-orange-500"
+                    style={{ borderColor: C.border2 }}
+                  />
+                </div>
+                <div>
+                  <label style={{ fontSize: 10, color: C.muted, marginBottom: 4, display: "block" }}>Stop Loss %</label>
+                  <input
+                    type="number"
+                    value={stopLossPct}
+                    onChange={(e) => setStopLossPct(e.target.value)}
+                    placeholder="None"
+                    className="w-full px-2.5 py-1.5 border rounded-lg text-xs font-semibold outline-none focus:border-orange-500"
+                    style={{ borderColor: C.border2 }}
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label style={{ fontSize: 10, color: C.muted, marginBottom: 4, display: "block" }}>Exit at time (optional)</label>
+                <input
+                  type="time"
+                  value={exitTime}
+                  onChange={(e) => setExitTime(e.target.value)}
+                  className="w-full px-2.5 py-1.5 border rounded-lg text-xs font-semibold outline-none focus:border-orange-500"
+                  style={{ borderColor: C.border2 }}
+                />
+              </div>
+
+              <div>
+                <label style={{ fontSize: 10, color: C.muted, marginBottom: 4, display: "block" }}>Exit N days before expiry</label>
+                <input
+                  type="number"
+                  min={0}
+                  value={exitDaysBeforeExpiry}
+                  onChange={(e) => setExitDaysBeforeExpiry(parseInt(e.target.value) || 0)}
+                  className="w-full px-2.5 py-1.5 border rounded-lg text-xs font-semibold outline-none focus:border-orange-500"
+                  style={{ borderColor: C.border2 }}
+                />
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Option Legs Table */}
+        <div className="rounded-xl border bg-white shadow-sm overflow-hidden" style={{ borderColor: C.border2 }}>
+          <div className="px-4 py-3 bg-gray-50 border-b font-semibold text-xs text-gray-700 uppercase tracking-wide flex items-center justify-between" style={{ borderColor: C.border2 }}>
+            <span>Option / Future Legs</span>
+            <button
+              onClick={addLeg}
+              disabled={legs.length >= 8}
+              className="flex items-center gap-1 px-2.5 py-1 rounded bg-orange-500 hover:bg-orange-600 text-white text-[10px] font-bold transition-colors disabled:opacity-40"
+            >
+              <Plus size={11} /> Add Leg
+            </button>
+          </div>
+
+          <div className="overflow-x-auto">
+            <table className="w-full text-left border-collapse">
+              <thead>
+                <tr className="bg-slate-50 border-b text-[10px] font-bold text-gray-400 uppercase tracking-wider" style={{ borderColor: C.border2 }}>
+                  <th className="py-2.5 px-3">Leg</th>
+                  <th className="py-2.5 px-2">Type / Action</th>
+                  <th className="py-2.5 px-2">Strike Selection</th>
+                  <th className="py-2.5 px-2">Sizing</th>
+                  <th className="py-2.5 px-2">Expiry Override</th>
+                  <th className="py-2.5 px-2">Per-Leg Exits</th>
+                  <th className="py-2.5 px-3 text-center">Remove</th>
+                </tr>
+              </thead>
+              <tbody>
+                {legs.map((leg, idx) => {
+                  const isEquity = leg.instrument_type === "EQUITY";
+                  const hasCalendarSpread = legs.length > 1;
+
+                  return (
+                    <tr key={idx} className="border-b text-xs hover:bg-slate-50 transition-colors" style={{ borderColor: C.border }}>
+                      {/* Leg # label */}
+                      <td className="py-3 px-3 font-bold text-gray-700">
+                        #{idx + 1}
+                      </td>
+
+                      {/* Instrument, Buy/Sell, CE/PE Toggles */}
+                      <td className="py-3 px-2">
+                        <div className="space-y-1.5">
+                          {/* Option/Equity Selector */}
+                          <div className="flex rounded border overflow-hidden" style={{ borderColor: C.border2, width: 140 }}>
+                            {(["OPTION", "EQUITY"] as const).map((t) => (
+                              <button
+                                key={t}
+                                onClick={() => updateLeg(idx, { instrument_type: t })}
+                                className={`flex-1 py-1 text-[10px] font-semibold ${leg.instrument_type === t ? "bg-gray-700 text-white" : "bg-white text-gray-600"}`}
+                              >
+                                {t === "OPTION" ? "Option" : "Equity"}
+                              </button>
+                            ))}
+                          </div>
+
+                          <div className="flex gap-1">
+                            {/* Buy/Sell */}
+                            <div className="flex rounded border overflow-hidden" style={{ borderColor: C.border2, width: 80 }}>
+                              {(["BUY", "SELL"] as const).map((a) => (
+                                <button
+                                  key={a}
+                                  onClick={() => updateLeg(idx, { action: a })}
+                                  className={`flex-1 py-0.5 text-[10px] font-bold ${leg.action === a ? (a === "BUY" ? "bg-blue-500 text-white" : "bg-red-500 text-white") : "bg-white text-gray-600"}`}
+                                >
+                                  {a}
+                                </button>
+                              ))}
+                            </div>
+
+                            {/* CE/PE */}
+                            {!isEquity && (
+                              <div className="flex rounded border overflow-hidden" style={{ borderColor: C.border2, width: 60 }}>
+                                {(["CE", "PE"] as const).map((o) => (
+                                  <button
+                                    key={o}
+                                    onClick={() => updateLeg(idx, { option_type: o })}
+                                    className={`flex-1 py-0.5 text-[10px] font-bold ${leg.option_type === o ? "bg-orange-500 text-white" : "bg-white text-gray-600"}`}
+                                  >
+                                    {o}
+                                  </button>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      </td>
+
+                      {/* Strike Mode and Value */}
+                      <td className="py-3 px-2">
+                        {isEquity ? (
+                          <span className="text-gray-400 italic text-[11px]">N/A (Equity Spot)</span>
+                        ) : (
+                          <div className="space-y-1.5" style={{ width: 140 }}>
+                            <Select
+                              value={leg.strike_mode}
+                              onChange={(v) => updateLeg(idx, { strike_mode: v as StrikeMode })}
+                              options={[
+                                { value: "ATM", label: "ATM" },
+                                { value: "OTM_PERCENT", label: "% OTM" },
+                                { value: "OTM_POINTS", label: "Points OTM" },
+                                { value: "FIXED", label: "Exact strike" },
+                              ]}
+                            />
+                            {leg.strike_mode !== "ATM" ? (
+                              <input
+                                type="number"
+                                value={leg.strike_value}
+                                onChange={(e) => updateLeg(idx, { strike_value: e.target.value })}
+                                placeholder={leg.strike_mode === "FIXED" ? "Price" : "Offset"}
+                                className="w-full px-2 py-1 border rounded text-[11px] outline-none focus:border-orange-500"
+                                style={{ borderColor: C.border2 }}
+                              />
+                            ) : (
+                              <div className="text-[10px] text-gray-400 italic">{strikeLabel(leg)}</div>
+                            )}
+                          </div>
+                        )}
+                      </td>
+
+                      {/* Sizing (Lots/Risk %) */}
+                      <td className="py-3 px-2">
+                        <div className="space-y-1.5" style={{ width: 120 }}>
+                          <div className="flex rounded border overflow-hidden" style={{ borderColor: C.border2 }}>
+                            {(["LOTS", "RISK_PCT"] as const).map((m) => (
+                              <button
+                                key={m}
+                                onClick={() => updateLeg(idx, { sizing_mode: m })}
+                                className={`flex-1 py-0.5 text-[9px] font-bold ${leg.sizing_mode === m ? "bg-gray-700 text-white" : "bg-white text-gray-600"}`}
+                              >
+                                {m === "RISK_PCT" ? "Risk %" : (isEquity ? "Shares" : "Lots")}
+                              </button>
+                            ))}
+                          </div>
+                          {leg.sizing_mode === "LOTS" ? (
+                            <input
+                              type="number"
+                              min={1}
+                              value={leg.lots}
+                              onChange={(e) => updateLeg(idx, { lots: parseInt(e.target.value) || 1 })}
+                              className="w-full px-2 py-1 border rounded text-[11px] outline-none focus:border-orange-500"
+                              style={{ borderColor: C.border2 }}
+                            />
+                          ) : (
+                            <input
+                              type="number"
+                              min={0.1}
+                              step={0.1}
+                              value={leg.risk_pct}
+                              placeholder="% cap"
+                              onChange={(e) => updateLeg(idx, { risk_pct: e.target.value })}
+                              className="w-full px-2 py-1 border rounded text-[11px] outline-none focus:border-orange-500"
+                              style={{ borderColor: C.border2 }}
+                            />
+                          )}
+                        </div>
+                      </td>
+
+                      {/* Expiry mode override */}
+                      <td className="py-3 px-2">
+                        {!isEquity && hasCalendarSpread ? (
+                          <div style={{ width: 120 }}>
+                            <Select
+                              value={leg.expiry_mode || "__default"}
+                              onChange={(v) => updateLeg(idx, { expiry_mode: (v === "__default" ? "" : v) as ExpiryModeOverride })}
+                              options={[
+                                { value: "__default", label: "Strategy default" },
+                                { value: "WEEKLY", label: "Weekly cycle" },
+                                { value: "MONTHLY", label: "Monthly cycle" },
+                              ]}
+                            />
+                          </div>
+                        ) : (
+                          <span className="text-gray-400 italic text-[11px]">Default</span>
+                        )}
+                      </td>
+
+                      {/* Per-leg exits */}
+                      <td className="py-3 px-2">
+                        <div className="space-y-1.5" style={{ width: 160 }}>
+                          <div className="grid grid-cols-2 gap-1">
+                            <input
+                              type="number"
+                              placeholder="TP %"
+                              value={leg.leg_take_profit_pct}
+                              onChange={(e) => updateLeg(idx, { leg_take_profit_pct: e.target.value })}
+                              className="px-2 py-0.5 border rounded text-[10px] outline-none focus:border-orange-500"
+                              style={{ borderColor: C.border2 }}
+                            />
+                            <input
+                              type="number"
+                              placeholder="SL %"
+                              value={leg.leg_stop_loss_pct}
+                              onChange={(e) => updateLeg(idx, { leg_stop_loss_pct: e.target.value })}
+                              className="px-2 py-0.5 border rounded text-[10px] outline-none focus:border-orange-500"
+                              style={{ borderColor: C.border2 }}
+                            />
+                          </div>
+                          <label className="flex items-center gap-1 text-[10px] text-gray-600 cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={leg.trailing_enabled}
+                              onChange={(e) => updateLeg(idx, { trailing_enabled: e.target.checked })}
+                            />
+                            <span>Trailing Stop</span>
+                          </label>
+                          {leg.trailing_enabled && (
+                            <div className="grid grid-cols-2 gap-1">
+                              <input
+                                type="number"
+                                placeholder="Amt"
+                                value={leg.trail_amount}
+                                onChange={(e) => updateLeg(idx, { trail_amount: e.target.value })}
+                                className="px-2 py-0.5 border rounded text-[10px] outline-none focus:border-orange-500"
+                                style={{ borderColor: C.border2 }}
+                              />
+                              <Select
+                                value={leg.trail_type}
+                                onChange={(v) => updateLeg(idx, { trail_type: v as "points" | "percent" })}
+                                options={[
+                                  { value: "points", label: "Pts" },
+                                  { value: "percent", label: "%" },
+                                ]}
+                              />
+                            </div>
+                          )}
+                        </div>
+                      </td>
+
+                      {/* Remove button */}
+                      <td className="py-3 px-3 text-center">
+                        <button
+                          onClick={() => removeLeg(idx)}
+                          disabled={legs.length <= 1}
+                          className="text-red-500 hover:text-red-700 disabled:opacity-30 focus:outline-none transition-colors"
+                        >
+                          <Trash2 size={14} />
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    );
+  };
   const availableOptions = instrumentType === "INDEX" ? symbolsList.indices : instrumentType === "COMMODITY" ? symbolsList.commodities : symbolsList.stocks;
   const instrumentTypeNoun = instrumentType === "INDEX" ? "Indices" : instrumentType === "COMMODITY" ? "Commodities" : "Stocks";
   const filteredOptions = availableOptions.filter(
@@ -384,7 +794,7 @@ export default function StrategyBuilderModal({ onClose, onSuccess, editStrategy,
       !selectedSymbols.includes(s)
   ).slice(0, 10);
 
-  const canvasIsFullscreen = step === 2 && canvasFullscreen;
+  const canvasIsFullscreen = step === 2 && editorMode === "canvas" && canvasFullscreen;
 
   return (
     <div className={`fixed inset-0 bg-black flex items-center justify-center z-50 ${canvasIsFullscreen ? "bg-opacity-100 p-0" : "bg-opacity-50"}`}>
@@ -548,54 +958,75 @@ export default function StrategyBuilderModal({ onClose, onSuccess, editStrategy,
               <div className="flex items-start justify-between gap-4 shrink-0 pb-3">
                 <div>
                   <h3 className="text-sm font-semibold text-gray-700">Step 2 — Design your strategy</h3>
-                  <p className="text-xs text-gray-500 mt-0.5">Drag nodes around, add legs, and edit any field inline. Symbol → Entry → each Leg → Combined exit. A leg's own exit/trailing overrides the combined exit for that leg only.</p>
+                  <p className="text-xs text-gray-500 mt-0.5">
+                    {editorMode === "canvas"
+                      ? "Drag nodes around, add legs, and edit any field inline. Symbol → Entry → each Leg → Combined exit. A leg's own exit/trailing overrides the combined exit for that leg only."
+                      : "Edit entry/exit rules and every leg in a compact table. A leg's own exit/trailing overrides the combined exit for that leg only."}
+                  </p>
                 </div>
-                <div className="shrink-0">
-                  <div className="text-[11px] text-gray-500 mb-1 text-right">Default expiry</div>
-                  <div className="flex rounded overflow-hidden border" style={{ borderColor: C.border2 }}>
-                    {(["WEEKLY", "MONTHLY"] as const).map((mode) => (
-                      <button key={mode} onClick={() => setExpiryMode(mode)}
-                        className={`px-3 py-1.5 text-xs font-semibold ${expiryMode === mode ? "bg-orange-500 text-white" : "bg-white text-gray-600"}`}>
-                        {mode === "WEEKLY" ? "Weekly" : "Monthly"}
+                <div className="flex items-start gap-3 shrink-0">
+                  <div>
+                    <div className="text-[11px] text-gray-500 mb-1 text-right">Layout</div>
+                    <div className="flex rounded overflow-hidden border" style={{ borderColor: C.border2 }}>
+                      <button onClick={() => setEditorMode("canvas")}
+                        className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold ${editorMode === "canvas" ? "bg-orange-500 text-white" : "bg-white text-gray-600"}`}>
+                        <GitBranch size={13} /> Canvas
                       </button>
-                    ))}
+                      <button onClick={() => setEditorMode("table")}
+                        className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold ${editorMode === "table" ? "bg-orange-500 text-white" : "bg-white text-gray-600"}`}>
+                        <Table2 size={13} /> Table
+                      </button>
+                    </div>
                   </div>
-                  {expiryPreview[0] && <div className="text-[10px] text-gray-400 mt-1 text-right">Next: {fmtDate((expiryMode === "WEEKLY" ? expiryPreview[0] : expiryPreview.find((e) => e.label === "Monthly")) ?.date ?? expiryPreview[0].date)}</div>}
+                  <div>
+                    <div className="text-[11px] text-gray-500 mb-1 text-right">Default expiry</div>
+                    <div className="flex rounded overflow-hidden border" style={{ borderColor: C.border2 }}>
+                      {(["WEEKLY", "MONTHLY"] as const).map((mode) => (
+                        <button key={mode} onClick={() => setExpiryMode(mode)}
+                          className={`px-3 py-1.5 text-xs font-semibold ${expiryMode === mode ? "bg-orange-500 text-white" : "bg-white text-gray-600"}`}>
+                          {mode === "WEEKLY" ? "Weekly" : "Monthly"}
+                        </button>
+                      ))}
+                    </div>
+                    {expiryPreview[0] && <div className="text-[10px] text-gray-400 mt-1 text-right">Next: {fmtDate((expiryMode === "WEEKLY" ? expiryPreview[0] : expiryPreview.find((e) => e.label === "Monthly")) ?.date ?? expiryPreview[0].date)}</div>}
+                  </div>
                 </div>
               </div>
 
               <div className="flex-1 min-h-0">
-                <Suspense fallback={
-                  <div className="flex items-center justify-center h-full" style={{ background: "#fafafa", borderRadius: 12, border: `1px solid ${C.border2}` }}>
-                    <RefreshCw size={20} className="animate-spin" style={{ color: C.orange }} />
-                  </div>
-                }>
-                  <StrategyFlowCanvas
-                    symbols={selectedSymbols}
-                    legs={legs}
-                    onUpdateLeg={updateLeg}
-                    onRemoveLeg={removeLeg}
-                    onAddLeg={addLeg}
-                    entryMode={entryMode}
-                    onEntryModeChange={setEntryMode}
-                    entryTime={entryTime}
-                    onEntryTimeChange={setEntryTime}
-                    condition={condition}
-                    onConditionChange={(patch) => setCondition((c) => ({ ...c, ...patch }))}
-                    takeProfitPct={takeProfitPct}
-                    stopLossPct={stopLossPct}
-                    exitTime={exitTime}
-                    exitDaysBeforeExpiry={exitDaysBeforeExpiry}
-                    onExitChange={(patch) => {
-                      if (patch.takeProfitPct !== undefined) setTakeProfitPct(patch.takeProfitPct);
-                      if (patch.stopLossPct !== undefined) setStopLossPct(patch.stopLossPct);
-                      if (patch.exitTime !== undefined) setExitTime(patch.exitTime);
-                      if (patch.exitDaysBeforeExpiry !== undefined) setExitDaysBeforeExpiry(patch.exitDaysBeforeExpiry);
-                    }}
-                    fullscreen={canvasFullscreen}
-                    onToggleFullscreen={toggleCanvasFullscreen}
-                  />
-                </Suspense>
+                {editorMode === "table" ? renderTableEditor() : (
+                  <Suspense fallback={
+                    <div className="flex items-center justify-center h-full" style={{ background: "#fafafa", borderRadius: 12, border: `1px solid ${C.border2}` }}>
+                      <RefreshCw size={20} className="animate-spin" style={{ color: C.orange }} />
+                    </div>
+                  }>
+                    <StrategyFlowCanvas
+                      symbols={selectedSymbols}
+                      legs={legs}
+                      onUpdateLeg={updateLeg}
+                      onRemoveLeg={removeLeg}
+                      onAddLeg={addLeg}
+                      entryMode={entryMode}
+                      onEntryModeChange={setEntryMode}
+                      entryTime={entryTime}
+                      onEntryTimeChange={setEntryTime}
+                      condition={condition}
+                      onConditionChange={(patch) => setCondition((c) => ({ ...c, ...patch }))}
+                      takeProfitPct={takeProfitPct}
+                      stopLossPct={stopLossPct}
+                      exitTime={exitTime}
+                      exitDaysBeforeExpiry={exitDaysBeforeExpiry}
+                      onExitChange={(patch) => {
+                        if (patch.takeProfitPct !== undefined) setTakeProfitPct(patch.takeProfitPct);
+                        if (patch.stopLossPct !== undefined) setStopLossPct(patch.stopLossPct);
+                        if (patch.exitTime !== undefined) setExitTime(patch.exitTime);
+                        if (patch.exitDaysBeforeExpiry !== undefined) setExitDaysBeforeExpiry(patch.exitDaysBeforeExpiry);
+                      }}
+                      fullscreen={canvasFullscreen}
+                      onToggleFullscreen={toggleCanvasFullscreen}
+                    />
+                  </Suspense>
+                )}
               </div>
 
               {findDuplicateLegPairs(legs).length > 0 && (

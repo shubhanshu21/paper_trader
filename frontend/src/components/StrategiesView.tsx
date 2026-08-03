@@ -151,6 +151,13 @@ interface PayoffSymbolResult {
   net_premium: number;
   spot_price?: number;
   expiry?: string;
+  legs?: {
+    strike: number;
+    option_type: "CE" | "PE";
+    action: "BUY" | "SELL";
+    quantity: number;
+    current_price: number;
+  }[];
   error?: string;
 }
 
@@ -247,9 +254,10 @@ const BACKTEST_PRESETS: { label: string; from: string | null; to: string | null 
 
 function BacktestRangeModal({
   strategy, onClose, onRun,
-}: { strategy: CustomStrategy; onClose: () => void; onRun: (fromDate: string, toDate: string) => void }) {
+}: { strategy: CustomStrategy; onClose: () => void; onRun: (fromDate: string, toDate: string, slippagePct: number) => void }) {
   const [fromDate, setFromDate] = useState(BACKTEST_PRESETS[1].from || "");
   const [toDate, setToDate] = useState("");
+  const [slippagePct, setSlippagePct] = useState(0.1);
   const [activePreset, setActivePreset] = useState<string | null>(BACKTEST_PRESETS[1].label);
 
   const applyPreset = (preset: typeof BACKTEST_PRESETS[number]) => {
@@ -290,6 +298,20 @@ function BacktestRangeModal({
           </div>
         </div>
 
+        <div className="mt-4">
+          <label className="block text-xs font-medium text-gray-500 mb-1.5">Slippage (% per trade)</label>
+          <input
+            type="number"
+            step="0.01"
+            min="0"
+            max="5"
+            value={slippagePct}
+            onChange={(e) => setSlippagePct(parseFloat(e.target.value) || 0)}
+            className="w-full px-3 py-1.5 border rounded-lg text-xs font-semibold outline-none focus:border-orange-500 transition-colors"
+            style={{ borderColor: C.border2 }}
+          />
+        </div>
+
         <div className="flex justify-end gap-2 mt-6">
           <button
             onClick={onClose}
@@ -298,7 +320,7 @@ function BacktestRangeModal({
             Cancel
           </button>
           <button
-            onClick={() => onRun(fromDate, toDate)}
+            onClick={() => onRun(fromDate, toDate, slippagePct)}
             className="flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-semibold rounded-lg text-white transition-colors focus:outline-none hover:opacity-90"
             style={{ backgroundColor: C.orange }}
           >
@@ -774,6 +796,8 @@ export default function StrategiesView({
 
   const [payoff, setPayoff] = useState<PayoffResponse | null>(null);
   const [payoffLoading, setPayoffLoading] = useState(false);
+  const [ivShift, setIvShift] = useState(0);
+  const [daysRemaining, setDaysRemaining] = useState<number | null>(null);
 
   const fetchPayoff = async (strategy: CustomStrategy) => {
     setPayoffLoading(true);
@@ -789,8 +813,20 @@ export default function StrategiesView({
 
   useEffect(() => {
     setPayoff(null);
+    setIvShift(0);
+    setDaysRemaining(null);
     if (selectedStrategy && selectedStrategy.rules) fetchPayoff(selectedStrategy);
   }, [selectedStrategy?.id]);
+
+  useEffect(() => {
+    if (payoff && Object.keys(payoff.symbols).length > 0) {
+      const firstSym = Object.values(payoff.symbols)[0];
+      if (firstSym && !firstSym.error && firstSym.expiry) {
+        const totalDays = Math.max((new Date(firstSym.expiry).getTime() - new Date().getTime()) / (1000 * 3600 * 24), 1);
+        setDaysRemaining(Math.round(totalDays));
+      }
+    }
+  }, [payoff]);
 
   // Live (WebSocket-pushed) open legs across all strategies, filtered to
   // the one currently selected — real-time LTP/P&L, no polling.
@@ -967,7 +1003,7 @@ export default function StrategiesView({
   // Ref to the current poll's AbortController so navigation / unmount can cancel it.
   const backtestPollAbortRef = useRef<AbortController | null>(null);
 
-  const runBacktest = async (strategy: CustomStrategy, fromDate?: string, toDate?: string) => {
+  const runBacktest = async (strategy: CustomStrategy, fromDate?: string, toDate?: string, slippagePct?: number) => {
     // Cancel any previous in-flight poll before starting a new one
     backtestPollAbortRef.current?.abort();
     backtestPollAbortRef.current = new AbortController();
@@ -976,7 +1012,7 @@ export default function StrategiesView({
     setBacktestResult(null);
     setBacktestError("");
     try {
-      const data = await api.runCustomStrategyBacktest(strategy.id, fromDate || null, toDate || null);
+      const data = await api.runCustomStrategyBacktest(strategy.id, fromDate || null, toDate || null, slippagePct);
       if (data.run_id) {
         pollBacktestRun(strategy, data.run_id, backtestPollAbortRef.current.signal); // not awaited — polls in the background, updates state as it goes
       } else {
@@ -1511,12 +1547,61 @@ export default function StrategiesView({
                                 <>
                                 {r.payoff_curve && r.payoff_curve.length >= 2 && r.spot_price != null && (
                                   <div className="mb-4">
-                                    <div className="text-[11px] text-gray-400 mb-1.5">{symbol} · Payoff at Expiry</div>
+                                    <div className="flex items-center justify-between mb-2">
+                                      <div className="text-[11px] text-gray-400">{symbol} · Payoff Diagram</div>
+                                      <div className="flex items-center gap-1.5 text-[10px] text-gray-400">
+                                        <span className="w-2.5 h-1.5 inline-block bg-gray-700 rounded" /> Expiry
+                                        <span className="w-2.5 h-1.5 inline-block bg-blue-500 rounded ml-2" style={{ borderStyle: "dashed" }} /> Pre-Expiry (T+0)
+                                      </div>
+                                    </div>
                                     <PayoffDiagramChart
                                       curve={r.payoff_curve}
                                       spotPrice={r.spot_price}
                                       breakevens={r.breakevens_detail?.map((b) => b.price) ?? r.breakevens}
+                                      legs={r.legs}
+                                      expiry={r.expiry}
+                                      daysRemaining={daysRemaining !== null ? daysRemaining : undefined}
+                                      ivShift={ivShift}
                                     />
+                                    {/* Sliders for dynamic options evaluation */}
+                                    <div className="grid grid-cols-2 gap-6 mt-4 p-3 bg-slate-50 border rounded-xl" style={{ borderColor: C.border2 }}>
+                                      <div>
+                                        <div className="flex items-center justify-between text-[11px] font-semibold text-gray-600 mb-1">
+                                          <span>Target Day: {daysRemaining !== null ? `${daysRemaining} days left` : "Expiry"}</span>
+                                          {r.expiry && (
+                                            <span className="text-[10px] font-normal text-gray-400">
+                                              (Expiry: {r.expiry})
+                                            </span>
+                                          )}
+                                        </div>
+                                        <input
+                                          type="range"
+                                          min="0"
+                                          max={(() => {
+                                            const maxVal = r.expiry ? Math.max((new Date(r.expiry).getTime() - new Date().getTime()) / (1000 * 3600 * 24), 1) : 30;
+                                            return Math.round(maxVal);
+                                          })()}
+                                          value={daysRemaining ?? 0}
+                                          onChange={(e) => setDaysRemaining(parseInt(e.target.value))}
+                                          className="w-full h-1 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-blue-500"
+                                        />
+                                      </div>
+                                      <div>
+                                        <div className="flex items-center justify-between text-[11px] font-semibold text-gray-600 mb-1">
+                                          <span>IV Shift: {ivShift >= 0 ? "+" : ""}{(ivShift * 100).toFixed(0)}%</span>
+                                          <button onClick={() => setIvShift(0)} className="text-[10px] font-normal text-blue-500 hover:underline focus:outline-none">Reset</button>
+                                        </div>
+                                        <input
+                                          type="range"
+                                          min="-0.5"
+                                          max="0.5"
+                                          step="0.05"
+                                          value={ivShift}
+                                          onChange={(e) => setIvShift(parseFloat(e.target.value))}
+                                          className="w-full h-1 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-blue-500"
+                                        />
+                                      </div>
+                                    </div>
                                   </div>
                                 )}
                                 <div className="grid grid-cols-5 gap-4">
@@ -1763,8 +1848,8 @@ export default function StrategiesView({
         <BacktestRangeModal
           strategy={backtestRangeTarget}
           onClose={() => setBacktestRangeTarget(null)}
-          onRun={(fromDate, toDate) => {
-            runBacktest(backtestRangeTarget, fromDate, toDate);
+          onRun={(fromDate, toDate, slippagePct) => {
+            runBacktest(backtestRangeTarget, fromDate, toDate, slippagePct);
             setBacktestRangeTarget(null);
           }}
         />
