@@ -33,6 +33,10 @@ class PaperBroker(BaseBroker):
         # as "DRY_RUN" vs "PLACED"/"success".
         self.dry_run = False
 
+        # order_id -> slippage-adjusted execution_price, populated by
+        # _place_order() — see get_fill_price().
+        self._fills: dict[str, float] = {}
+
     def get_ltp(self, instrument_key: str) -> Optional[float]:
         return self.real_broker.get_ltp(instrument_key)
 
@@ -220,12 +224,17 @@ class PaperBroker(BaseBroker):
             execution_price = current_price * (1.0 + self.slippage_pct)
 
         order_id = f"PAPER-{uuid.uuid4().hex[:8].upper()}"
+        self._fills[order_id] = execution_price
 
         log.info(
             "PaperBroker FILLED %s | %s | Qty: %d | Exec Price: %.2f (Live: %.2f) | ID: %s",
             transaction_type.upper(), instrument_token, quantity, execution_price, current_price, order_id
         )
         return order_id
+
+    def get_fill_price(self, order_id: str) -> Optional[float]:
+        """The slippage-adjusted price this simulated order actually filled at. See BaseBroker."""
+        return self._fills.get(order_id)
 
     def place_sell_order(
         self,

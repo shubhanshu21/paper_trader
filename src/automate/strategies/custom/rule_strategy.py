@@ -554,7 +554,15 @@ class RuleBasedStrategy(BaseStrategy):
             order_id = self._place_leg(resolved, original_idx)
             if self.broker.dry_run or order_id:
                 resolved["order_id"] = order_id
-                resolved["entry_price"] = self.broker.get_ltp(resolved["instrument_token"])
+                # Prefer the broker's own reported fill price over a fresh
+                # LTP snapshot — LTP can move between order placement and
+                # this call (slippage, a fast market), so it isn't
+                # necessarily what the account actually paid/received.
+                # Falls back to LTP for dry runs (order_id is None, nothing
+                # actually filled) or if the broker doesn't know the fill
+                # yet (e.g. UpstoxBroker before the exchange confirms).
+                fill_price = self.broker.get_fill_price(order_id) if order_id else None
+                resolved["entry_price"] = fill_price if fill_price is not None else self.broker.get_ltp(resolved["instrument_token"])
                 filled.append((original_idx, resolved, order_id or "DRY_RUN"))
             else:
                 failed_idx = original_idx

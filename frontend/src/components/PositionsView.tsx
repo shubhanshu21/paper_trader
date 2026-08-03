@@ -134,7 +134,15 @@ export default function PositionsView({ openOptions, openEquity, ltps, onClosePo
     exch: "NFO",
     qty: pos.quantity,
     avg: (pos.call_entry_price + pos.put_entry_price) / 2,
-    ltp: (pos.call_strike + pos.put_strike) / 2,
+    // Average of the two legs' REAL current prices (server-computed
+    // mark-to-market inputs), not the strikes — strikes are fixed at
+    // entry and never move, so averaging them produced a static number
+    // with no relationship to the market. Falls back to the entry-price
+    // average (last-known, not live) only while call_ltp/put_ltp haven't
+    // loaded yet, rather than showing the misleading strike average.
+    ltp: (pos.call_ltp != null && pos.put_ltp != null)
+      ? (pos.call_ltp + pos.put_ltp) / 2
+      : (pos.call_entry_price + pos.put_entry_price) / 2,
     pnl: pos.mtm || 0.00,
     chg: 0.00,
     isApi: true,

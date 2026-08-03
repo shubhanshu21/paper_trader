@@ -267,6 +267,33 @@ class UpstoxBroker(BaseBroker):
         # last entry is the most recent/current state.
         return str(history[-1].status).lower()
 
+    def get_fill_price(self, order_id: str) -> Optional[float]:
+        """
+        Query the real average fill price via the same GET /v2/order/history
+        call get_order_status() uses. Only meaningful once the exchange has
+        actually filled the order — returns None (never a partial/zero
+        price) for anything short of 'complete', so callers reliably fall
+        back to an LTP snapshot instead of recording a bogus ₹0 fill. See
+        BaseBroker.get_fill_price.
+        """
+        try:
+            response = self._order_api_v3.get_order_details(api_version=_ORDER_API_VERSION, order_id=order_id)
+        except ApiException as exc:
+            log.warning("ApiException fetching fill price for '%s': HTTP %s — %s", order_id, exc.status, exc.reason)
+            return None
+        except Exception as exc:
+            log.warning("Unexpected error fetching fill price for '%s': %s", order_id, exc)
+            return None
+
+        history = response.data or []
+        if not history:
+            return None
+        latest = history[-1]
+        if str(latest.status).lower() != "complete":
+            return None
+        avg_price = getattr(latest, "average_price", None)
+        return float(avg_price) if avg_price else None
+
     # ------------------------------------------------------------------
     # Market Data: Spot Price (LTP)
     # ------------------------------------------------------------------

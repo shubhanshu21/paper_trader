@@ -64,6 +64,9 @@ class FakeBroker:
         self.orders_placed.append(("SELL", instrument_token, quantity))
         return "ORD1"
 
+    def get_fill_price(self, order_id):
+        return None
+
 
 class TestSquareOffAllOpenLegs:
     def test_no_open_legs_is_a_noop(self, db):

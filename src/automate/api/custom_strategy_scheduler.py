@@ -552,7 +552,11 @@ def _close_leg(db, strategy: CustomStrategy, broker, leg: CustomStrategyPosition
         db.commit()
         return False
     leg.status = "CLOSED"
-    leg.exit_price = now_prices.get(leg.instrument_key)
+    # Prefer the broker's own reported fill price over the pre-order
+    # now_prices snapshot — see RuleBasedStrategy.enter()'s matching
+    # comment for why a snapshot isn't necessarily what was actually paid.
+    fill_price = broker.get_fill_price(exit_order_id) if exit_order_id else None
+    leg.exit_price = fill_price if fill_price is not None else now_prices.get(leg.instrument_key)
     leg.exit_order_id = exit_order_id
     leg.exit_reason = trigger
     leg.closed_at = datetime.now()

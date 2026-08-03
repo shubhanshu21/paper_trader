@@ -14,6 +14,7 @@ virtual wallet, own deposit/withdrawal history, isolated from everyone
 else's, same as the wallet's own starting_capital (see WalletSettings,
 now per-user via migration 0015).
 """
+import fcntl
 import json
 from datetime import date
 from pathlib import Path
@@ -40,16 +41,35 @@ def add_adjustment(user_id: int, amount: float, note: str = "") -> dict:
 
     p = Path(_path_for(user_id))
     p.parent.mkdir(parents=True, exist_ok=True)
-    adjustments = load_adjustments(user_id)
-    entry = {
-        "id": (max((a["id"] for a in adjustments), default=0) + 1),
-        "date": date.today().isoformat(),
-        "amount": round(amount, 2),
-        "note": note.strip() or ("Deposit" if amount > 0 else "Withdrawal"),
-    }
-    adjustments.append(entry)
-    p.write_text(json.dumps(adjustments, indent=2))
-    return entry
+
+    # flock the whole read-modify-write critical section — without this,
+    # two concurrent requests for the SAME user (double-click submit, two
+    # browser tabs) can both read the same base list before either writes,
+    # and the second write silently clobbers the first adjustment (lost
+    # update). "a+" both creates the file if missing and leaves existing
+    # content in place for the read below (unlike "w", which would
+    # truncate before we've read anything).
+    with open(p, "a+") as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        try:
+            f.seek(0)
+            raw = f.read()
+            adjustments = json.loads(raw) if raw.strip() else []
+
+            entry = {
+                "id": (max((a["id"] for a in adjustments), default=0) + 1),
+                "date": date.today().isoformat(),
+                "amount": round(amount, 2),
+                "note": note.strip() or ("Deposit" if amount > 0 else "Withdrawal"),
+            }
+            adjustments.append(entry)
+
+            f.seek(0)
+            f.truncate()
+            f.write(json.dumps(adjustments, indent=2))
+            return entry
+        finally:
+            fcntl.flock(f, fcntl.LOCK_UN)
 
 
 def total_adjustments(user_id: int) -> float:

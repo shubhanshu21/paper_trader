@@ -88,8 +88,15 @@ def compute_mtm_economics(position: dict, brokers: Optional[dict], rates: Option
 
     from automate.utils.pnl import compute_strangle_pnl
 
-    return compute_strangle_pnl(
+    econ = compute_strangle_pnl(
         position["call_entry_price"], position["put_entry_price"],
         call_ltp, put_ltp, position["quantity"],
         rates,
     )
+    # Also surface the actual current per-leg prices used for this
+    # mark-to-market — callers display these instead of a fabricated
+    # "average of the two strikes" number (strikes are fixed at entry and
+    # never move, so they say nothing about current market price).
+    econ["call_ltp"] = call_ltp
+    econ["put_ltp"] = put_ltp
+    return econ

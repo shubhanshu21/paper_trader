@@ -993,7 +993,7 @@ export default function StrategyBuilderModal({ onClose, onSuccess, editStrategy,
                 </div>
               </div>
 
-              <div className="flex-1 min-h-0">
+              <div className="flex flex-col flex-1 min-h-0">
                 {editorMode === "table" ? renderTableEditor() : (
                   <Suspense fallback={
                     <div className="flex items-center justify-center h-full" style={{ background: "#fafafa", borderRadius: 12, border: `1px solid ${C.border2}` }}>

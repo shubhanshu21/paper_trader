@@ -177,6 +177,11 @@ class FakeOrderBroker:
         self.orders.append(("SELL", instrument_token, quantity))
         return "ORD-1"
 
+    def get_fill_price(self, order_id):
+        # Matches BaseBroker's default "unknown — fall back to LTP snapshot"
+        # contract; these tests assert exit_price against now_prices anyway.
+        return None
+
 
 def _make_leg(**overrides):
     defaults = dict(

@@ -51,6 +51,8 @@ def _snapshot_options(brokers, user: dict) -> list:
         pos["mtm"] = None if econ is None else econ["gross_pnl"]
         pos["net_mtm"] = None if econ is None else econ["net_pnl"]
         pos["charges"] = None if econ is None else econ["charges"]
+        pos["call_ltp"] = None if econ is None else econ["call_ltp"]
+        pos["put_ltp"] = None if econ is None else econ["put_ltp"]
     return positions
 
 

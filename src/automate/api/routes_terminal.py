@@ -268,6 +268,15 @@ def execute_manual_trade(req: ManualTradeRequest, user: dict = Depends(get_curre
 
         order_id = order_id or f"PAPER-{req.direction[:1]}M-{req.instrument_key.split('|')[-1]}"
 
+        # Prefer the broker's own reported fill price over the LTP snapshot
+        # taken before order placement (line 211) — LTP can move between
+        # that snapshot and the actual fill (slippage, a fast market), so
+        # it isn't necessarily what the account actually paid/received.
+        # Falls back to the snapshot if the broker doesn't know the fill
+        # yet (e.g. UpstoxBroker before the exchange confirms).
+        fill_price = broker.get_fill_price(order_id) if order_id else None
+        exec_price = fill_price if fill_price is not None else ltp
+
         # 6. Apply to DB position structure
         today = date.today().isoformat()
         if action == "OPEN":
@@ -280,7 +289,7 @@ def execute_manual_trade(req: ManualTradeRequest, user: dict = Depends(get_curre
                 direction=req.direction,
                 product=req.product,
                 entry_date=today,
-                entry_price=ltp,
+                entry_price=exec_price,
                 quantity=req.quantity,
                 entry_order_id=order_id,
                 status="OPEN",
@@ -289,14 +298,14 @@ def execute_manual_trade(req: ManualTradeRequest, user: dict = Depends(get_curre
             log.info("Opened new manual position for %s, ID=%s", req.instrument_key, order_id)
         elif action == "AVERAGE":
             # Increase quantity and average price
-            total_cost = (float(pos.entry_price) * pos.quantity) + (ltp * req.quantity)
+            total_cost = (float(pos.entry_price) * pos.quantity) + (exec_price * req.quantity)
             total_qty = pos.quantity + req.quantity
             pos.entry_price = round(total_cost / total_qty, 4)
             pos.quantity = total_qty
             log.info("Averaged manual position for %s to qty=%d", req.instrument_key, total_qty)
         elif action == "CLOSE":
             # Full square off
-            exit_price = ltp
+            exit_price = exec_price
             entry_price = float(pos.entry_price)
             gross_pnl = (exit_price - entry_price) * pos.quantity
             if pos.direction == "SHORT" or pos.direction == "SELL":
@@ -318,7 +327,7 @@ def execute_manual_trade(req: ManualTradeRequest, user: dict = Depends(get_curre
         elif action == "REDUCE":
             # Partial exit: reduce qty but compute intermediate P&L
             # (In standard FIFO, we reduce quantity and realize P&L for the exited portion)
-            exit_price = ltp
+            exit_price = exec_price
             entry_price = float(pos.entry_price)
             portion_qty = req.quantity
             portion_pnl = (exit_price - entry_price) * portion_qty

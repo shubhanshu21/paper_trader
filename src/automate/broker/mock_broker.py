@@ -40,6 +40,14 @@ class MockBroker(BaseBroker):
         # Virtual portfolio
         self.orders: List[Dict[str, Any]] = []
         self.positions: Dict[str, int] = {}
+
+        # order_id -> slippage-adjusted execution_price, populated by
+        # _place_order() — see get_fill_price(). custom_engine.py already
+        # reads self.orders[-1]["execution_price"] directly for its own
+        # entry/exit pricing; this dict just exposes the same data through
+        # the standard BaseBroker.get_fill_price() interface other callers
+        # (e.g. RuleBasedStrategy.enter(), shared with live/paper) use.
+        self._fills: Dict[str, float] = {}
         
         # In a backtest, we can either use the actual live cache or pass a specific 
         # historical instrument master. For now, we will dynamically fetch it using 
@@ -128,6 +136,7 @@ class MockBroker(BaseBroker):
         }
 
         self.orders.append(order)
+        self._fills[order_id] = execution_price
 
         # Update positions
         delta = -quantity if is_sell else quantity
@@ -140,6 +149,10 @@ class MockBroker(BaseBroker):
         )
 
         return order_id
+
+    def get_fill_price(self, order_id: str) -> Optional[float]:
+        """The slippage-adjusted price this simulated order actually filled at. See BaseBroker."""
+        return self._fills.get(order_id)
 
     def place_sell_order(
         self,

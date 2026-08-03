@@ -111,6 +111,8 @@ export interface OptionsPosition {
   mtm: number | null;
   net_mtm: number | null;
   charges: number | null;
+  call_ltp?: number | null;
+  put_ltp?: number | null;
 }
 
 export interface EquityPosition {

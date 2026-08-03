@@ -315,3 +315,22 @@ class BaseBroker(ABC):
         the leg actually filled. Only UpstoxBroker overrides this today.
         """
         return None
+
+    def get_fill_price(self, order_id: str) -> Optional[float]:
+        """
+        Return the ACTUAL average price this order filled at, or None if
+        that isn't known (order not found, not yet filled, or this broker
+        doesn't track it).
+
+        Callers that record entry_price/exit_price MUST prefer this over a
+        get_ltp() snapshot taken before/after placing the order — LTP can
+        move between the snapshot and the actual fill (slippage, a fast
+        market), so a pre-order LTP is not what the account actually paid
+        or received. Every concrete broker overrides this: PaperBroker/
+        MockBroker return the slippage-adjusted price they simulated the
+        fill at; UpstoxBroker queries the real order details API for the
+        exchange's own reported average_price. Default None here exists so
+        callers always have an explicit "unknown — fall back to LTP"
+        signal rather than silently getting 0.0 or a stale value.
+        """
+        return None

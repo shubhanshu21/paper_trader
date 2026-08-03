@@ -70,6 +70,9 @@ class FakeBroker:
         self.orders_placed.append(instrument_token)
         return "ORD1"
 
+    def get_fill_price(self, order_id):
+        return None
+
 
 class TestStoppingWithNoOpenLegs:
     def test_draft_to_stopped_needs_no_broker(self, db):

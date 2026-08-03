@@ -30,6 +30,8 @@ def list_open_positions(user: dict = Depends(get_current_user)):
         pos["mtm"] = None if econ is None else econ["gross_pnl"]
         pos["net_mtm"] = None if econ is None else econ["net_pnl"]
         pos["charges"] = None if econ is None else econ["charges"]
+        pos["call_ltp"] = None if econ is None else econ["call_ltp"]
+        pos["put_ltp"] = None if econ is None else econ["put_ltp"]
     return positions
 
 

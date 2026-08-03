@@ -88,7 +88,20 @@ export function PortalDropdown({ value, onChange, options, placeholder = "Select
       </button>
 
       {open && (
-        <FloatingPortal>
+        // root: when a canvas node's dropdown opens while the strategy
+        // builder is in native browser fullscreen (StrategyBuilderModal's
+        // requestFullscreen() on its own container), the Fullscreen API's
+        // top layer only paints the fullscreened element's own subtree —
+        // a portal target appended to document.body (FloatingPortal's
+        // default) sits outside that subtree and silently never renders,
+        // even though `open` state and the trigger's styling are correct.
+        // Portaling into document.fullscreenElement keeps the panel inside
+        // the painted subtree; outside fullscreen this is `undefined` (NOT
+        // `null` — FloatingPortal's internal portal-node effect has an
+        // `if (root === null) return` bail-out, so passing the literal
+        // `null` value stops it from ever creating a portal node at all)
+        // so FloatingPortal falls back to its normal document.body target.
+        <FloatingPortal root={(document.fullscreenElement as HTMLElement | null) ?? undefined}>
           <div
             ref={refs.setFloating}
             style={{ ...floatingStyles, borderColor: C.border2, width: "max-content", minWidth: 140 }}

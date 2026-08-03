@@ -58,6 +58,9 @@ class FakeBroker:
         self.orders_placed.append(instrument_token)
         return "ORD1"
 
+    def get_fill_price(self, order_id):
+        return None
+
 
 class TestPausedStrategyTick:
     def test_no_open_legs_is_a_pure_noop(self, db_session, monkeypatch):
