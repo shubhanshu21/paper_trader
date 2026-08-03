@@ -1,7 +1,7 @@
 import { PieChart, Briefcase, Layers, TrendingUp, FileText } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { WalletSummary, EquityPosition, OptionsPosition, User } from "../api";
-import { C, FONT, inr, withSign, sign, Banner, SectionTitle, ColorBar } from "./Common";
+import { C, FONT, withSign, sign, Banner, SectionTitle, ColorBar, inrWithSignNoPlus } from "./Common";
 
 interface DashboardProps {
   currentUser?: User | null;
@@ -35,7 +35,7 @@ export default function DashboardView({ currentUser, wallet, openEquity, openOpt
               <div className="h-10 w-40 rounded animate-pulse" style={{ backgroundColor: C.border }} />
             ) : (
               <div className="text-4xl font-light text-gray-800">
-                ₹{wallet ? inr(wallet.available_balance) : "0.00"}
+                {inrWithSignNoPlus(wallet?.available_balance)}
               </div>
             )}
             <div className="mt-2 text-xs text-gray-400 font-medium">
@@ -45,11 +45,11 @@ export default function DashboardView({ currentUser, wallet, openEquity, openOpt
           <div className="flex-1 pt-6 space-y-3 pl-6 border-l" style={{ borderColor: C.border }}>
             <div className="flex justify-between text-sm">
               <span className="text-gray-400">Margins used</span>
-              <span className="font-semibold text-gray-700">₹{wallet ? inr(wallet.margin_blocked) : "0.00"}</span>
+              <span className="font-semibold text-gray-700">{inrWithSignNoPlus(wallet?.margin_blocked)}</span>
             </div>
             <div className="flex justify-between text-sm">
               <span className="text-gray-400">Opening balance</span>
-              <span className="font-semibold text-gray-700">₹{wallet ? inr(wallet.starting_capital) : "0.00"}</span>
+              <span className="font-semibold text-gray-700">{inrWithSignNoPlus(wallet?.starting_capital)}</span>
             </div>
           </div>
         </div>
@@ -65,7 +65,7 @@ export default function DashboardView({ currentUser, wallet, openEquity, openOpt
             <div className="flex-1">
               <div className="flex items-baseline gap-3">
                 <span className="text-4xl font-light" style={{ color: wallet && wallet.realized_pnl_lifetime >= 0 ? C.green : C.red }}>
-                  ₹{wallet ? inr(wallet.realized_pnl_lifetime) : "0.00"}
+                  {inrWithSignNoPlus(wallet?.realized_pnl_lifetime)}
                 </span>
                 <span className="text-xs font-semibold" style={{ color: wallet && wallet.realized_pnl_lifetime >= 0 ? C.green : C.red }}>
                   {wallet && wallet.starting_capital > 0 ? `${withSign((wallet.realized_pnl_lifetime / wallet.starting_capital) * 100)}%` : "0.00%"}
@@ -78,18 +78,18 @@ export default function DashboardView({ currentUser, wallet, openEquity, openOpt
             <div className="flex-1 pt-2 space-y-3 pl-8 border-l" style={{ borderColor: C.border }}>
               <div className="flex justify-between text-sm">
                 <span className="text-gray-400">Total Charges</span>
-                <span className="font-medium text-gray-700">₹{wallet ? inr(wallet.total_charges_lifetime) : "0.00"}</span>
+                <span className="font-medium text-gray-700">{inrWithSignNoPlus(wallet?.total_charges_lifetime)}</span>
               </div>
               <div className="flex justify-between text-sm">
                 <span className="text-gray-400">Adjustments</span>
-                <span className="font-medium text-gray-700">₹{wallet ? inr(wallet.total_adjustments) : "0.00"}</span>
+                <span className="font-medium text-gray-700">{inrWithSignNoPlus(wallet?.total_adjustments)}</span>
               </div>
             </div>
           </div>
           <div className="mt-6">
             <ColorBar height={24} />
             <div className="flex items-center justify-between mt-3 text-sm">
-              <span className="font-semibold text-gray-700">₹{wallet ? inr(wallet.available_balance) : "0.00"} available</span>
+              <span className="font-semibold text-gray-700">{inrWithSignNoPlus(wallet?.available_balance)} available</span>
               <span className="text-xs text-gray-400 font-medium">Derived from paper transactions</span>
             </div>
           </div>

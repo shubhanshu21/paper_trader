@@ -149,7 +149,7 @@ export default function PayoffDiagramChart({ curve, spotPrice, breakevens, heigh
         >
           <div className="font-semibold text-gray-700">₹{hover.price.toFixed(2)}</div>
           <div className="font-bold" style={{ color: hover.pnl >= 0 ? C.green : C.red }}>
-            {hover.pnl >= 0 ? "+" : ""}₹{hover.pnl.toFixed(2)}
+            {hover.pnl >= 0 ? "+₹" : "-₹"}{Math.abs(hover.pnl).toFixed(2)}
           </div>
         </div>
       )}

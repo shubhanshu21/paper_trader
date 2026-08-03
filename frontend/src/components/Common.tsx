@@ -51,6 +51,20 @@ export const withSign = (n: number | null | undefined, d = 2) => {
   return (v > 0 ? "+" : "") + inr(v, d);
 };
 
+export const inrWithSign = (n: number | null | undefined, d = 2) => {
+  if (n === null || n === undefined) return "₹0.00";
+  const v = n === 0 ? 0 : n;
+  const absFormatted = Math.abs(v).toLocaleString("en-IN", { minimumFractionDigits: d, maximumFractionDigits: d });
+  return (v > 0 ? "+" : v < 0 ? "-" : "") + "₹" + absFormatted;
+};
+
+export const inrWithSignNoPlus = (n: number | null | undefined, d = 2) => {
+  if (n === null || n === undefined) return "₹0.00";
+  const v = n === 0 ? 0 : n;
+  const absFormatted = Math.abs(v).toLocaleString("en-IN", { minimumFractionDigits: d, maximumFractionDigits: d });
+  return (v < 0 ? "-" : "") + "₹" + absFormatted;
+};
+
 export function Banner() {
   return (
     <div

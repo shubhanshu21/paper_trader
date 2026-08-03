@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Search, Download, BarChart2, Users, ChevronDown } from "lucide-react";
 import { EquityPosition } from "../api";
-import { C, FONT, inr, withSign, sign, Banner, Td, Th } from "./Common";
+import { C, FONT, inr, withSign, sign, Banner, Td, Th, inrWithSign, inrWithSignNoPlus } from "./Common";
 
 interface HoldingsProps {
   openEquity: EquityPosition[];
@@ -148,15 +148,15 @@ export default function HoldingsView({ openEquity, ltps, onClosePosition, closin
           {/* Metrics Row */}
           <div className="grid grid-cols-2 md:grid-cols-4 gap-6 p-5 bg-slate-50 border rounded shadow-xs mb-8">
             {[
-              ["Total Investment", inr(totalInvestment), "00", C.text],
-              ["Current value", inr(totalCurrentValue), "00", C.text],
-              ["Day's P&L", withSign(totalDayPL), `(${withSign(totalDayPLPct)}%)`, sign(totalDayPL)],
-              ["Total P&L", inr(totalPL), `(${withSign(totalPLPct)}%)`, sign(totalPL)],
+              ["Total Investment", inrWithSignNoPlus(totalInvestment), "00", C.text],
+              ["Current value", inrWithSignNoPlus(totalCurrentValue), "00", C.text],
+              ["Day's P&L", inrWithSign(totalDayPL), `(${withSign(totalDayPLPct)}%)`, sign(totalDayPL)],
+              ["Total P&L", inrWithSign(totalPL), `(${withSign(totalPLPct)}%)`, sign(totalPL)],
             ].map(([l, big, small, col], i) => (
               <div key={i} className="flex flex-col">
                 <span className="text-[11px] text-gray-400 font-semibold mb-1 uppercase tracking-wider">{l}</span>
                 <div className="text-[22px] font-light flex items-baseline gap-1" style={{ color: col as string }}>
-                  ₹{big}
+                  {big}
                   <span className="text-[11px] font-semibold">{small}</span>
                 </div>
               </div>
