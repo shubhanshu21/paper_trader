@@ -239,6 +239,8 @@ def register(request: Request, body: RegisterRequest, response: Response):
         session.flush()  # get the auto-incremented id before commit
 
         user_dict = new_user.to_safe_dict()
+        if is_first_user:
+            user_dict["info_message"] = "First user registered. You have been promoted to Admin role."
 
     log.info("New user registered: username=%s role=%s", body.username, role)
     return user_dict

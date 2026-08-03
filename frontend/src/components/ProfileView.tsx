@@ -174,12 +174,15 @@ export default function ProfileView({ currentUser, ledger, onRefreshData }: Prof
     }
   };
 
+  const boId = currentUser ? `1200000000${String(currentUser.id).padStart(6, '0')}` : "1200000000011111";
+  const bankAcc = currentUser ? `XXXX-XXXX-${String(currentUser.id * 1234).slice(-4)} (ICICI BANK)` : "XXXX-XXXX-1234 (ICICI BANK)";
+
   const profileRows = [
     ["Email Address", currentUser?.email || "N/A"],
     ["User Role", currentUser?.role || "viewer"],
     ["Active Status", currentUser?.is_active ? "Active" : "Inactive"],
-    ["Demat BO ID", "1200000000011111"],
-    ["Bank Account", "XXXX-XXXX-1234 (ICICI BANK)"],
+    ["Demat BO ID", boId],
+    ["Bank Account", bankAcc],
   ];
 
   return (

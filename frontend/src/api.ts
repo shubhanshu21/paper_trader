@@ -16,6 +16,7 @@ export interface User {
   is_active: boolean;
   mfa_enabled: boolean;
   created_at: string | null;
+  info_message?: string;
 }
 
 export type LoginResult =
@@ -594,4 +595,20 @@ export const api = {
   getPortfolioGreeks: () => request<PortfolioGreeksResponse>('/api/custom-strategies/portfolio/greeks'),
   closeCustomStrategyPosition: (id: number) =>
     request<{ message: string }>(`/api/custom-strategies/positions/${id}/close`, { method: 'POST' }),
+  getCustomStrategyPositions: (id: number) => request<{ open: any[]; closed: any[] }>(`/api/custom-strategies/${id}/positions`),
+  getCustomStrategyPayoff: (id: number) => request<any>(`/api/custom-strategies/${id}/payoff`),
+  getCustomStrategyBacktestRun: (strategyId: number, runId: number, options?: RequestInit) =>
+    request<any>(`/api/custom-strategies/${strategyId}/backtest/runs/${runId}`, options),
+  getCustomStrategyTemplateExpiries: (symbol: string) =>
+    request<string[]>(`/api/custom-strategies/templates/expiries?symbol=${encodeURIComponent(symbol)}`),
+  getCustomStrategyBacktestStatus: (id: number) =>
+    request<any>(`/api/custom-strategies/${id}/backtest`),
+  getCustomStrategyBacktestRuns: (id: number) =>
+    request<{ runs: any[] }>(`/api/custom-strategies/${id}/backtest/runs`),
+  runCustomStrategyBacktest: (id: number, fromDate: string | null, toDate: string | null) =>
+    request<{ run_id: number }>(`/api/custom-strategies/${id}/backtest`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ from_date: fromDate, to_date: toDate }),
+    }),
 };

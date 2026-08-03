@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { useNavigate, useLocation } from "react-router-dom";
+import { useNavigate, useLocation, NavLink } from "react-router-dom";
 import { User, LogOut, Menu, X } from "lucide-react";
 import { User as UserType } from "../api";
 import { C, FONT } from "./Common";
@@ -31,12 +31,7 @@ export default function TopNav({ currentUser, onLogout }: TopNavProps) {
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
 
-  const handleNavClick = (navItem: string) => {
-    navigate(`/${navSlug(navItem)}`);
-    setMobileMenu(false);
-  };
 
-  const currentPage = location.pathname.replace('/', '') || 'dashboard';
 
   return (
     <header
@@ -62,18 +57,28 @@ export default function TopNav({ currentUser, onLogout }: TopNavProps) {
         {/* Desktop Navigation */}
         <nav className="hidden md:flex items-center gap-[28px] relative">
           {NAV.map((n) => {
-            const active = currentPage === navSlug(n);
+            const slug = navSlug(n);
+            const path = `/${slug}`;
             return (
-              <button
+              <NavLink
                 key={n}
-                onClick={() => handleNavClick(n)}
+                to={path}
                 className="text-[13px] font-normal transition-colors focus:outline-none"
-                style={{ color: active ? C.orange : "#666666", transition: "color 0.2s" }}
-                onMouseEnter={(e) => { if (!active) e.currentTarget.style.color = C.orange; }}
-                onMouseLeave={(e) => { if (!active) e.currentTarget.style.color = "#666666"; }}
+                style={({ isActive }) => ({
+                  color: isActive || (location.pathname === "/" && slug === "dashboard") ? C.orange : "#666666",
+                  transition: "color 0.2s"
+                })}
+                onMouseEnter={(e) => {
+                  const active = location.pathname === path || (location.pathname === "/" && slug === "dashboard");
+                  if (!active) e.currentTarget.style.color = C.orange;
+                }}
+                onMouseLeave={(e) => {
+                  const active = location.pathname === path || (location.pathname === "/" && slug === "dashboard");
+                  if (!active) e.currentTarget.style.color = "#666666";
+                }}
               >
                 {n}
-              </button>
+              </NavLink>
             );
           })}
           <div className="hidden md:block">
@@ -158,19 +163,24 @@ export default function TopNav({ currentUser, onLogout }: TopNavProps) {
           <div className="flex flex-col p-4 space-y-3">
             <div><MarketStatusBadge /></div>
             {NAV.map((n) => {
-              const active = currentPage === navSlug(n);
+              const slug = navSlug(n);
+              const path = `/${slug}`;
               return (
-                <button
+                <NavLink
                   key={n}
-                  onClick={() => handleNavClick(n)}
+                  to={path}
+                  onClick={() => setMobileMenu(false)}
                   className="text-left text-sm font-medium py-2 px-3 rounded transition-colors"
-                  style={{ 
-                    color: active ? C.orange : "#666666",
-                    backgroundColor: active ? "#fff7ed" : "transparent"
+                  style={({ isActive }) => {
+                    const active = isActive || (location.pathname === "/" && slug === "dashboard");
+                    return {
+                      color: active ? C.orange : "#666666",
+                      backgroundColor: active ? "#fff7ed" : "transparent"
+                    };
                   }}
                 >
                   {n}
-                </button>
+                </NavLink>
               );
             })}
             <div className="border-t pt-3 mt-3" style={{ borderColor: C.border }}>

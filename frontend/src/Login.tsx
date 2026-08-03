@@ -38,7 +38,10 @@ export default function Login() {
           setLoading(false);
           return;
         }
-        await api.register(username, email, password);
+        const regRes = await api.register(username, email, password);
+        if (regRes.info_message) {
+          alert(regRes.info_message);
+        }
         const loginRes = await api.login(username, password);
         if ("mfa_required" in loginRes) {
           setMfaToken(loginRes.mfa_token);

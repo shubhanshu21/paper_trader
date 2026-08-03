@@ -6,7 +6,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { C, FONT, useToast, DatePicker, fmtDate, fmtDateTime, formatTime12h, inr } from "./Common";
-import { api, wsUrl, csrfHeaders } from "../api";
+import { api, wsUrl } from "../api";
 import type { CustomStrategy, CustomStrategyRules, PortfolioGreeksResponse } from "../types/customStrategy";
 import { useCustomStrategyPositions } from "../hooks/useCustomStrategyPositions";
 import StrategyBuilderModal from "./StrategyBuilderModal";
@@ -636,10 +636,12 @@ function BacktestCompareModal({
     setLoading(true);
     (async () => {
       const entries = await Promise.all(runIds.map(async (id) => {
-        const response = await fetch(`/api/custom-strategies/${strategyId}/backtest/runs/${id}`, { credentials: "include" });
-        if (!response.ok) return null;
-        const detail: BacktestRunDetail = await response.json();
-        return detail.result ? [id, detail.result] as const : null;
+        try {
+          const detail: BacktestRunDetail = await api.getCustomStrategyBacktestRun(strategyId, id);
+          return detail.result ? [id, detail.result] as const : null;
+        } catch {
+          return null;
+        }
       }));
       if (!cancelled) {
         setResults(Object.fromEntries(entries.filter((e): e is [number, BacktestResult] => e !== null)));
@@ -757,10 +759,9 @@ export default function StrategiesView({
     let cancelled = false;
     (async () => {
       try {
-        const response = await fetch(`/api/custom-strategies/templates/expiries?symbol=${encodeURIComponent(symbol)}`, { credentials: "include" });
-        if (!response.ok || cancelled) return;
-        const data = await response.json();
-        const expiries: { date: string; label: string }[] = data.expiries || [];
+        const data = await api.getCustomStrategyTemplateExpiries(symbol);
+        if (cancelled) return;
+        const expiries: { date: string; label: string }[] = (data as any).expiries || [];
         const mode = selectedStrategy?.rules?.expiry?.mode || "WEEKLY";
         const match = mode === "MONTHLY" ? expiries.find((e) => e.label === "Monthly") : expiries[0];
         if (match && !cancelled) setExpiryDatePreview(match.date);
@@ -777,9 +778,8 @@ export default function StrategiesView({
   const fetchPayoff = async (strategy: CustomStrategy) => {
     setPayoffLoading(true);
     try {
-      const response = await fetch(`/api/custom-strategies/${strategy.id}/payoff`, { credentials: "include" });
-      if (response.ok) setPayoff(await response.json());
-      else setPayoff(null);
+      const data = await api.getCustomStrategyPayoff(strategy.id);
+      setPayoff(data);
     } catch {
       setPayoff(null);
     } finally {
@@ -803,8 +803,8 @@ export default function StrategiesView({
   const fetchClosedLegs = async (strategy: CustomStrategy) => {
     setPositionsLoading(true);
     try {
-      const response = await fetch(`/api/custom-strategies/${strategy.id}/positions`, { credentials: "include" });
-      setClosedLegs(response.ok ? (await response.json()).closed : []);
+      const data = await api.getCustomStrategyPositions(strategy.id);
+      setClosedLegs(data.closed || []);
     } catch {
       setClosedLegs([]);
     } finally {
@@ -838,8 +838,8 @@ export default function StrategiesView({
     let cancelled = false;
     (async () => {
       try {
-        const response = await fetch(`/api/custom-strategies/${selectedStrategy.id}/backtest`, { credentials: "include" });
-        if (response.ok && !cancelled) setBacktestResult(await response.json());
+        const data = await api.getCustomStrategyBacktestStatus(selectedStrategy.id);
+        if (!cancelled) setBacktestResult(data);
       } catch {
         // No stored result yet — normal for a never-backtested strategy.
       }
@@ -914,8 +914,8 @@ export default function StrategiesView({
 
   const loadBacktestRuns = async (strategy: CustomStrategy) => {
     try {
-      const response = await fetch(`/api/custom-strategies/${strategy.id}/backtest/runs`, { credentials: "include" });
-      if (response.ok) setBacktestRuns((await response.json()).runs || []);
+      const data = await api.getCustomStrategyBacktestRuns(strategy.id);
+      setBacktestRuns(data.runs || []);
     } catch {
       // Run history is supplementary — silently leave the list as-is.
     }
@@ -933,9 +933,7 @@ export default function StrategiesView({
       if (signal.aborted) return;
       let run: BacktestRunDetail;
       try {
-        const response = await fetch(`/api/custom-strategies/${strategy.id}/backtest/runs/${runId}`, { credentials: "include", signal });
-        if (!response.ok) throw new Error("poll failed");
-        run = await response.json();
+        run = await api.getCustomStrategyBacktestRun(strategy.id, runId, { signal });
       } catch (err) {
         if ((err as Error).name === "AbortError") return;
         continue; // transient network hiccup — keep polling rather than giving up
@@ -978,24 +976,19 @@ export default function StrategiesView({
     setBacktestResult(null);
     setBacktestError("");
     try {
-      const response = await fetch(`/api/custom-strategies/${strategy.id}/backtest`, {
-        method: "POST",
-        credentials: "include",
-        headers: { "Content-Type": "application/json", ...csrfHeaders() },
-        body: JSON.stringify({ from_date: fromDate || null, to_date: toDate || null }),
-      });
-      const data = await response.json();
-      if (response.ok && data.run_id) {
+      const data = await api.runCustomStrategyBacktest(strategy.id, fromDate || null, toDate || null);
+      if (data.run_id) {
         pollBacktestRun(strategy, data.run_id, backtestPollAbortRef.current.signal); // not awaited — polls in the background, updates state as it goes
       } else {
-        const errText = Array.isArray(data.detail) ? data.detail.join(" ") : data.detail || "Backtest failed.";
+        const errText = "Backtest failed.";
         setBacktestError(errText);
         toast.error(errText);
         setBacktesting(false);
       }
-    } catch {
-      setBacktestError("Backtest request failed.");
-      toast.error("Backtest request failed.");
+    } catch (err) {
+      const errText = err instanceof Error ? err.message : "Backtest request failed.";
+      setBacktestError(errText);
+      toast.error(errText);
       setBacktesting(false);
     }
   };
@@ -1408,10 +1401,11 @@ export default function StrategiesView({
                       });
                     }}
                     onViewRun={async (runId) => {
-                      const response = await fetch(`/api/custom-strategies/${selectedStrategy.id}/backtest/runs/${runId}`, { credentials: "include" });
-                      if (response.ok) {
-                        const run: BacktestRunDetail = await response.json();
+                      try {
+                        const run: BacktestRunDetail = await api.getCustomStrategyBacktestRun(selectedStrategy.id, runId);
                         if (run.result) { setBacktestResult(run.result); setShowBacktestModal(true); }
+                      } catch {
+                        // ignore failures
                       }
                     }}
                   />
