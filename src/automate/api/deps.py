@@ -62,13 +62,13 @@ def reset_brokers_cache() -> None:
     _brokers_cache = None
 
 
-def compute_mtm(position: dict, brokers: Optional[dict]) -> Optional[float]:
+def compute_mtm(position: dict, brokers: Optional[dict], rates: Optional[dict] = None) -> Optional[float]:
     """Gross mark-to-market P&L in rupees — see compute_mtm_economics() for the cost-aware version."""
-    econ = compute_mtm_economics(position, brokers)
+    econ = compute_mtm_economics(position, brokers, rates)
     return None if econ is None else econ["gross_pnl"]
 
 
-def compute_mtm_economics(position: dict, brokers: Optional[dict]) -> Optional[dict]:
+def compute_mtm_economics(position: dict, brokers: Optional[dict], rates: Optional[dict] = None) -> Optional[dict]:
     """
     gross_pnl/net_pnl/charges for one open short-strangle position, marked
     to market against current LTPs (i.e. "what if I closed it right now"),
@@ -91,4 +91,5 @@ def compute_mtm_economics(position: dict, brokers: Optional[dict]) -> Optional[d
     return compute_strangle_pnl(
         position["call_entry_price"], position["put_entry_price"],
         call_ltp, put_ltp, position["quantity"],
+        rates,
     )

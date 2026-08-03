@@ -16,7 +16,9 @@ from automate.db.models import CustomStrategy, CustomStrategyPosition
 def compute_open_positions(user_id: int) -> List[dict]:
     """Every OPEN custom-strategy leg across all of `user_id`'s strategies, as flat per-leg rows."""
     from automate.api.custom_strategy_scheduler import _get_brokers, _is_leg_for_symbol
+    from automate.utils.wallet import get_charge_rates
 
+    rates = get_charge_rates(user_id)
     db = SessionLocal()
     try:
         own_strategy_ids = {
@@ -89,8 +91,8 @@ def compute_open_positions(user_id: int) -> List[dict]:
                 # not the primary display number.
                 from automate.utils.costs import calculate_options_transaction_cost_breakdown
                 exit_side = "BUY" if leg.transaction_type == "SELL" else "SELL"
-                entry_costs = calculate_options_transaction_cost_breakdown(entry, leg.quantity, leg.transaction_type)
-                exit_costs = calculate_options_transaction_cost_breakdown(ltp, leg.quantity, exit_side)
+                entry_costs = calculate_options_transaction_cost_breakdown(entry, leg.quantity, leg.transaction_type, rates)
+                exit_costs = calculate_options_transaction_cost_breakdown(ltp, leg.quantity, exit_side, rates)
                 net_pnl = pnl - entry_costs["total"] - exit_costs["total"]
             chg_pct = round((ltp - entry) / entry * 100, 2) if ltp is not None and entry else None
             rows.append({

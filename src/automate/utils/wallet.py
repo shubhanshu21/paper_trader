@@ -33,6 +33,50 @@ def get_starting_capital(user_id: int) -> float:
         return float(row.starting_capital) if row else 0.0
 
 
+_RATE_COLUMNS = (
+    "brokerage_per_order", "exchange_charge_pct", "gst_pct",
+    "stt_pct", "sebi_charge_pct", "stamp_duty_pct",
+)
+
+
+def get_charge_rates(user_id: int) -> dict:
+    """
+    This account's F&O transaction-cost rates — utils/costs.py's
+    DEFAULT_RATES with any per-user overrides (WalletSettings columns,
+    NULL = "use the default") layered on top. Pass straight through as the
+    `rates` kwarg to calculate_options_transaction_cost_breakdown()/
+    compute_strangle_pnl()/etc.
+    """
+    from automate.utils.costs import DEFAULT_RATES
+
+    rates = dict(DEFAULT_RATES)
+    with get_session() as session:
+        row = session.query(WalletSettings).filter_by(user_id=user_id).first()
+        if row:
+            for col in _RATE_COLUMNS:
+                value = getattr(row, col)
+                if value is not None:
+                    rates[col] = float(value)
+    return rates
+
+
+def set_charge_rates(user_id: int, rates: dict) -> dict:
+    """
+    Persist per-user overrides for any subset of DEFAULT_RATES's keys.
+    Passing None for a key resets that component back to the codebase
+    default. Unknown keys are ignored.
+    """
+    with get_session() as session:
+        row = session.query(WalletSettings).filter_by(user_id=user_id).first()
+        if row is None:
+            row = WalletSettings(user_id=user_id, starting_capital=0)
+            session.add(row)
+        for col in _RATE_COLUMNS:
+            if col in rates:
+                setattr(row, col, rates[col])
+    return get_charge_rates(user_id)
+
+
 def set_starting_capital(user_id: int, value: float) -> float:
     if value < 0:
         raise ValueError("Starting capital can't be negative")
@@ -119,6 +163,8 @@ def _custom_strategy_wallet_stats(user_id: int, mode: str = "paper") -> dict:
     from automate.utils.pnl import compute_basket_pnl
     from sqlalchemy import select
 
+    rates = get_charge_rates(user_id)
+
     with get_session() as session:
         own_strategy_ids = set(session.execute(
             select(CustomStrategy.id).where(CustomStrategy.user_id == user_id)
@@ -195,7 +241,7 @@ def _custom_strategy_wallet_stats(user_id: int, mode: str = "paper") -> dict:
 
         for leg in legs_only:
             entry_charges_open += calculate_options_transaction_cost_breakdown(
-                float(leg.entry_price), leg.quantity, leg.transaction_type
+                float(leg.entry_price), leg.quantity, leg.transaction_type, rates
             )["total"]
 
     realized_pnl = 0.0
@@ -205,7 +251,7 @@ def _custom_strategy_wallet_stats(user_id: int, mode: str = "paper") -> dict:
         result = compute_basket_pnl([
             {"entry_price": l.entry_price, "exit_price": l.exit_price, "quantity": l.quantity, "transaction_type": l.transaction_type}
             for l in legs_only if l.exit_price is not None
-        ])
+        ], rates)
         realized_pnl += result["net_pnl"]
         charges_closed += result["charges"]["total"]
 
@@ -220,6 +266,7 @@ def _custom_strategy_wallet_stats(user_id: int, mode: str = "paper") -> dict:
 
 def get_wallet_summary(user_id: int) -> dict:
     starting_capital = get_starting_capital(user_id)
+    rates = get_charge_rates(user_id)
 
     # 1. Options Positions
     open_paper = get_open_positions(mode="paper", user_id=user_id)
@@ -227,7 +274,7 @@ def get_wallet_summary(user_id: int) -> dict:
 
     margin_blocked_opt = sum(_margin_for(p) for p in open_paper)
     entry_charges_open_opt = sum(
-        entry_charges_only(p["call_entry_price"], p["put_entry_price"], p["quantity"])["total"]
+        entry_charges_only(p["call_entry_price"], p["put_entry_price"], p["quantity"], rates)["total"]
         for p in open_paper
     )
 
@@ -237,6 +284,7 @@ def get_wallet_summary(user_id: int) -> dict:
         econ = compute_strangle_pnl(
             p["call_entry_price"], p["put_entry_price"],
             p["call_exit_price"], p["put_exit_price"], p["quantity"],
+            rates,
         )
         realized_pnl_opt += econ["net_pnl"]
         charges_closed_opt += econ["charges"]["total"]
@@ -300,6 +348,7 @@ def get_ledger(user_id: int) -> List[dict]:
     calculating a running balance walking forward from starting_capital.
     """
     starting_capital = get_starting_capital(user_id)
+    rates = get_charge_rates(user_id)
 
     # Fetch all data
     open_paper = get_open_positions(mode="paper", user_id=user_id)
@@ -324,7 +373,7 @@ def get_ledger(user_id: int) -> List[dict]:
     # 2. Options Open
     for p in open_paper:
         margin = _margin_for(p)
-        charges = entry_charges_only(p["call_entry_price"], p["put_entry_price"], p["quantity"])
+        charges = entry_charges_only(p["call_entry_price"], p["put_entry_price"], p["quantity"], rates)
         events.append({
             "date": p["entry_date"],
             "position_id": p["id"],
@@ -341,8 +390,9 @@ def get_ledger(user_id: int) -> List[dict]:
         econ = compute_strangle_pnl(
             p["call_entry_price"], p["put_entry_price"],
             p["call_exit_price"], p["put_exit_price"], p["quantity"],
+            rates,
         )
-        entry_charges = entry_charges_only(p["call_entry_price"], p["put_entry_price"], p["quantity"])["total"]
+        entry_charges = entry_charges_only(p["call_entry_price"], p["put_entry_price"], p["quantity"], rates)["total"]
         exit_charges = round(econ["charges"]["total"] - entry_charges, 2)
 
         events.append({

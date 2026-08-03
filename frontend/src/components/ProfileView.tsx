@@ -1,10 +1,33 @@
 import React, { useState } from "react";
 import { useDispatch } from "react-redux";
 import { useNavigate } from "react-router-dom";
-import { User as UserType, LedgerItem, api } from "../api";
+import { User as UserType, LedgerItem, ChargeRates, api } from "../api";
 import { C, FONT, inr, Banner, fmtDate } from "./Common";
 import { logout } from "../store/slices/authSlice";
 import { AppDispatch } from "../store";
+
+// Percentage-rate fields (everything except the flat per-order brokerage)
+// are stored server-side as fractions (0.0015 = 0.15%) — edited here as
+// human percentages and converted back to a fraction on save.
+const PCT_FIELDS = ["exchange_charge_pct", "gst_pct", "stt_pct", "sebi_charge_pct", "stamp_duty_pct"] as const;
+
+const CHARGE_FIELD_LABELS: Record<keyof ChargeRates, string> = {
+  brokerage_per_order: "Brokerage (₹ per order)",
+  exchange_charge_pct: "Exchange transaction charge (%)",
+  gst_pct: "GST (%)",
+  stt_pct: "STT — options sell side (%)",
+  sebi_charge_pct: "SEBI charges (%)",
+  stamp_duty_pct: "Stamp duty — buy side (%)",
+};
+
+function ratesToInputs(rates: ChargeRates): Record<keyof ChargeRates, string> {
+  const out = {} as Record<keyof ChargeRates, string>;
+  (Object.keys(rates) as (keyof ChargeRates)[]).forEach((k) => {
+    const isPct = (PCT_FIELDS as readonly string[]).includes(k);
+    out[k] = String(isPct ? rates[k] * 100 : rates[k]);
+  });
+  return out;
+}
 
 interface ProfileProps {
   currentUser: UserType | null;
@@ -21,6 +44,62 @@ export default function ProfileView({ currentUser, ledger, onRefreshData }: Prof
   const [feedback, setFeedback] = useState({ msg: "", isError: false });
   const [loading, setLoading] = useState(false);
   const [loggingOutAll, setLoggingOutAll] = useState(false);
+
+  const [chargeRateInputs, setChargeRateInputs] = useState<Record<keyof ChargeRates, string> | null>(null);
+  const [chargeRateDefaults, setChargeRateDefaults] = useState<ChargeRates | null>(null);
+  const [chargeRatesBusy, setChargeRatesBusy] = useState(false);
+  const [chargeRatesFeedback, setChargeRatesFeedback] = useState({ msg: "", isError: false });
+
+  React.useEffect(() => {
+    (async () => {
+      try {
+        const res = await api.getChargeRates();
+        setChargeRateInputs(ratesToInputs(res.rates));
+        setChargeRateDefaults(res.defaults);
+      } catch {
+        // Profile page still works without this card if the fetch fails — user can retry via Save.
+      }
+    })();
+  }, []);
+
+  const handleSaveChargeRates = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!chargeRateInputs) return;
+    setChargeRatesFeedback({ msg: "", isError: false });
+    setChargeRatesBusy(true);
+    try {
+      const payload: Partial<ChargeRates> = {};
+      (Object.keys(chargeRateInputs) as (keyof ChargeRates)[]).forEach((k) => {
+        const raw = parseFloat(chargeRateInputs[k]);
+        if (!isNaN(raw)) {
+          payload[k] = (PCT_FIELDS as readonly string[]).includes(k) ? raw / 100 : raw;
+        }
+      });
+      const res = await api.setChargeRates(payload);
+      setChargeRateInputs(ratesToInputs(res.rates));
+      setChargeRatesFeedback({ msg: "Transaction cost rates updated.", isError: false });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : undefined;
+      setChargeRatesFeedback({ msg: message || "Failed to update rates.", isError: true });
+    } finally {
+      setChargeRatesBusy(false);
+    }
+  };
+
+  const handleResetChargeRates = async () => {
+    setChargeRatesFeedback({ msg: "", isError: false });
+    setChargeRatesBusy(true);
+    try {
+      const res = await api.setChargeRates({});
+      setChargeRateInputs(ratesToInputs(res.rates));
+      setChargeRatesFeedback({ msg: "Reset to the current default rates.", isError: false });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : undefined;
+      setChargeRatesFeedback({ msg: message || "Failed to reset rates.", isError: true });
+    } finally {
+      setChargeRatesBusy(false);
+    }
+  };
 
   const [mfaEnabled, setMfaEnabled] = useState(!!currentUser?.mfa_enabled);
   const [mfaStep, setMfaStep] = useState<"idle" | "setup" | "backup-codes" | "disable">("idle");
@@ -433,6 +512,70 @@ export default function ProfileView({ currentUser, ledger, onRefreshData }: Prof
             </button>
           </div>
         </div>
+      </div>
+
+      {/* Transaction Cost Rates (F&O) */}
+      <div className="bg-white p-6 border rounded-lg shadow-sm mb-12">
+        <div className="flex items-start justify-between mb-1">
+          <h3 className="text-lg font-medium text-gray-800">Transaction Cost Rates (F&O)</h3>
+          <button
+            type="button"
+            onClick={handleResetChargeRates}
+            disabled={chargeRatesBusy || !chargeRateInputs}
+            className="px-3 py-1.5 text-xs font-semibold text-gray-600 border rounded hover:bg-gray-50 disabled:opacity-50 shrink-0 ml-3"
+            style={{ borderColor: C.border2 }}
+          >
+            Reset to Defaults
+          </button>
+        </div>
+        <p className="text-xs text-gray-500 mb-4">
+          Every backtest/paper/live P&L figure is computed net of these Indian F&O charges (brokerage, exchange
+          transaction charge, GST, STT, SEBI charges, stamp duty). NSE/SEBI/the government revise these rates from
+          time to time — update them here to keep P&L accurate without waiting on an app update.
+        </p>
+
+        {chargeRatesFeedback.msg && (
+          <div className={`px-4 py-2 mb-4 rounded text-xs border ${chargeRatesFeedback.isError ? "bg-red-50 border-red-200 text-red-600" : "bg-green-50 border-green-200 text-green-600"}`}>
+            {chargeRatesFeedback.msg}
+          </div>
+        )}
+
+        {!chargeRateInputs ? (
+          <div className="text-xs text-gray-400">Loading current rates...</div>
+        ) : (
+          <form onSubmit={handleSaveChargeRates} className="space-y-4">
+            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+              {(Object.keys(CHARGE_FIELD_LABELS) as (keyof ChargeRates)[]).map((field) => (
+                <div key={field}>
+                  <label className="block text-[11px] font-medium text-gray-600 mb-1">{CHARGE_FIELD_LABELS[field]}</label>
+                  <div className="relative">
+                    <input
+                      type="number"
+                      step="any"
+                      value={chargeRateInputs[field]}
+                      onChange={(e) => setChargeRateInputs((prev) => prev && { ...prev, [field]: e.target.value })}
+                      className="w-full px-3 py-2 border rounded focus:ring-1 focus:ring-orange-500 outline-none text-sm"
+                      style={{ borderColor: C.border2 }}
+                    />
+                  </div>
+                  {chargeRateDefaults && (
+                    <p className="text-[10px] text-gray-400 mt-1">
+                      Default: {(PCT_FIELDS as readonly string[]).includes(field) ? (chargeRateDefaults[field] * 100) : chargeRateDefaults[field]}
+                      {(PCT_FIELDS as readonly string[]).includes(field) ? "%" : ""}
+                    </p>
+                  )}
+                </div>
+              ))}
+            </div>
+            <button
+              type="submit"
+              disabled={chargeRatesBusy}
+              className="px-4 py-2 text-xs font-semibold text-white bg-blue-500 rounded hover:bg-blue-600 disabled:bg-gray-300 shadow-sm"
+            >
+              {chargeRatesBusy ? "Saving..." : "Save Rates"}
+            </button>
+          </form>
+        )}
       </div>
 
       {/* Statement */}

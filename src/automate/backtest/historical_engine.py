@@ -121,10 +121,16 @@ class HistoricalCycleEngine:
         future_instrument: str = "FUTSTK",
         audit_log_path: str = "logs/mock_audit_trail.log",
         strategy_kwargs: Optional[dict] = None,
+        charge_rates: Optional[dict] = None,
     ) -> None:
         if strategy not in STRATEGIES:
             raise ValueError(f"Unknown strategy '{strategy}'. Available: {list(STRATEGIES)}")
 
+        # This strategy owner's F&O charge-rate overrides (see
+        # utils/wallet.py's get_charge_rates()) — defaults to
+        # utils/costs.py's DEFAULT_RATES when not passed (e.g. this
+        # endpoint's legacy unauthenticated callers).
+        self.charge_rates = charge_rates
         self.symbol = symbol.upper()
         self.strategy_cls = STRATEGIES[strategy]
         self.num_lots = num_lots
@@ -332,8 +338,8 @@ class HistoricalCycleEngine:
                 )
                 return None
 
-            entry_costs = calculate_options_transaction_cost_breakdown(sell["execution_price"], sell["quantity"], "SELL")
-            exit_costs = calculate_options_transaction_cost_breakdown(exit_price, sell["quantity"], "BUY")
+            entry_costs = calculate_options_transaction_cost_breakdown(sell["execution_price"], sell["quantity"], "SELL", self.charge_rates)
+            exit_costs = calculate_options_transaction_cost_breakdown(exit_price, sell["quantity"], "BUY", self.charge_rates)
             leg_charges.extend([entry_costs, exit_costs])
             leg_gross = (sell["execution_price"] - exit_price) * sell["quantity"]
             gross_pnl += leg_gross

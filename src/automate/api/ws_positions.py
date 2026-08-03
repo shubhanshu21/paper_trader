@@ -39,9 +39,15 @@ def _scope_user_id(user: dict):
 
 
 def _snapshot_options(brokers, user: dict) -> list:
+    from automate.utils.wallet import get_charge_rates
+
     positions = get_open_positions(user_id=_scope_user_id(user))
+    # Admins viewing the system-wide (no-owner) feed get their OWN rates
+    # applied to every row — a minor approximation for that one cross-account
+    # view, same as elsewhere (see routes_positions.py).
+    rates = get_charge_rates(int(user["sub"]))
     for pos in positions:
-        econ = compute_mtm_economics(pos, brokers)
+        econ = compute_mtm_economics(pos, brokers, rates)
         pos["mtm"] = None if econ is None else econ["gross_pnl"]
         pos["net_mtm"] = None if econ is None else econ["net_pnl"]
         pos["charges"] = None if econ is None else econ["charges"]

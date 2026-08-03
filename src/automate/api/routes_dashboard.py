@@ -12,16 +12,18 @@ from automate.api.auth import get_current_user
 from automate.utils.backtest_history import get_latest_backtest_per_symbol
 from automate.utils.pnl import compute_strangle_pnl
 from automate.utils.position_tracker import get_closed_positions
+from automate.utils.wallet import get_charge_rates
 
 router = APIRouter(prefix="/api/performance", tags=["performance"])
 
 
-def _closed_pnl(position: dict) -> float:
+def _closed_pnl(position: dict, rates: dict) -> float:
     """Net of real Indian F&O charges — see utils/pnl.py."""
     return compute_strangle_pnl(
         position["call_entry_price"], position["put_entry_price"],
         position["call_exit_price"] or 0.0, position["put_exit_price"] or 0.0,
         position["quantity"],
+        rates,
     )["net_pnl"]
 
 
@@ -36,8 +38,9 @@ def performance(user: dict = Depends(get_current_user)):
     live_trades: dict = defaultdict(int)
     live_wins: dict = defaultdict(int)
 
+    rates = get_charge_rates(int(user["sub"]))
     for pos in get_closed_positions(limit=100000, user_id=int(user["sub"])):
-        pnl = _closed_pnl(pos)
+        pnl = _closed_pnl(pos, rates)
         symbol = pos["symbol"]
         if pos["mode"] == "live":
             live_pnl[symbol] += pnl

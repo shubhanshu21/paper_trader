@@ -19,6 +19,7 @@ from automate.api.custom_strategy_scheduler import _is_leg_for_symbol
 from automate.db.engine import SessionLocal
 from automate.db.models import CustomStrategy, CustomStrategyPosition
 from automate.utils.pnl import compute_basket_pnl
+from automate.utils.wallet import get_charge_rates
 
 router = APIRouter(prefix="/api/leaderboard", tags=["leaderboard"])
 
@@ -69,6 +70,8 @@ def leaderboard(user: dict = Depends(get_current_user)):
         if not closed_legs:
             return {"rows": []}
 
+        rates = get_charge_rates(int(user["sub"]))
+
         strategies = {
             s.id: s for s in db.query(CustomStrategy).filter(CustomStrategy.id.in_(own_strategy_ids)).all()
         }
@@ -107,7 +110,7 @@ def leaderboard(user: dict = Depends(get_current_user)):
                     "quantity": leg.quantity, "transaction_type": leg.transaction_type,
                 }
                 for leg in legs
-            ])
+            ], rates)
             key = (strategy.name, symbol, mode)
             pnl_map[key] += result["net_pnl"]
             trades_map[key] += 1

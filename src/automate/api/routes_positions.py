@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from automate.api.auth import get_current_user
 from automate.utils.pnl import compute_strangle_pnl
 from automate.utils.position_tracker import get_open_positions, get_closed_positions, get_position
+from automate.utils.wallet import get_charge_rates
 from automate.api.deps import get_brokers, get_audit_trail, get_rate_limiter, compute_mtm_economics
 
 log = logging.getLogger("api.positions")
@@ -21,8 +22,11 @@ def _scope_user_id(user: dict) -> int | None:
 def list_open_positions(user: dict = Depends(get_current_user)):
     brokers = get_brokers()
     positions = get_open_positions(user_id=_scope_user_id(user))
+    # Admins viewing the system-wide (no-owner) feed get their OWN rates
+    # applied to every row — a minor approximation for that one cross-account view.
+    rates = get_charge_rates(int(user["sub"]))
     for pos in positions:
-        econ = compute_mtm_economics(pos, brokers)
+        econ = compute_mtm_economics(pos, brokers, rates)
         pos["mtm"] = None if econ is None else econ["gross_pnl"]
         pos["net_mtm"] = None if econ is None else econ["net_pnl"]
         pos["charges"] = None if econ is None else econ["charges"]
@@ -32,11 +36,13 @@ def list_open_positions(user: dict = Depends(get_current_user)):
 @router.get("/closed")
 def list_closed_positions(limit: int = 50, user: dict = Depends(get_current_user)):
     positions = get_closed_positions(limit=limit, user_id=_scope_user_id(user))
+    rates = get_charge_rates(int(user["sub"]))
     for pos in positions:
         econ = compute_strangle_pnl(
             pos["call_entry_price"], pos["put_entry_price"],
             pos["call_exit_price"] or 0.0, pos["put_exit_price"] or 0.0,
             pos["quantity"],
+            rates,
         )
         pos["gross_pnl"] = econ["gross_pnl"]
         pos["net_pnl"] = econ["net_pnl"]

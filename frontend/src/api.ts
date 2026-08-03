@@ -33,6 +33,20 @@ export interface WalletSummary {
   open_positions_count: number;
 }
 
+export interface ChargeRates {
+  brokerage_per_order: number;
+  exchange_charge_pct: number;
+  gst_pct: number;
+  stt_pct: number;
+  sebi_charge_pct: number;
+  stamp_duty_pct: number;
+}
+
+export interface ChargeRatesResponse {
+  rates: ChargeRates;
+  defaults: ChargeRates;
+}
+
 export interface WalletResetResult extends WalletSummary {
   deleted_positions: number;
   deleted_equity: number;
@@ -495,6 +509,13 @@ export const api = {
       body: JSON.stringify({ starting_capital }),
     }),
   resetWallet: () => request<WalletResetResult>('/api/wallet/reset', { method: 'POST' }),
+  getChargeRates: () => request<ChargeRatesResponse>('/api/wallet/charge-rates'),
+  setChargeRates: (rates: Partial<ChargeRates>) =>
+    request<ChargeRatesResponse>('/api/wallet/charge-rates', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(rates),
+    }),
 
   // Orders
   getOrders: (mode?: string, limit = 200) => request<Order[]>(`/api/orders?limit=${limit}${mode ? `&mode=${mode}` : ''}`),

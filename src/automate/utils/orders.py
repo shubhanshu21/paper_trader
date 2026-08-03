@@ -13,8 +13,8 @@ from automate.utils.costs import calculate_options_transaction_cost_breakdown
 from automate.utils.position_tracker import get_closed_positions, get_open_positions
 
 
-def _leg_order(pos: dict, leg: str, side: str, strike: int, price: float, order_id: Optional[str], order_date: str) -> dict:
-    charges = calculate_options_transaction_cost_breakdown(price, pos["quantity"], side)
+def _leg_order(pos: dict, leg: str, side: str, strike: int, price: float, order_id: Optional[str], order_date: str, rates: Optional[dict] = None) -> dict:
+    charges = calculate_options_transaction_cost_breakdown(price, pos["quantity"], side, rates)
     return {
         "order_id": order_id,
         "date": order_date,
@@ -32,7 +32,7 @@ def _leg_order(pos: dict, leg: str, side: str, strike: int, price: float, order_
     }
 
 
-def _custom_strategy_orders(user_id: Optional[int], mode: Optional[str]) -> List[dict]:
+def _custom_strategy_orders(user_id: Optional[int], mode: Optional[str], rates: Optional[dict] = None) -> List[dict]:
     """
     Synthetic order rows for Custom Strategy Builder legs (CustomStrategyPosition)
     — same derivation approach as the option-strangle section above (positions
@@ -84,7 +84,7 @@ def _custom_strategy_orders(user_id: Optional[int], mode: Optional[str]) -> List
         # splits a time-of-day out of this field to show in its "Time"
         # column, matching the legacy strangle rows' entry_date format.
         entry_date = leg.opened_at.isoformat() if leg.opened_at else ""
-        entry_charges = calculate_options_transaction_cost_breakdown(entry_price, leg.quantity, leg.transaction_type)
+        entry_charges = calculate_options_transaction_cost_breakdown(entry_price, leg.quantity, leg.transaction_type, rates)
         orders.append({
             "order_id": leg.order_id,
             "date": entry_date,
@@ -105,7 +105,7 @@ def _custom_strategy_orders(user_id: Optional[int], mode: Optional[str]) -> List
             exit_side = "BUY" if leg.transaction_type == "SELL" else "SELL"
             exit_price = float(leg.exit_price)
             exit_date = leg.closed_at.isoformat() if leg.closed_at else entry_date
-            exit_charges = calculate_options_transaction_cost_breakdown(exit_price, leg.quantity, exit_side)
+            exit_charges = calculate_options_transaction_cost_breakdown(exit_price, leg.quantity, exit_side, rates)
             orders.append({
                 "order_id": leg.exit_order_id,
                 "date": exit_date,
@@ -126,19 +126,24 @@ def _custom_strategy_orders(user_id: Optional[int], mode: Optional[str]) -> List
 
 
 def get_order_book(mode: Optional[str] = None, limit: int = 200, user_id: Optional[int] = None) -> List[dict]:
+    rates = None
+    if user_id is not None:
+        from automate.utils.wallet import get_charge_rates
+        rates = get_charge_rates(user_id)
+
     # 1. Option strangles
     positions = get_open_positions(mode=mode, user_id=user_id) + get_closed_positions(limit=None, mode=mode, user_id=user_id)
     orders: List[dict] = []
 
     for p in positions:
-        orders.append(_leg_order(p, "CE", "SELL", p["call_strike"], p["call_entry_price"], p["call_order_id"], p["entry_date"]))
-        orders.append(_leg_order(p, "PE", "SELL", p["put_strike"], p["put_entry_price"], p["put_order_id"], p["entry_date"]))
+        orders.append(_leg_order(p, "CE", "SELL", p["call_strike"], p["call_entry_price"], p["call_order_id"], p["entry_date"], rates))
+        orders.append(_leg_order(p, "PE", "SELL", p["put_strike"], p["put_entry_price"], p["put_order_id"], p["entry_date"], rates))
         if p["status"] == "CLOSED":
-            orders.append(_leg_order(p, "CE", "BUY", p["call_strike"], p["call_exit_price"], p["call_exit_order_id"], p["exit_date"]))
-            orders.append(_leg_order(p, "PE", "BUY", p["put_strike"], p["put_exit_price"], p["put_exit_order_id"], p["exit_date"]))
+            orders.append(_leg_order(p, "CE", "BUY", p["call_strike"], p["call_exit_price"], p["call_exit_order_id"], p["exit_date"], rates))
+            orders.append(_leg_order(p, "PE", "BUY", p["put_strike"], p["put_exit_price"], p["put_exit_order_id"], p["exit_date"], rates))
 
     # 1b. Custom Strategy Builder legs
-    orders.extend(_custom_strategy_orders(user_id, mode))
+    orders.extend(_custom_strategy_orders(user_id, mode, rates))
 
     # 2. Equity and manual terminal positions
     from automate.db.engine import get_session

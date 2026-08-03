@@ -466,7 +466,7 @@ def _try_entry(db, strategy: CustomStrategy, broker) -> None:
                      strategy.id, strategy.name, symbol, mode, len(result["legs"]))
 
 
-def _combined_pnl_pct(legs: list[CustomStrategyPosition], now_prices: dict) -> Optional[float]:
+def _combined_pnl_pct(legs: list[CustomStrategyPosition], now_prices: dict, rates: Optional[dict] = None) -> Optional[float]:
     """
     NET P&L (of the combined premium at entry) — includes real Upstox
     transaction costs (brokerage/STT/exchange charges/GST/SEBI charges/
@@ -497,8 +497,8 @@ def _combined_pnl_pct(legs: list[CustomStrategyPosition], now_prices: dict) -> O
         denom += entry * qty
 
         exit_transaction_type = "BUY" if leg.transaction_type == "SELL" else "SELL"
-        entry_costs = calculate_options_transaction_cost_breakdown(entry, qty, leg.transaction_type)
-        exit_costs = calculate_options_transaction_cost_breakdown(now, qty, exit_transaction_type)
+        entry_costs = calculate_options_transaction_cost_breakdown(entry, qty, leg.transaction_type, rates)
+        exit_costs = calculate_options_transaction_cost_breakdown(now, qty, exit_transaction_type, rates)
         pnl_amount -= entry_costs.get("total", 0) + exit_costs.get("total", 0)
     return (pnl_amount / denom * 100.0) if denom > 0 else 0.0
 
@@ -573,8 +573,11 @@ def _try_exit_individual_leg(db, strategy: CustomStrategy, broker, leg: CustomSt
     stop_loss_pct = config.get("stop_loss_pct")
     trailing = config.get("trailing") or {}
 
+    from automate.utils.wallet import get_charge_rates
+    rates = get_charge_rates(strategy.user_id)
+
     trigger = None
-    pnl_pct = _combined_pnl_pct([leg], now_prices)
+    pnl_pct = _combined_pnl_pct([leg], now_prices, rates)
     if pnl_pct is not None:
         trigger = check_exit_trigger(pnl_pct, take_profit_pct, stop_loss_pct)
 
@@ -607,6 +610,9 @@ def _try_exit(db, strategy: CustomStrategy, broker) -> None:
     ).all()
     if not legs:
         return
+
+    from automate.utils.wallet import get_charge_rates
+    rates = get_charge_rates(strategy.user_id)
 
     rules = json.loads(strategy.rules_json)
     exit_rule = rules.get("exit") or {}
@@ -654,7 +660,7 @@ def _try_exit(db, strategy: CustomStrategy, broker) -> None:
         #    own exit config (today's exact behavior when no leg has a
         #    per-leg config: combined_managed == still_open == symbol_legs).
         combined_managed = [l for l in still_open if not l.leg_config_json]
-        pnl_pct = _combined_pnl_pct(combined_managed, now_prices) if combined_managed else None
+        pnl_pct = _combined_pnl_pct(combined_managed, now_prices, rates) if combined_managed else None
         trigger = check_exit_trigger(pnl_pct, take_profit_pct, stop_loss_pct) if pnl_pct is not None else None
 
         # 3. Strategy-level time/expiry — a calendar "hard stop" that
@@ -690,7 +696,7 @@ def _try_exit(db, strategy: CustomStrategy, broker) -> None:
         # same as any other per-leg detail; still fully visible on each
         # leg's own CustomStrategyPosition row.
         if combined_managed and len(combined_closed) == len(combined_managed):
-            final_pct = _combined_pnl_pct(combined_managed, now_prices) or 0.0
+            final_pct = _combined_pnl_pct(combined_managed, now_prices, rates) or 0.0
             if strategy.status == "LIVE":
                 strategy.live_return_pct = round(final_pct, 4)
             else:

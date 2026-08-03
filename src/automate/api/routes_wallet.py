@@ -5,8 +5,9 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from automate.api.auth import get_current_user
+from automate.utils.costs import DEFAULT_RATES
 from automate.utils.orders import get_order_book
-from automate.utils.wallet import get_ledger, get_wallet_summary, set_starting_capital
+from automate.utils.wallet import get_charge_rates, get_ledger, get_wallet_summary, set_charge_rates, set_starting_capital
 from automate.utils.wallet_adjustments import add_adjustment
 
 router = APIRouter(prefix="/api/wallet", tags=["wallet"])
@@ -20,6 +21,16 @@ class AdjustmentRequest(BaseModel):
 
 class CapitalRequest(BaseModel):
     starting_capital: float
+
+
+class ChargeRatesRequest(BaseModel):
+    """Any field left out (None) is reset to the codebase default for that component."""
+    brokerage_per_order: Optional[float] = None
+    exchange_charge_pct: Optional[float] = None
+    gst_pct: Optional[float] = None
+    stt_pct: Optional[float] = None
+    sebi_charge_pct: Optional[float] = None
+    stamp_duty_pct: Optional[float] = None
 
 
 @router.get("")
@@ -50,6 +61,31 @@ def wallet_set_capital(req: CapitalRequest, user: dict = Depends(get_current_use
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     return get_wallet_summary(user_id)
+
+
+@router.get("/charge-rates")
+def wallet_get_charge_rates(user: dict = Depends(get_current_user)):
+    """
+    This account's effective F&O transaction-cost rates (any per-user
+    override layered on the codebase defaults) plus the defaults
+    themselves, so the Profile page can show what "reset to default" would
+    revert each field to.
+    """
+    return {"rates": get_charge_rates(int(user["sub"])), "defaults": DEFAULT_RATES}
+
+
+@router.post("/charge-rates")
+def wallet_set_charge_rates(req: ChargeRatesRequest, user: dict = Depends(get_current_user)):
+    """
+    Persist per-user overrides for the transaction-cost formula (see
+    utils/costs.py) — lets the app be kept in sync with NSE/SEBI/govt rate
+    changes from the Profile page, without a code deploy. A field omitted
+    from the request body resets that component back to the codebase
+    default (see ChargeRatesRequest).
+    """
+    user_id = int(user["sub"])
+    set_charge_rates(user_id, req.model_dump())
+    return {"rates": get_charge_rates(user_id), "defaults": DEFAULT_RATES}
 
 
 @router.post("/reset")

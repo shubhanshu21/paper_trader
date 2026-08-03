@@ -172,6 +172,18 @@ class WalletSettings(Base):
     user_id          = Column(BigInteger, nullable=True, unique=True)
     starting_capital = Column(Numeric(16, 2), nullable=False, server_default="0")
 
+    # Per-user F&O transaction cost overrides (see utils/costs.py's
+    # DEFAULT_RATES) — NULL means "use the codebase default for that
+    # component", so a brand-new row (or a column added by a later
+    # migration) doesn't need a backfill to keep working. Edited from the
+    # Profile page whenever NSE/SEBI/govt revise a rate, without a deploy.
+    brokerage_per_order = Column(Numeric(10, 2), nullable=True)
+    exchange_charge_pct = Column(Numeric(12, 8), nullable=True)
+    gst_pct             = Column(Numeric(6, 4), nullable=True)
+    stt_pct             = Column(Numeric(6, 4), nullable=True)
+    sebi_charge_pct     = Column(Numeric(12, 8), nullable=True)
+    stamp_duty_pct      = Column(Numeric(12, 8), nullable=True)
+
 
 # ---------------------------------------------------------------------------
 # Panel authentication: registered users

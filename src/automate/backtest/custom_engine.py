@@ -96,6 +96,7 @@ class CustomRuleBacktestEngine:
         option_instrument: str = "OPTSTK",
         future_instrument: str = "FUTSTK",
         audit_log_path: str = "logs/mock_audit_trail.log",
+        charge_rates: Optional[dict] = None,
     ) -> None:
         self.symbol = symbol.upper()
         self.rules = rules
@@ -103,6 +104,11 @@ class CustomRuleBacktestEngine:
         self.product = product
         self.option_instrument = option_instrument
         self.future_instrument = future_instrument
+        # This strategy owner's F&O charge-rate overrides (see
+        # utils/wallet.py's get_charge_rates()) — defaults to
+        # utils/costs.py's DEFAULT_RATES when not passed (e.g. CLI/dev tools
+        # with no per-user concept).
+        self.charge_rates = charge_rates
 
         self.session = SessionLocal()
         equity_key = InstrumentCache().resolve_key(self.symbol)
@@ -512,8 +518,8 @@ class CustomRuleBacktestEngine:
                 leg["exit_price"] = round(exit_price, 4)
                 sign = 1 if leg["transaction_type"] == "SELL" else -1
                 leg_gross = (leg["entry_price"] - exit_price) * leg["quantity"] * sign
-                entry_costs = calculate_options_transaction_cost_breakdown(leg["entry_price"], leg["quantity"], leg["transaction_type"])
-                exit_costs = calculate_options_transaction_cost_breakdown(exit_price, leg["quantity"], exit_transaction_type)
+                entry_costs = calculate_options_transaction_cost_breakdown(leg["entry_price"], leg["quantity"], leg["transaction_type"], self.charge_rates)
+                exit_costs = calculate_options_transaction_cost_breakdown(exit_price, leg["quantity"], exit_transaction_type, self.charge_rates)
                 leg_charges.extend([entry_costs, exit_costs])
                 total_charges = entry_costs.get("total", 0) + exit_costs.get("total", 0)
                 gross_pnl += leg_gross

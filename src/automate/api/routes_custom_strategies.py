@@ -382,6 +382,7 @@ def _run_backtest_symbols(
     from_date: Optional[str],
     to_date: Optional[str],
     on_progress: Optional[Any] = None,
+    charge_rates: Optional[dict] = None,
 ) -> tuple:
     """
     Run CustomRuleBacktestEngine once per symbol (a strategy can be
@@ -408,6 +409,7 @@ def _run_backtest_symbols(
         try:
             engine = CustomRuleBacktestEngine(
                 symbol=symbol, rules=rules, option_instrument=option_instrument, future_instrument=future_instrument,
+                charge_rates=charge_rates,
             )
             cycles = engine.run(from_date, to_date, on_progress=(
                 (lambda done, total, sym=symbol: on_progress(sym, done, total)) if on_progress else None
@@ -484,9 +486,12 @@ def _run_backtest_sync(run_id: int) -> None:
             if total and done >= total:
                 completed_symbols["n"] += 1
 
+        from automate.utils.wallet import get_charge_rates
+        charge_rates = get_charge_rates(db_strategy.user_id) if db_strategy else None
+
         cycles, per_symbol, skipped_symbols = _run_backtest_symbols(
             symbols, rules, db_strategy.instrument_type if db_strategy else "STOCK",
-            run.from_date, run.to_date, on_progress=on_progress,
+            run.from_date, run.to_date, on_progress=on_progress, charge_rates=charge_rates,
         )
 
         if not cycles:

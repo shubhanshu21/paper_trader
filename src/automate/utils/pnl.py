@@ -12,7 +12,8 @@ from automate.utils.costs import calculate_options_transaction_cost_breakdown, s
 
 
 def compute_strangle_pnl(
-    call_entry: float, put_entry: float, call_exit: float, put_exit: float, quantity: int
+    call_entry: float, put_entry: float, call_exit: float, put_exit: float, quantity: int,
+    rates: dict = None,
 ) -> dict:
     """
     gross/net P&L (₹) and the combined charges breakdown across all 4 legs
@@ -21,13 +22,17 @@ def compute_strangle_pnl(
     `call_exit`/`put_exit` may be either an actual closing fill price (closed
     position) or the current LTP (mark-to-market on an open position) — the
     math is identical either way.
+
+    `rates`: this account's charge-rate overrides — see
+    utils/wallet.py's get_charge_rates(). Defaults to utils/costs.py's
+    DEFAULT_RATES when not passed.
     """
     gross_pnl = (call_entry - call_exit + put_entry - put_exit) * quantity
 
-    call_entry_c = calculate_options_transaction_cost_breakdown(call_entry, quantity, "SELL")
-    put_entry_c = calculate_options_transaction_cost_breakdown(put_entry, quantity, "SELL")
-    call_exit_c = calculate_options_transaction_cost_breakdown(call_exit, quantity, "BUY")
-    put_exit_c = calculate_options_transaction_cost_breakdown(put_exit, quantity, "BUY")
+    call_entry_c = calculate_options_transaction_cost_breakdown(call_entry, quantity, "SELL", rates)
+    put_entry_c = calculate_options_transaction_cost_breakdown(put_entry, quantity, "SELL", rates)
+    call_exit_c = calculate_options_transaction_cost_breakdown(call_exit, quantity, "BUY", rates)
+    put_exit_c = calculate_options_transaction_cost_breakdown(put_exit, quantity, "BUY", rates)
     charges = sum_breakdowns(call_entry_c, put_entry_c, call_exit_c, put_exit_c)
 
     return {
@@ -37,14 +42,14 @@ def compute_strangle_pnl(
     }
 
 
-def entry_charges_only(call_entry: float, put_entry: float, quantity: int) -> dict:
+def entry_charges_only(call_entry: float, put_entry: float, quantity: int, rates: dict = None) -> dict:
     """Charges already incurred on an open position (entry SELL legs only, no exit yet)."""
-    call_entry_c = calculate_options_transaction_cost_breakdown(call_entry, quantity, "SELL")
-    put_entry_c = calculate_options_transaction_cost_breakdown(put_entry, quantity, "SELL")
+    call_entry_c = calculate_options_transaction_cost_breakdown(call_entry, quantity, "SELL", rates)
+    put_entry_c = calculate_options_transaction_cost_breakdown(put_entry, quantity, "SELL", rates)
     return sum_breakdowns(call_entry_c, put_entry_c)
 
 
-def compute_basket_pnl(legs: list) -> dict:
+def compute_basket_pnl(legs: list, rates: dict = None) -> dict:
     """
     Generalization of compute_strangle_pnl() for a Custom Strategy Builder
     basket of N arbitrary BUY/SELL legs (not just a fixed 2-leg short
@@ -64,8 +69,8 @@ def compute_basket_pnl(legs: list) -> dict:
         gross_pnl += (entry - exit_) * qty * sign
 
         exit_transaction_type = "BUY" if leg["transaction_type"] == "SELL" else "SELL"
-        charge_breakdowns.append(calculate_options_transaction_cost_breakdown(entry, qty, leg["transaction_type"]))
-        charge_breakdowns.append(calculate_options_transaction_cost_breakdown(exit_, qty, exit_transaction_type))
+        charge_breakdowns.append(calculate_options_transaction_cost_breakdown(entry, qty, leg["transaction_type"], rates))
+        charge_breakdowns.append(calculate_options_transaction_cost_breakdown(exit_, qty, exit_transaction_type, rates))
 
     charges = sum_breakdowns(*charge_breakdowns) if charge_breakdowns else {"total": 0.0}
     return {
