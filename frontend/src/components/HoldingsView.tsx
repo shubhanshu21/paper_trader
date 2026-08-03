@@ -45,24 +45,36 @@ const EmptyHoldingsState = () => {
   );
 };
 
+const getTodayIso = () => {
+  const d = new Date();
+  // Shift to IST (UTC + 5:30) since the trading market operates on IST
+  const istOffset = 5.5 * 60 * 60 * 1000;
+  const istDate = new Date(d.getTime() + istOffset);
+  return istDate.toISOString().slice(0, 10);
+};
+
 export default function HoldingsView({ openEquity, ltps, onClosePosition, closingId }: HoldingsProps) {
   const [searchQuery, setSearchQuery] = useState("");
   const [hoveredSymbol, setHoveredSymbol] = useState<string | null>(null);
 
-  // Map API open positions
-  const apiHoldingsList: HoldingListItem[] = openEquity.map(pos => {
-    const sym = pos.display_symbol || pos.symbol.split("|")[0];
-    return {
-      id: pos.id,
-      symbol: sym,
-      name: pos.symbol,
-      qty: pos.quantity,
-      avgCost: pos.entry_price,
-      ltp: ltps[pos.symbol] || pos.entry_price,
-      dayChg: 0.00, // API doesn't specify day change, set standard baseline
-      isApi: true,
-    };
-  });
+  const todayStr = getTodayIso();
+
+  // Map API open positions (holdings are CNC positions older than today)
+  const apiHoldingsList: HoldingListItem[] = openEquity
+    .filter(pos => pos.product === "CNC" && pos.entry_date !== todayStr)
+    .map(pos => {
+      const sym = pos.display_symbol || pos.symbol.split("|")[0];
+      return {
+        id: pos.id,
+        symbol: sym,
+        name: pos.symbol,
+        qty: pos.quantity,
+        avgCost: pos.entry_price,
+        ltp: ltps[pos.symbol] || pos.entry_price,
+        dayChg: 0.00, // API doesn't specify day change, set standard baseline
+        isApi: true,
+      };
+    });
 
   const filteredHoldings = apiHoldingsList.filter(h => 
     h.symbol.toLowerCase().includes(searchQuery.toLowerCase()) ||

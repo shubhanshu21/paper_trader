@@ -1,6 +1,6 @@
 import { useState, ReactNode } from "react";
 import { Search, Download, BarChart2, TrendingUp, ChevronDown, ChevronUp } from "lucide-react";
-import { OptionsPosition } from "../api";
+import { OptionsPosition, EquityPosition } from "../api";
 import { C, FONT, inr, withSign, sign, Banner, Td, Th } from "./Common";
 import { useCustomStrategyPositions as useLiveCustomPositions } from "../hooks/useCustomStrategyPositions";
 
@@ -13,6 +13,14 @@ function ordinalSuffix(day: number): string {
     default: return "th";
   }
 }
+
+const getTodayIso = () => {
+  const d = new Date();
+  // Shift to IST (UTC + 5:30) since the trading market operates on IST
+  const istOffset = 5.5 * 60 * 60 * 1000;
+  const istDate = new Date(d.getTime() + istOffset);
+  return istDate.toISOString().slice(0, 10);
+};
 
 // Kite's compact options-instrument label: expiry day-ordinal, a small
 // "W"/"M" weekly/monthly badge, then "DDMon strike TYPE" — e.g. "25th ᵂ
@@ -68,7 +76,9 @@ function useCustomStrategyPositions(): PositionListItem[] {
 
 interface PositionsProps {
   openOptions: OptionsPosition[];
-  onClosePosition: (id: number, type: "options" | "equity") => void;
+  openEquity: EquityPosition[];
+  ltps: { [key: string]: number };
+  onClosePosition: (id: number, type: "options" | "equity" | "custom") => void;
   closingId: number | null;
 }
 
@@ -84,6 +94,7 @@ interface PositionListItem {
   pnl: number;
   chg: number;
   isApi?: boolean;
+  isEquity?: boolean;
 }
 
 const EmptyPositionsState = () => {
@@ -109,7 +120,7 @@ const EmptyPositionsState = () => {
   );
 };
 
-export default function PositionsView({ openOptions, onClosePosition, closingId }: PositionsProps) {
+export default function PositionsView({ openOptions, openEquity, ltps, onClosePosition, closingId }: PositionsProps) {
   const [searchQuery, setSearchQuery] = useState("");
   const [hoveredSymbol, setHoveredSymbol] = useState<string | null>(null);
   const [historyExpanded, setHistoryExpanded] = useState(false);
@@ -127,12 +138,34 @@ export default function PositionsView({ openOptions, onClosePosition, closingId 
     pnl: pos.mtm || 0.00,
     chg: 0.00,
     isApi: true,
+    isEquity: false,
   }));
+
+  // Map API open equity positions that are either MIS or CNC bought today
+  const todayStr = getTodayIso();
+  const todayEquityPositions: PositionListItem[] = openEquity
+    .filter(pos => pos.product === "MIS" || (pos.product === "CNC" && pos.entry_date === todayStr))
+    .map(pos => {
+      const sym = pos.display_symbol || pos.symbol.split("|")[0];
+      return {
+        id: pos.id,
+        product: pos.product || "CNC",
+        symbol: sym,
+        exch: "NSE",
+        qty: pos.quantity,
+        avg: pos.entry_price,
+        ltp: ltps[pos.symbol] || pos.current_price || pos.entry_price,
+        pnl: pos.unrealized_pnl || 0.00,
+        chg: 0.00,
+        isApi: true,
+        isEquity: true,
+      };
+    });
 
   // Custom Strategy Builder legs merged in as ordinary rows — one unified
   // table rather than a separate section, since there's no natural
   // "Positions" concept that excludes them.
-  const apiPositionsList: PositionListItem[] = [...legacyPositionsList, ...customRows];
+  const apiPositionsList: PositionListItem[] = [...legacyPositionsList, ...todayEquityPositions, ...customRows];
 
   const filteredPositions = apiPositionsList.filter(p => 
     p.symbol.toLowerCase().includes(searchQuery.toLowerCase())
@@ -145,8 +178,13 @@ export default function PositionsView({ openOptions, onClosePosition, closingId 
   const maxPnlAbs = Math.max(...filteredPositions.map(p => Math.abs(p.pnl)), 1);
 
   const handleClose = (item: PositionListItem) => {
-    if (item.isApi && item.id) {
-      onClosePosition(item.id, "options");
+    if (item.id) {
+      if (item.isApi) {
+        onClosePosition(item.id, item.isEquity ? "equity" : "options");
+      } else {
+        // Custom strategy positions have isApi: false
+        onClosePosition(item.id, "custom");
+      }
     }
   };
 

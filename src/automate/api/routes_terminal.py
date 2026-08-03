@@ -40,6 +40,7 @@ def search_instruments(
     exchange: str = Query("", description="Filter by exchange (e.g. NSE_EQ, NSE_FO, MCX_FO)"),
     type: str = Query("", description="Filter by instrument type (e.g. EQUITY, OPTSTK, FUTIDX)"),
     limit: int = 50,
+    _user: dict = Depends(get_current_user),
 ):
     """Search for instruments in the seeded MySQL master table."""
     # Safety guards for programmatic calls that receive Query objects
@@ -60,10 +61,15 @@ def search_instruments(
             words = query.strip().split()
             for word in words:
                 if word:
-                    q_pattern = f"%{word}%"
+                    # Escape SQL LIKE special characters so user input
+                    # is treated as a literal prefix/substring, not a
+                    # wildcard pattern (e.g. "_NIFTY" must not match
+                    # any single leading character).
+                    escaped = word.replace("!", "!!").replace("%", "!%").replace("_", "!_")
+                    q_pattern = f"%{escaped}%"
                     stmt = stmt.where(
-                        (Instrument.symbol.like(q_pattern)) |
-                        (Instrument.name.like(q_pattern))
+                        (Instrument.symbol.like(q_pattern, escape="!")) |
+                        (Instrument.name.like(q_pattern, escape="!"))
                     )
         if exchange:
             stmt = stmt.where(Instrument.exchange == exchange)
@@ -78,9 +84,10 @@ def search_instruments(
             words = query.strip().split()
             if words:
                 first_word = words[0].strip().upper()
+                escaped_first = first_word.replace("!", "!!").replace("%", "!%").replace("_", "!_")
                 order_clauses.append(
                     case(
-                        (Instrument.symbol.like(f"{first_word}%"), 0),
+                        (Instrument.symbol.like(f"{escaped_first}%", escape="!"), 0),
                         else_=1
                     )
                 )
@@ -93,7 +100,7 @@ def search_instruments(
 
 
 @router.get("/ltp/{key}")
-def get_instrument_ltp(key: str, mode: str = "paper"):
+def get_instrument_ltp(key: str, mode: str = "paper", _user: dict = Depends(get_current_user)):
     """
     Fetch real-time LTP quote via the broker.
     Replaces ':' in the key back to '|' for path compatibility.
@@ -116,7 +123,7 @@ def get_instrument_ltp(key: str, mode: str = "paper"):
 
 
 @router.get("/depth/{key}")
-def get_market_depth(key: str, mode: str = "paper"):
+def get_market_depth(key: str, mode: str = "paper", _user: dict = Depends(get_current_user)):
     """
     5-level bid/offer book + OHLC/volume/circuit-limit snapshot for the
     market depth panel. Returns zeroed-out depth (not a 404/502) when the
@@ -363,13 +370,21 @@ def close_manual_position(position_id: int, user: dict = Depends(get_current_use
         # Resolve order direction to execute order
         exit_dir = "SELL" if pos.direction == "BUY" or pos.direction == "LONG" else "BUY"
 
-        # Place the opposite order via terminal trade logic
-        req = ManualTradeRequest(
-            instrument_key=pos.symbol,
-            direction=exit_dir,
-            quantity=pos.quantity,
-            product=pos.product,
-            mode=pos.mode
-        )
+        # Snapshot all needed attributes from pos before the session
+        # context exits — accessing ORM-mapped attributes after the
+        # session closes raises DetachedInstanceError, and execute_manual_trade
+        # opens its own session, so these must be plain Python values.
+        instrument_key = pos.symbol
+        quantity = pos.quantity
+        product = pos.product
+        mode = pos.mode
+
+    req = ManualTradeRequest(
+        instrument_key=instrument_key,
+        direction=exit_dir,
+        quantity=quantity,
+        product=product,
+        mode=mode,
+    )
 
     return execute_manual_trade(req, user)

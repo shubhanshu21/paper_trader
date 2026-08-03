@@ -921,18 +921,23 @@ export default function StrategiesView({
     }
   };
 
-  const pollBacktestRun = async (strategy: CustomStrategy, runId: number) => {
+  const pollBacktestRun = async (strategy: CustomStrategy, runId: number, signal: AbortSignal) => {
     // Polls every 1.5s while QUEUED/RUNNING — a 20+ year monthly history
     // is a real background job now (see routes_custom_strategies.py's
     // async POST /backtest), not something that finishes within one request.
+    // Uses an AbortSignal so polling stops cleanly when the component
+    // unmounts or the user navigates away, preventing state updates on
+    // an unmounted component and orphaned fetch loops.
     for (;;) {
       await new Promise((r) => setTimeout(r, 1500));
+      if (signal.aborted) return;
       let run: BacktestRunDetail;
       try {
-        const response = await fetch(`/api/custom-strategies/${strategy.id}/backtest/runs/${runId}`, { credentials: "include" });
+        const response = await fetch(`/api/custom-strategies/${strategy.id}/backtest/runs/${runId}`, { credentials: "include", signal });
         if (!response.ok) throw new Error("poll failed");
         run = await response.json();
-      } catch {
+      } catch (err) {
+        if ((err as Error).name === "AbortError") return;
         continue; // transient network hiccup — keep polling rather than giving up
       }
 
@@ -961,7 +966,13 @@ export default function StrategiesView({
     }
   };
 
+  // Ref to the current poll's AbortController so navigation / unmount can cancel it.
+  const backtestPollAbortRef = useRef<AbortController | null>(null);
+
   const runBacktest = async (strategy: CustomStrategy, fromDate?: string, toDate?: string) => {
+    // Cancel any previous in-flight poll before starting a new one
+    backtestPollAbortRef.current?.abort();
+    backtestPollAbortRef.current = new AbortController();
     setBacktesting(true);
     setBacktestProgress(null);
     setBacktestResult(null);
@@ -975,7 +986,7 @@ export default function StrategiesView({
       });
       const data = await response.json();
       if (response.ok && data.run_id) {
-        pollBacktestRun(strategy, data.run_id); // not awaited — polls in the background, updates state as it goes
+        pollBacktestRun(strategy, data.run_id, backtestPollAbortRef.current.signal); // not awaited — polls in the background, updates state as it goes
       } else {
         const errText = Array.isArray(data.detail) ? data.detail.join(" ") : data.detail || "Backtest failed.";
         setBacktestError(errText);
@@ -988,6 +999,11 @@ export default function StrategiesView({
       setBacktesting(false);
     }
   };
+
+  // Abort ongoing backtest poll when the component unmounts.
+  useEffect(() => {
+    return () => { backtestPollAbortRef.current?.abort(); };
+  }, []);
 
   const handleDeleteStrategy = async (strategy: CustomStrategy) => {
     try {
@@ -1218,18 +1234,14 @@ export default function StrategiesView({
                 </div>
 
                 <div className="flex items-center gap-2 flex-wrap mt-4 pt-4 border-t" style={{ borderColor: C.border }}>
-                  {canTransitionTo(selectedStrategy.status, "BACKTESTING") && selectedStrategy.status === "DRAFT" && (
+                  {/* Backtest button — visible on DRAFT (first run), BACKTESTING (re-run),
+                      PAPER_TRADING, and PAUSED (re-run without stopping the strategy) */}
+                  {(canTransitionTo(selectedStrategy.status, "BACKTESTING") ||
+                    ["PAPER_TRADING", "PAUSED"].includes(selectedStrategy.status)) && (
                     <button onClick={() => setBacktestRangeTarget(selectedStrategy)} disabled={backtesting}
                       className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-semibold transition-colors focus:outline-none hover:opacity-80"
                       style={{ backgroundColor: C.buyBg, color: C.blue }}>
-                      <BarChart3 size={14} /> {backtesting ? "Backtesting..." : "Backtest"}
-                    </button>
-                  )}
-                  {selectedStrategy.status === "BACKTESTING" && (
-                    <button onClick={() => setBacktestRangeTarget(selectedStrategy)} disabled={backtesting}
-                      className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-semibold transition-colors focus:outline-none hover:opacity-80"
-                      style={{ backgroundColor: C.buyBg, color: C.blue }}>
-                      <BarChart3 size={14} /> {backtesting ? "Backtesting..." : "Re-run Backtest"}
+                      <BarChart3 size={14} /> {backtesting ? "Backtesting..." : selectedStrategy.backtest_return_pct != null ? "Re-run Backtest" : "Backtest"}
                     </button>
                   )}
                   {backtesting && backtestProgress && (

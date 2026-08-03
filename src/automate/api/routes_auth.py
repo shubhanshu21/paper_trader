@@ -299,8 +299,6 @@ def login(request: Request, body: LoginRequest, response: Response):
         return {
             "user": user.to_safe_dict(),
             "message": "Logged in successfully",
-            "access_token": token,
-            "csrf_token": csrf,
         }
 
 
@@ -347,8 +345,6 @@ def mfa_verify_login(request: Request, body: MfaVerifyLoginRequest, response: Re
         return {
             "user": user.to_safe_dict(),
             "message": "Logged in successfully",
-            "access_token": token,
-            "csrf_token": csrf,
         }
 
 

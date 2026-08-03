@@ -34,7 +34,9 @@ export const FONT = { fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI"
 
 export const inr = (n: number | null | undefined, d = 2) => {
   if (n === null || n === undefined) return "0.00";
-  return n.toLocaleString("en-IN", { minimumFractionDigits: d, maximumFractionDigits: d });
+  // Normalize -0 to 0 so it never renders as "-0.00"
+  const v = n === 0 ? 0 : n;
+  return v.toLocaleString("en-IN", { minimumFractionDigits: d, maximumFractionDigits: d });
 };
 
 export const sign = (n: number | null | undefined) => {
@@ -44,7 +46,9 @@ export const sign = (n: number | null | undefined) => {
 
 export const withSign = (n: number | null | undefined, d = 2) => {
   if (n === null || n === undefined) return "0.00";
-  return (n > 0 ? "+" : "") + inr(n, d);
+  // Normalize -0 to 0 so sign prefix is never applied to a zero value
+  const v = n === 0 ? 0 : n;
+  return (v > 0 ? "+" : "") + inr(v, d);
 };
 
 export function Banner() {

@@ -1,23 +1,28 @@
 import { PieChart, Briefcase, Layers, TrendingUp, FileText } from "lucide-react";
-import { WalletSummary, EquityPosition, OptionsPosition } from "../api";
+import { useNavigate } from "react-router-dom";
+import { WalletSummary, EquityPosition, OptionsPosition, User } from "../api";
 import { C, FONT, inr, withSign, sign, Banner, SectionTitle, ColorBar } from "./Common";
 
 interface DashboardProps {
+  currentUser?: User | null;
   wallet: WalletSummary | null;
   openEquity: EquityPosition[];
   openOptions: OptionsPosition[];
   setPage: (page: string) => void;
+  walletLoading?: boolean;
 }
 
-export default function DashboardView({ wallet, openEquity, openOptions, setPage }: DashboardProps) {
+export default function DashboardView({ currentUser, wallet, openEquity, openOptions, walletLoading }: DashboardProps) {
+  const navigate = useNavigate();
   const holdingsCount = openEquity.length;
   const positionsCount = openOptions.length;
+  const displayName = currentUser?.username || "Trader";
 
   return (
      <div className="w-full" style={FONT}>
       <Banner />
       <h1 className="mb-6 text-3xl font-light text-gray-800">
-        Hi, Virtual Trader
+        Hi, {displayName}
       </h1>
       <div style={{ borderTop: `1px solid ${C.border}` }} className="pt-8" />
 
@@ -26,9 +31,13 @@ export default function DashboardView({ wallet, openEquity, openOptions, setPage
         <div className="flex gap-8 bg-white p-5 border rounded-lg shadow-sm">
           <div className="flex-1">
             <SectionTitle icon={PieChart}>Equity Margin</SectionTitle>
-            <div className="text-4xl font-light text-gray-800">
-              ₹{wallet ? inr(wallet.available_balance) : "0.00"}
-            </div>
+            {walletLoading ? (
+              <div className="h-10 w-40 rounded animate-pulse" style={{ backgroundColor: C.border }} />
+            ) : (
+              <div className="text-4xl font-light text-gray-800">
+                ₹{wallet ? inr(wallet.available_balance) : "0.00"}
+              </div>
+            )}
             <div className="mt-2 text-xs text-gray-400 font-medium">
               Margin available
             </div>
@@ -105,9 +114,10 @@ export default function DashboardView({ wallet, openEquity, openOptions, setPage
       {/* Market Overview + Positions */}
       <div className="grid gap-12 md:grid-cols-2">
         <div>
-          <SectionTitle icon={TrendingUp}>Market Overview (Static Nifty)</SectionTitle>
+          <SectionTitle icon={TrendingUp}>Market Overview</SectionTitle>
           <div className="flex items-center gap-2 mb-2 text-xs font-medium text-gray-500">
             <span className="inline-block w-2 h-2 rounded-full" style={{ background: C.blue }} /> NIFTY 50 Index
+            <span className="ml-auto text-[10px] text-gray-400 italic">Illustrative — live chart coming soon</span>
           </div>
           <svg viewBox="0 0 348 100" className="w-full bg-slate-50 p-2 rounded border animate-fade-in" style={{ height: 150 }}>
             {[20, 50, 80].map((y) => (
@@ -151,7 +161,7 @@ export default function DashboardView({ wallet, openEquity, openOptions, setPage
                 );
               })}
               {openOptions.length > 5 && (
-                <button onClick={() => setPage("positions")} className="text-xs text-blue-500 hover:underline font-semibold block text-center w-full py-1 focus:outline-none">
+                <button onClick={() => navigate("/positions")} className="text-xs text-blue-500 hover:underline font-semibold block text-center w-full py-1 focus:outline-none">
                   View all {openOptions.length} positions
                 </button>
               )}

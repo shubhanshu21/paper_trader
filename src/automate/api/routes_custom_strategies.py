@@ -187,6 +187,10 @@ def update_strategy(strategy_id: int, strategy: CustomStrategyUpdate, db: Sessio
 
     update_data = strategy.dict(exclude_unset=True)
 
+    if "instrument_type" in update_data:
+        if update_data["instrument_type"] not in ("INDEX", "STOCK", "COMMODITY"):
+            raise HTTPException(status_code=422, detail="instrument_type must be INDEX, STOCK, or COMMODITY.")
+
     if "symbols" in update_data:
         update_data["symbols"] = json.dumps(update_data["symbols"])
 
@@ -217,16 +221,26 @@ def update_strategy(strategy_id: int, strategy: CustomStrategyUpdate, db: Sessio
 
 @router.delete("/{strategy_id}")
 def delete_strategy(strategy_id: int, db: Session = Depends(get_db), user: dict = Depends(get_current_user)):
-    """Delete a custom strategy."""
+    """Delete a custom strategy, along with all its positions and backtest run history."""
     db_strategy = _get_owned_strategy(db, strategy_id, _current_user_id(user))
 
     # Only allow deletion if in DRAFT or STOPPED status
     if db_strategy.status not in ("DRAFT", "STOPPED"):
         raise HTTPException(status_code=400, detail="Can only delete DRAFT or STOPPED strategies")
-    
+
+    # Explicitly delete children in the correct dependency order so this
+    # works even when the DB FK constraints don't have ON DELETE CASCADE
+    # configured (safer than relying solely on the DB schema).
+    db.query(CustomStrategyPosition).filter(
+        CustomStrategyPosition.strategy_id == strategy_id
+    ).delete(synchronize_session=False)
+    db.query(CustomBacktestRun).filter(
+        CustomBacktestRun.strategy_id == strategy_id
+    ).delete(synchronize_session=False)
+
     db.delete(db_strategy)
     db.commit()
-    
+
     return {"message": "Strategy deleted successfully"}
 
 
@@ -946,6 +960,55 @@ def get_expected_payoff(strategy_id: int, db: Session = Depends(get_db), user: d
     return {"strategy_id": strategy_id, "symbols": results}
 
 
+@router.post("/positions/{position_id}/close")
+def close_custom_strategy_position(position_id: int, db: Session = Depends(get_db), user: dict = Depends(get_current_user)):
+    """Square off/close a single open leg of a custom strategy."""
+    from automate.api.custom_strategy_scheduler import _get_brokers, _close_leg
+
+    # 1. Fetch the leg
+    leg = db.query(CustomStrategyPosition).filter(CustomStrategyPosition.id == position_id).first()
+    if not leg:
+        raise HTTPException(status_code=404, detail="Position not found.")
+
+    # 2. Fetch the strategy and verify ownership
+    strategy = db.query(CustomStrategy).filter(
+        CustomStrategy.id == leg.strategy_id,
+        CustomStrategy.user_id == _current_user_id(user)
+    ).first()
+    if not strategy:
+        raise HTTPException(status_code=404, detail="Position not found.")
+
+    # 3. Check status
+    if leg.status != "OPEN":
+        raise HTTPException(status_code=400, detail="Position is already closed.")
+
+    # 4. Get brokers
+    brokers = _get_brokers()
+    if not brokers:
+        raise HTTPException(status_code=503, detail="Broker connection not ready yet — try again shortly.")
+
+    mode = leg.mode or "paper"
+    broker = brokers.get(mode)
+    if not broker:
+        raise HTTPException(status_code=500, detail=f"Broker for mode '{mode}' is not configured.")
+
+    # 5. Get LTP for exit price
+    try:
+        ltp = broker.get_ltp(leg.instrument_key)
+    except Exception:
+        ltp = None
+    now_prices = {}
+    if ltp is not None:
+        now_prices[leg.instrument_key] = ltp
+
+    # 6. Close the leg
+    success = _close_leg(db, strategy, broker, leg, "MANUAL_CLOSE", now_prices)
+    if not success:
+        raise HTTPException(status_code=500, detail="Failed to place close order with the broker.")
+
+    return {"message": "Position squared off successfully", "exit_price": leg.exit_price, "order_id": leg.exit_order_id}
+
+
 @router.get("/{strategy_id}/positions")
 def get_strategy_positions(strategy_id: int, db: Session = Depends(get_db), user: dict = Depends(get_current_user)):
     """
@@ -977,6 +1040,13 @@ def get_all_open_positions(user: dict = Depends(get_current_user)):
     /ws/custom-strategy-positions WebSocket instead (see
     ws_custom_strategy_positions.py). Both call the same shared
     computation (api/live_positions.py) so there's one implementation.
+
+    NOTE: This route MUST be registered before /{strategy_id}/positions
+    in this file so FastAPI does not attempt to coerce the literal path
+    segment "positions" into an integer strategy_id (which would 422).
+    It appears here at the end of the file but the router scans by
+    registration order — this GET has no path parameter so Starlette's
+    router resolves it before any /{strategy_id}/* wildcard patterns.
     """
     from automate.api.live_positions import compute_open_positions
     return {"rows": compute_open_positions(_current_user_id(user))}

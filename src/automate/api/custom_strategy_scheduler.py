@@ -40,6 +40,7 @@ Each tick (every _TICK_SEC, only during real NSE market hours):
 """
 import asyncio
 import json
+import threading
 import time
 from datetime import date, datetime
 from typing import Dict, Optional
@@ -79,6 +80,13 @@ _audit = AuditTrail(audit_log_path="logs/custom_strategy_audit.log")
 _kill_switch = KillSwitch()
 _rate_limiter = OrderRateLimiter(max_per_second=10)
 _brokers: Optional[dict] = None
+# Lock protecting _brokers — the asyncio scheduler loop reads it from
+# the event-loop thread, while reset_brokers_cache() (called from the
+# token_refresh_scheduler, which runs in a ThreadPoolExecutor thread)
+# writes it.  A plain threading.Lock is sufficient: asyncio tasks run
+# single-threaded, so within the event loop this is effectively
+# uncontested; the lock only matters for the inter-thread writes.
+_brokers_lock = threading.Lock()
 # Module-level singleton (not constructed fresh per call) so its in-memory
 # instrument-master DataFrame is loaded once and reused — see
 # _is_leg_for_symbol below, which looks up real instrument_key -> symbol
@@ -97,15 +105,16 @@ def _market_is_open_now() -> bool:
 def _get_brokers() -> Optional[dict]:
     """Lazily build the paper/live broker pair; retried every tick until it succeeds (e.g. token not ready yet)."""
     global _brokers
-    if _brokers is not None:
+    with _brokers_lock:
+        if _brokers is not None:
+            return _brokers
+        try:
+            from automate.broker.broker_factory import BrokerFactory
+            _brokers = BrokerFactory.create_mode_brokers()
+        except Exception as exc:
+            log.warning("custom_strategy_scheduler: broker init not ready yet (%s) — will retry.", exc)
+            return None
         return _brokers
-    try:
-        from automate.broker.broker_factory import BrokerFactory
-        _brokers = BrokerFactory.create_mode_brokers()
-    except Exception as exc:
-        log.warning("custom_strategy_scheduler: broker init not ready yet (%s) — will retry.", exc)
-        return None
-    return _brokers
 
 
 def reset_brokers_cache() -> None:
@@ -121,7 +130,8 @@ def reset_brokers_cache() -> None:
     _invalidate_broker_caches() there.
     """
     global _brokers
-    _brokers = None
+    with _brokers_lock:
+        _brokers = None
 
 
 def _mode_for_status(status: str) -> str:

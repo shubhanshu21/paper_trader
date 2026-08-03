@@ -592,4 +592,6 @@ export const api = {
   deleteCustomStrategy: (id: number) =>
     request<{ status: string }>(`/api/custom-strategies/${id}`, { method: 'DELETE' }),
   getPortfolioGreeks: () => request<PortfolioGreeksResponse>('/api/custom-strategies/portfolio/greeks'),
+  closeCustomStrategyPosition: (id: number) =>
+    request<{ message: string }>(`/api/custom-strategies/positions/${id}/close`, { method: 'POST' }),
 };

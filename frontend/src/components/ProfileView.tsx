@@ -32,6 +32,13 @@ export default function ProfileView({ currentUser, ledger, onRefreshData }: Prof
   const [mfaError, setMfaError] = useState("");
   const [mfaBusy, setMfaBusy] = useState(false);
 
+  // Keep local mfaEnabled in sync with the Redux-sourced currentUser prop
+  // so changes from another tab (or a store update) are reflected immediately
+  // without a page reload.
+  React.useEffect(() => {
+    setMfaEnabled(!!currentUser?.mfa_enabled);
+  }, [currentUser?.mfa_enabled]);
+
   const handleStartMfaSetup = async () => {
     setMfaError("");
     setMfaBusy(true);
@@ -200,9 +207,8 @@ export default function ProfileView({ currentUser, ledger, onRefreshData }: Prof
       <div className="grid gap-12 py-8 md:grid-cols-2">
         {/* Account Details */}
         <div className="bg-white p-6 border rounded-lg shadow-sm">
-          <h3 className="text-lg font-medium text-gray-800 mb-4 flex justify-between items-center">
+          <h3 className="text-lg font-medium text-gray-800 mb-4">
             <span>Demat Account Info</span>
-            <span className="text-xs text-blue-500 font-semibold cursor-pointer hover:underline">Manage Settings</span>
           </h3>
           <div className="space-y-3">
             {profileRows.map(([label, val], idx) => (

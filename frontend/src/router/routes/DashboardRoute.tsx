@@ -13,7 +13,8 @@ const DashboardView = lazy(() => import("../../components/DashboardView"));
 
 export default function DashboardRoute() {
   const dispatch = useDispatch<AppDispatch>();
-  const { wallet, openEquity, openOptions } = useSelector((state: RootState) => state.data);
+  const { wallet, openEquity, openOptions, loading } = useSelector((state: RootState) => state.data);
+  const { currentUser } = useSelector((state: RootState) => state.auth);
 
   useEffect(() => {
     dispatch(fetchWalletSummary());
@@ -23,7 +24,14 @@ export default function DashboardRoute() {
 
   return (
     <Suspense fallback={<RouteFallback />}>
-      <DashboardView wallet={wallet} openEquity={openEquity} openOptions={openOptions} setPage={() => {}} />
+      <DashboardView
+        currentUser={currentUser}
+        wallet={wallet}
+        openEquity={openEquity}
+        openOptions={openOptions}
+        walletLoading={loading.wallet}
+        setPage={() => {}}
+      />
     </Suspense>
   );
 }

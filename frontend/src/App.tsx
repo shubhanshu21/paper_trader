@@ -25,6 +25,7 @@ export default function App() {
   const [authEnabled, setAuthEnabled] = useState<boolean | null>(null);
   const [loading, setLoading] = useState(true);
   const [activeOrder, setActiveOrder] = useState<ActiveOrder | null>(null);
+  const [tradeError, setTradeError] = useState<string | null>(null);
   const positionsSocketRef = useRef<WebSocket | null>(null);
 
   const initAuth = useCallback(async () => {
@@ -39,8 +40,9 @@ export default function App() {
           const user = await api.me();
           dispatch(loginSuccess(user));
         } catch {
-          // session cookie missing or expired
+          // session cookie missing or expired — redirect immediately
           dispatch(logout());
+          navigate('/login');
         }
       }
     } catch (err) {
@@ -48,7 +50,7 @@ export default function App() {
     } finally {
       setLoading(false);
     }
-  }, [dispatch]);
+  }, [dispatch, navigate]);
 
   useEffect(() => {
     initAuth();
@@ -114,9 +116,12 @@ export default function App() {
     );
   }
 
-  // If auth is enabled and we don't have a user, redirect to login
+  // If auth is enabled and we don't have a valid session, navigate to /login
+  // explicitly rather than returning null — a blank screen while the router
+  // sorts itself out is a worse UX than an immediate redirect.
   if (authEnabled && !isAuthenticated) {
-    return null; // Router will handle redirect
+    navigate('/login');
+    return null;
   }
 
   // Render the main dashboard layout
@@ -129,19 +134,41 @@ export default function App() {
           <Outlet />
         </main>
       </div>
+      {/* Trade error toast */}
+      {tradeError && (
+        <div
+          className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 flex items-center gap-3 px-4 py-3 rounded-xl shadow-lg text-sm font-semibold text-white"
+          style={{ backgroundColor: '#ef4444', maxWidth: 420 }}
+        >
+          <span className="flex-1">{tradeError}</span>
+          <button
+            onClick={() => setTradeError(null)}
+            className="ml-2 text-white opacity-70 hover:opacity-100 focus:outline-none text-lg leading-none"
+            aria-label="Dismiss"
+          >
+            ×
+          </button>
+        </div>
+      )}
       {activeOrder && (
         <OrderWindow
           order={activeOrder}
-          onClose={() => setActiveOrder(null)}
+          onClose={() => { setActiveOrder(null); setTradeError(null); }}
           onPlaceOrder={async (qty, _price, product, mode, side) => {
-            await api.executeManualTrade({
-              instrument_key: activeOrder.instrument_key,
-              direction: side,
-              quantity: qty,
-              product,
-              mode,
-            });
-            setActiveOrder(null);
+            try {
+              await api.executeManualTrade({
+                instrument_key: activeOrder.instrument_key,
+                direction: side,
+                quantity: qty,
+                product,
+                mode,
+              });
+              setActiveOrder(null);
+              setTradeError(null);
+            } catch (err) {
+              const msg = err instanceof Error ? err.message : 'Trade placement failed. Please try again.';
+              setTradeError(msg);
+            }
           }}
         />
       )}

@@ -16,6 +16,7 @@ For public-facing deployment (with auth enabled):
     PANEL_AUTH_ENABLED=true uvicorn automate.api.main:app --host 0.0.0.0 --port 8000
 """
 import logging
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from slowapi import Limiter, _rate_limit_exceeded_handler
@@ -50,12 +51,46 @@ setup_logger(name="", level=LogConfig.LEVEL)
 log = logging.getLogger("api")
 
 # ---------------------------------------------------------------------------
+# Background tasks lifespan
+# ---------------------------------------------------------------------------
+@asynccontextmanager
+async def _lifespan(application: FastAPI):
+    """Start long-running background tasks on startup (replaces the deprecated
+    @app.on_event('startup') pattern removed in FastAPI 0.109+)."""
+    import asyncio
+    from automate.api.market_broadcaster import market_price_broadcaster
+    from automate.api.custom_strategy_scheduler import custom_strategy_scheduler
+    from automate.api.token_refresh_scheduler import token_refresh_scheduler
+    from automate.api.advanced_orders_scheduler import advanced_orders_scheduler
+    from automate.api.iv_history_scheduler import iv_history_scheduler
+    from automate.api.instrument_sync_scheduler import instrument_sync_scheduler
+
+    # run_daemon.py (the old cron/systemd-style CLI daemon) is retired —
+    # it only ever ran hand-written strategies (strategies/registry.py,
+    # now empty) via .env's STRATEGY_CONFIGS. All strategy execution now
+    # goes through custom_strategy_scheduler (DB-defined custom strategies,
+    # built/backtested/deployed from the Strategies page). Daily Upstox
+    # token auto-login — the other thing run_daemon.py used to do — moved
+    # to its own task (token_refresh_scheduler) so retiring the daemon
+    # doesn't silently break login too.
+    asyncio.create_task(market_price_broadcaster())
+    asyncio.create_task(custom_strategy_scheduler())
+    asyncio.create_task(token_refresh_scheduler())
+    asyncio.create_task(advanced_orders_scheduler())
+    asyncio.create_task(iv_history_scheduler())
+    asyncio.create_task(instrument_sync_scheduler())
+    yield  # application is running
+    # (shutdown cleanup would go here if needed)
+
+
+# ---------------------------------------------------------------------------
 # Rate limiter (shared across all routers via the app state)
 # ---------------------------------------------------------------------------
 limiter = Limiter(key_func=get_remote_address, default_limits=["200/minute"])
 
 app = FastAPI(
     title="Automate Control Panel API",
+    lifespan=_lifespan,
     # Disable automatic OpenAPI/docs exposure in production if auth is enabled
     docs_url=None if PanelAuthConfig.ENABLED else "/docs",
     redoc_url=None if PanelAuthConfig.ENABLED else "/redoc",
@@ -96,7 +131,9 @@ async def add_security_headers(request: Request, call_next) -> Response:
         "style-src 'self' 'unsafe-inline'; "   # React inline styles require this
         "img-src 'self' data:; "
         "font-src 'self'; "
-        "connect-src 'self' ws://127.0.0.1:* ws://localhost:*; "
+        # Include both ws:// and wss:// so WebSocket connections work over
+        # plain HTTP (dev) and HTTPS (production) without separate config.
+        "connect-src 'self' ws://127.0.0.1:* ws://localhost:* wss://127.0.0.1:* wss://localhost:*; "
         "frame-ancestors 'none'; "
         "object-src 'none';"
     )
@@ -228,32 +265,6 @@ app.include_router(ws_market_depth.router)
 app.include_router(routes_notifications.router)
 app.include_router(ws_notifications.router)
 
-
-
-@app.on_event("startup")
-async def _start_background_tasks():
-    import asyncio
-    from automate.api.market_broadcaster import market_price_broadcaster
-    from automate.api.custom_strategy_scheduler import custom_strategy_scheduler
-    from automate.api.token_refresh_scheduler import token_refresh_scheduler
-    from automate.api.advanced_orders_scheduler import advanced_orders_scheduler
-    from automate.api.iv_history_scheduler import iv_history_scheduler
-    from automate.api.instrument_sync_scheduler import instrument_sync_scheduler
-
-    # run_daemon.py (the old cron/systemd-style CLI daemon) is retired —
-    # it only ever ran hand-written strategies (strategies/registry.py,
-    # now empty) via .env's STRATEGY_CONFIGS. All strategy execution now
-    # goes through custom_strategy_scheduler (DB-defined custom strategies,
-    # built/backtested/deployed from the Strategies page). Daily Upstox
-    # token auto-login — the other thing run_daemon.py used to do — moved
-    # to its own task (token_refresh_scheduler) so retiring the daemon
-    # doesn't silently break login too.
-    asyncio.create_task(market_price_broadcaster())
-    asyncio.create_task(custom_strategy_scheduler())
-    asyncio.create_task(token_refresh_scheduler())
-    asyncio.create_task(advanced_orders_scheduler())
-    asyncio.create_task(iv_history_scheduler())
-    asyncio.create_task(instrument_sync_scheduler())
 
 
 @app.get("/api/health")

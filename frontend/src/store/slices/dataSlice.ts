@@ -10,6 +10,7 @@ import {
   fetchClosedEquity,
   closeOptionPosition,
   closeEquityPosition,
+  closeCustomPosition,
   adjustWallet,
   setStartingCapital,
   resetWallet,
@@ -196,6 +197,19 @@ const dataSlice = createSlice({
       })
       .addCase(closeEquityPosition.rejected, (state, action) => {
         state.loading.equity = false;
+        state.closingId = null;
+        state.error = action.error.message || 'Failed to close position';
+      });
+
+    // Close Custom Position
+    builder
+      .addCase(closeCustomPosition.pending, (state, action) => {
+        state.closingId = action.meta.arg;
+      })
+      .addCase(closeCustomPosition.fulfilled, (state) => {
+        state.closingId = null;
+      })
+      .addCase(closeCustomPosition.rejected, (state, action) => {
         state.closingId = null;
         state.error = action.error.message || 'Failed to close position';
       });

@@ -68,6 +68,14 @@ export const closeEquityPosition = createAsyncThunk(
   }
 );
 
+export const closeCustomPosition = createAsyncThunk(
+  'data/closeCustomPosition',
+  async (id: number) => {
+    await api.closeCustomStrategyPosition(id);
+    return id;
+  }
+);
+
 export const adjustWallet = createAsyncThunk(
   'data/adjustWallet',
   async ({ amount, note }: { amount: number; note: string }) => {
