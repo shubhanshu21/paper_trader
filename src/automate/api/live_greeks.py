@@ -230,3 +230,73 @@ def compute_portfolio_greeks(owner_user_id: int) -> dict:
         }
     finally:
         db.close()
+
+
+def compute_portfolio_margin(owner_user_id: int) -> dict:
+    """
+    Real broker-NETTED margin (₹) currently blocked across EVERY open leg
+    of EVERY active (PAPER_TRADING/LIVE) strategy `owner_user_id` owns —
+    split by paper vs live, the same two independent capital pools
+    routes_custom_strategies.py's GET /{id}/margin distinguishes at a
+    single-strategy level (a strategy's OWN legs there are a hypothetical
+    "if I entered this," not yet-open positions).
+
+    ONE basket call per mode (not per strategy) so the exchange's own
+    hedge-benefit netting applies across every strategy's legs together —
+    e.g. two strategies each short a NIFTY call on the same underlying
+    net down further combined than either alone would suggest.
+
+    Returns {"paper": {"margin_required": float|None, "open_legs": int},
+    "live": {...}} — margin_required is None (never guessed/estimated)
+    whenever the real broker basket call is unavailable for that mode
+    (no active legs there, broker not connected, or the API call itself
+    failed) — same "don't guess" contract get_basket_required_margin's
+    own docstring documents.
+    """
+    from automate.api.custom_strategy_scheduler import _get_brokers, _mode_for_status
+
+    result = {
+        "paper": {"margin_required": None, "open_legs": 0},
+        "live": {"margin_required": None, "open_legs": 0},
+    }
+
+    db = SessionLocal()
+    try:
+        strategies = db.query(CustomStrategy).filter(
+            CustomStrategy.user_id == owner_user_id,
+            CustomStrategy.status.in_(["PAPER_TRADING", "LIVE"]),
+        ).all()
+        if not strategies:
+            return result
+
+        strategy_by_id = {s.id: s for s in strategies}
+        open_legs = db.query(CustomStrategyPosition).filter(
+            CustomStrategyPosition.strategy_id.in_(list(strategy_by_id.keys())),
+            CustomStrategyPosition.status == "OPEN",
+        ).all()
+        if not open_legs:
+            return result
+
+        brokers = _get_brokers()
+        if brokers is None:
+            return result
+
+        legs_by_mode: dict[str, list] = defaultdict(list)
+        for leg in open_legs:
+            legs_by_mode[_mode_for_status(strategy_by_id[leg.strategy_id].status)].append(leg)
+
+        for mode, mode_legs in legs_by_mode.items():
+            result[mode]["open_legs"] = len(mode_legs)
+            broker = brokers.get(mode)
+            if broker is None:
+                continue
+            basket = [
+                {"instrument_key": leg.instrument_key, "quantity": leg.quantity, "transaction_type": leg.transaction_type, "product": "D"}
+                for leg in mode_legs
+            ]
+            margin = broker.get_basket_required_margin(basket)
+            result[mode]["margin_required"] = round(margin, 2) if margin is not None else None
+
+        return result
+    finally:
+        db.close()

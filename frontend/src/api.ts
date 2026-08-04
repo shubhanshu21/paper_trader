@@ -123,6 +123,16 @@ export interface MarginResponse {
   live: MarginPoolStatus;
 }
 
+export interface PortfolioMarginPool {
+  margin_required: number | null; // null = no open legs in this mode, or the real broker basket call is unavailable right now (never guessed/estimated)
+  open_legs: number;
+}
+
+export interface PortfolioMarginResponse {
+  paper: PortfolioMarginPool;
+  live: PortfolioMarginPool;
+}
+
 export interface ExpiriesResponse {
   symbol: string;
   expiries: { date: string; label: "Weekly" | "Monthly" }[];
@@ -662,6 +672,7 @@ export const api = {
   deleteCustomStrategy: (id: number) =>
     request<{ status: string }>(`/api/custom-strategies/${id}`, { method: 'DELETE' }),
   getPortfolioGreeks: () => request<PortfolioGreeksResponse>('/api/custom-strategies/portfolio/greeks'),
+  getPortfolioMargin: () => request<PortfolioMarginResponse>('/api/custom-strategies/portfolio/margin'),
   closeCustomStrategyPosition: (id: number) =>
     request<{ message: string }>(`/api/custom-strategies/positions/${id}/close`, { method: 'POST' }),
   getCustomStrategyPositions: (id: number) => request<{ open: PositionLeg[]; closed: PositionLeg[] }>(`/api/custom-strategies/${id}/positions`),

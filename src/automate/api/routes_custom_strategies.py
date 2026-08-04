@@ -862,6 +862,20 @@ def get_portfolio_greeks(user: dict = Depends(get_current_user)):
     return compute_portfolio_greeks(_current_user_id(user))
 
 
+@router.get("/portfolio/margin")
+def get_portfolio_margin(user: dict = Depends(get_current_user)):
+    """
+    Real broker-netted margin (₹) currently blocked across every open leg
+    of every active strategy this user owns, split by paper vs live — see
+    api/live_greeks.py::compute_portfolio_margin. Registered above
+    /{strategy_id}/margin for the same routing reason as /portfolio/greeks
+    above (Starlette matches in registration order — "portfolio" would
+    otherwise 422 against that route's int strategy_id path param).
+    """
+    from automate.api.live_greeks import compute_portfolio_margin
+    return compute_portfolio_margin(_current_user_id(user))
+
+
 @router.get("/{strategy_id}/greeks")
 def get_live_greeks(strategy_id: int, db: Session = Depends(get_db), user: dict = Depends(get_current_user)):
     """

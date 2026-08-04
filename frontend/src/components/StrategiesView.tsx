@@ -11,7 +11,7 @@ import { useToast } from "../hooks/useToast";
 import { api, wsUrl } from "../api";
 import type {
   BacktestCycle, BacktestResult, BacktestRunSummary, BacktestRunDetail,
-  PayoffResponse, PositionLeg, MarginResponse,
+  PayoffResponse, PositionLeg, MarginResponse, PortfolioMarginResponse,
 } from "../api";
 import type { CustomStrategy, CustomStrategyRules, PortfolioGreeksResponse } from "../types/customStrategy";
 import { useCustomStrategyPositions } from "../hooks/useCustomStrategyPositions";
@@ -697,6 +697,26 @@ export default function StrategiesView({
     return () => { cancelled = true; clearInterval(interval); };
   }, []);
 
+  const [portfolioMargin, setPortfolioMargin] = useState<PortfolioMarginResponse | null>(null);
+
+  // Real broker-netted margin currently blocked across EVERY open leg of
+  // EVERY active strategy, split paper vs live — see api/live_greeks.py::
+  // compute_portfolio_margin. Same coarse polling as portfolioGreeks above.
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const data = await api.getPortfolioMargin();
+        if (!cancelled) setPortfolioMargin(data);
+      } catch {
+        // Supplementary widget — silently leave the last-known value on a transient failure.
+      }
+    };
+    load();
+    const interval = setInterval(load, 15000);
+    return () => { cancelled = true; clearInterval(interval); };
+  }, []);
+
   // Keep the selection valid whenever the redux-backed `strategies` list
   // changes (initial load, create, update, status change, delete) — same
   // "keep it if it still exists, else fall back to the first one" logic
@@ -1076,6 +1096,29 @@ export default function StrategiesView({
             </div>
             <div className="text-[11px] text-gray-400 ml-auto shrink-0">
               {portfolioGreeks.open_legs_count} open leg{portfolioGreeks.open_legs_count === 1 ? "" : "s"} across {portfolioGreeks.by_strategy.length} strateg{portfolioGreeks.by_strategy.length === 1 ? "y" : "ies"}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {portfolioMargin && (portfolioMargin.paper.open_legs > 0 || portfolioMargin.live.open_legs > 0) && (
+        <div className="bg-white border rounded-xl overflow-hidden shadow-sm mb-6" style={{ borderColor: C.border2 }}>
+          <div className="px-5 py-3.5 flex items-center gap-6 flex-wrap">
+            <h3 className="text-xs font-semibold uppercase tracking-wide text-gray-500 flex items-center gap-2 shrink-0">
+              <Wallet size={12} /> Portfolio Margin
+            </h3>
+            <div className="flex items-center gap-5 flex-wrap">
+              {([["Paper", portfolioMargin.paper], ["Live", portfolioMargin.live]] as [string, { margin_required: number | null; open_legs: number }][])
+                .filter(([, pool]) => pool.open_legs > 0)
+                .map(([label, pool]) => (
+                  <div key={label} className="text-xs">
+                    <span className="text-gray-400">{label}</span>{" "}
+                    <span className="font-semibold" style={{ color: C.text }}>
+                      {pool.margin_required != null ? `₹${inr(pool.margin_required, 0)}` : "—"}
+                    </span>
+                    <span className="text-gray-400"> ({pool.open_legs} leg{pool.open_legs === 1 ? "" : "s"})</span>
+                  </div>
+                ))}
             </div>
           </div>
         </div>
