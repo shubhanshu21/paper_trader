@@ -17,6 +17,7 @@ Error handling strategy:
   - Missing data → logged + returns None (callers must validate)
 """
 
+import threading
 import time
 
 import upstox_client
@@ -58,6 +59,56 @@ def _to_upstox_product(product: str) -> str:
 # Retry settings for transient network errors
 _MAX_RETRIES = 3
 _RETRY_DELAY_SEC = 2.0
+
+# --- Process-wide 401 circuit breaker -------------------------------------
+# market_price_broadcaster polls get_ltp_batch every ~2s for the live
+# watchlist, and other callers (the custom-strategy scheduler, the payoff
+# preview panel, websocket subscriptions) add more on top. When the access
+# token is genuinely dead, each of those calls used to retry 3x against
+# Upstox before giving up — during an outage that meant several *dozen*
+# 401'd requests per minute hitting Upstox with a token everyone already
+# knows is bad, from every UpstoxBroker instance in the process combined.
+# That kind of sustained hammering with an invalid token is plausibly why
+# freshly auto-logged-in tokens were observed dying again within minutes
+# (Upstox/Cloudflare flagging the pattern) — and at minimum it risks a rate
+# limit or account-level block. This breaker is deliberately module-level
+# (not per-instance): api/deps.py and api/custom_strategy_scheduler.py each
+# keep their own UpstoxBroker pair, so only a shared, process-wide breaker
+# actually stops all of them at once. Once _MAX_RETRIES is exhausted for
+# ANY instrument on ANY broker instance, every other in-flight/queued call
+# process-wide short-circuits immediately (no network call) for
+# _CIRCUIT_COOLDOWN_SEC, giving the token_refresh_scheduler time to heal
+# the token instead of the broadcaster loop re-attempting every 2s.
+_CIRCUIT_COOLDOWN_SEC = 20.0
+_circuit_lock = threading.Lock()
+_circuit_open_until = 0.0
+
+# Set whenever the breaker trips, so api/token_refresh_scheduler.py can wake
+# up and re-check/re-login immediately instead of waiting out its own
+# multi-minute polling interval — that scheduler is the only thing that
+# actually acquires a new token; this breaker only stops the hammering
+# while waiting for it. Cleared by the scheduler after it reacts. A plain
+# threading.Event (not asyncio.Event) since it's set from worker threads
+# running request handlers, not from the event loop.
+token_invalid_event = threading.Event()
+
+
+def _circuit_is_open() -> bool:
+    with _circuit_lock:
+        return time.monotonic() < _circuit_open_until
+
+
+def _trip_circuit() -> None:
+    global _circuit_open_until
+    with _circuit_lock:
+        _circuit_open_until = time.monotonic() + _CIRCUIT_COOLDOWN_SEC
+    log.warning(
+        "Upstox 401 circuit breaker tripped — suppressing further LTP "
+        "calls process-wide for %.0fs to avoid hammering Upstox with a "
+        "dead token.",
+        _CIRCUIT_COOLDOWN_SEC,
+    )
+    token_invalid_event.set()
 
 
 class UpstoxBroker(BaseBroker):
@@ -132,6 +183,9 @@ class UpstoxBroker(BaseBroker):
         if fresh_token and fresh_token != self._configuration.access_token:
             log.info("Detected refreshed Upstox access token — updating SDK client.")
             self._configuration.access_token = fresh_token
+            global _circuit_open_until
+            with _circuit_lock:
+                _circuit_open_until = 0.0
 
     # ------------------------------------------------------------------
     # Instrument Master: daily download + symbol resolution
@@ -345,6 +399,14 @@ class UpstoxBroker(BaseBroker):
         """
         log.info("Fetching LTP for instrument: %s", instrument_key)
 
+        if _circuit_is_open():
+            self._resync_access_token()
+            if _circuit_is_open():
+                raise RuntimeError(
+                    f"Failed to fetch LTP for '{instrument_key}': "
+                    f"Upstox token is known-bad, skipping call (circuit open)."
+                )
+
         for attempt in range(1, _MAX_RETRIES + 1):
             try:
                 # The SDK's get_ltp() accepts a comma-separated string of
@@ -392,6 +454,8 @@ class UpstoxBroker(BaseBroker):
                 if attempt < _MAX_RETRIES:
                     time.sleep(_RETRY_DELAY_SEC)
                 else:
+                    if exc.status == 401:
+                        _trip_circuit()
                     raise RuntimeError(
                         f"Failed to fetch LTP for '{instrument_key}' "
                         f"after {_MAX_RETRIES} attempts."
@@ -440,6 +504,16 @@ class UpstoxBroker(BaseBroker):
             # ':' <-> '|' swap if instrument_token itself is ever missing.
             colon_to_key = {k.replace("|", ":"): k for k in chunk}
 
+            if _circuit_is_open():
+                self._resync_access_token()
+            if _circuit_is_open():
+                log.warning(
+                    "Skipping batch LTP fetch for %d symbols: Upstox token "
+                    "is known-bad (circuit open).",
+                    len(chunk),
+                )
+                continue
+
             for attempt in range(1, _MAX_RETRIES + 1):
                 try:
                     response = self._market_quote_v3.get_ltp(instrument_key=joined)
@@ -461,6 +535,8 @@ class UpstoxBroker(BaseBroker):
                         self._resync_access_token()
                     if attempt < _MAX_RETRIES:
                         time.sleep(_RETRY_DELAY_SEC)
+                    elif exc.status == 401:
+                        _trip_circuit()
                 except Exception as exc:
                     log.error("Unexpected error fetching batch LTP: %s", exc, exc_info=True)
                     break

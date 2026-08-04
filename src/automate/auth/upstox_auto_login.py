@@ -32,7 +32,10 @@ Usage:
                                              # no-ops if not configured, checks
                                              # validity before re-logging-in
 """
+import base64
+import json
 import logging
+import os
 import sys
 import urllib.parse
 from pathlib import Path
@@ -57,15 +60,69 @@ log = get_logger(__name__)
 _LOGIN_URL = "https://api.upstox.com/v2/login/authorization/dialog"
 
 
+def token_expiry_epoch(token: str) -> float | None:
+    """
+    Read the `exp` claim (unix seconds) straight out of the access token's
+    JWT payload, without verifying the signature — this only ever reads a
+    token this app already trusts (issued by Upstox and read back from our
+    own DB), never one from an untrusted source, so there's nothing to
+    verify against; we just need the expiry it already carries.
+
+    Upstox access tokens all expire at a fixed 3:30 AM IST (22:00 UTC), not
+    N hours after issuance — confirmed by decoding a real token's `iat`
+    (14:11:52 UTC) vs `exp` (22:00:00 UTC) on 2026-08-04, a ~7h48m gap that
+    doesn't match any "hours since login" pattern. Reading `exp` directly
+    means api/token_refresh_scheduler.py can schedule a proactive re-login
+    a few minutes ahead of the real deadline instead of hardcoding "3:30 AM
+    IST" and hoping Upstox never changes it.
+
+    Returns None if `token` isn't empty but isn't a parseable JWT (e.g. an
+    unexpected token format) — callers should fall back to their own
+    periodic-check interval in that case, not treat it as "never expires".
+    """
+    if not token:
+        return None
+    try:
+        payload_segment = token.split(".")[1]
+        padded = payload_segment + "=" * (-len(payload_segment) % 4)
+        claims = json.loads(base64.urlsafe_b64decode(padded))
+        return float(claims["exp"])
+    except Exception:
+        return None
+
+
+# Always-liquid, always-listed instrument used purely as a validation
+# probe — NOT a real quote request. Works regardless of market hours (LTP
+# reflects the last trade, open or closed).
+_VALIDATION_INSTRUMENT = "NSE_INDEX|Nifty 50"
+
+
 def _token_is_valid(token: str) -> bool:
-    """Real check against Upstox (get_profile), not just non-empty."""
+    """
+    Real check against Upstox — hits the same market-quote v3 LTP endpoint
+    the rest of the app actually depends on (broker/upstox_broker.py
+    get_ltp/get_ltp_batch), not UserApi.get_profile().
+
+    This used to check get_profile() instead. That's a real API call, but
+    a DIFFERENT endpoint from the one this app actually lives or dies by —
+    and in practice a token was observed passing get_profile() cleanly,
+    then getting rejected by the market-quote endpoint with the same
+    "invalid token" error a few minutes later (Upstox/Cloudflare appear to
+    scope or revoke sessions per-endpoint-family rather than uniformly).
+    Validating against get_profile() gave a false "still valid" reading in
+    exactly that window, so ensure_fresh_upstox_token() skipped refreshing
+    while every real LTP call was already 401ing. Checking the actual
+    dependency directly closes that gap.
+    """
     if not token:
         return False
     try:
         configuration = upstox_client.Configuration()
         configuration.access_token = token
-        profile = upstox_client.UserApi(upstox_client.ApiClient(configuration)).get_profile(api_version="2.0")
-        return profile.status == "success"
+        response = upstox_client.MarketQuoteV3Api(
+            upstox_client.ApiClient(configuration)
+        ).get_ltp(instrument_key=_VALIDATION_INSTRUMENT)
+        return bool(response.data)
     except ApiException as exc:
         if exc.status == 401:
             log.info("Existing Upstox token is invalid/expired.")
@@ -96,10 +153,65 @@ _CHROMIUM_DRIVER = "/snap/chromium/current/usr/lib/chromium-browser/chromedriver
 _CHROMIUM_PROFILE_DIR = Path.home() / "snap" / "chromium" / "current" / "selenium-profile"
 
 
+def _kill_stray_chrome_for_profile() -> None:
+    """
+    Chrome refuses to start a second instance against a --user-data-dir
+    that's already locked (SingletonLock) — it exits immediately with
+    "session not created: Chrome instance exited", before Selenium ever
+    gets a session to work with.
+
+    Observed in practice, twice: a prior login attempt's Chrome/chromedriver
+    survived an automate-api restart — this service's KillMode=process (see
+    deploy/automate-api.service) only ever signals the tracked uvicorn PID
+    on restart/stop, deliberately never anything detached from it (that's
+    what protects the separately-spawned trading daemon from dying on an
+    API redeploy) — but it has the same effect on a login attempt that was
+    still genuinely mid-flight (waiting on the OAuth redirect) at the exact
+    moment of restart: its Chrome process keeps running, reparented to
+    init, forever holding the lock, since the Python code that was going to
+    call driver.quit() on it no longer exists to do so. An earlier version
+    of this function only removed the lock if the PID it named was already
+    dead — which correctly left that scenario's orphan alone (it WAS still
+    alive) and therefore never recovered from it; every subsequent attempt,
+    including across further restarts, kept failing the exact same way.
+
+    So: unconditionally kill anything already touching this profile
+    directory before starting a new attempt, rather than trying to guess
+    whether it's legitimate. This is safe specifically because a NEW
+    attempt is us calling this function ourselves, right before creating
+    our own driver — nothing we've launched can be running under this
+    profile yet, and ensure_fresh_upstox_token()'s single-worker executor
+    plus _MIN_REFRESH_GAP_SEC already guarantee only one attempt is ever
+    in flight per process, so anything found here is by definition a stray
+    from a previous, no-longer-relevant attempt (this process's or an
+    earlier process's), not a session we still need.
+    """
+    import signal
+
+    profile = str(_CHROMIUM_PROFILE_DIR)
+    for pid_dir in Path("/proc").iterdir():
+        if not pid_dir.name.isdigit():
+            continue
+        try:
+            cmdline = (pid_dir / "cmdline").read_bytes().decode(errors="replace")
+        except OSError:
+            continue  # process exited between listdir() and read — fine
+        if profile in cmdline and "chrom" in cmdline.lower():
+            pid = int(pid_dir.name)
+            try:
+                os.kill(pid, signal.SIGKILL)
+                log.warning("Killed stray Chrome/chromedriver process (pid=%d) from a previous login attempt.", pid)
+            except OSError:
+                pass
+    for name in ("SingletonLock", "SingletonSocket", "SingletonCookie"):
+        (_CHROMIUM_PROFILE_DIR / name).unlink(missing_ok=True)
+
+
 def _setup_driver() -> webdriver.Chrome:
     from selenium.webdriver.chrome.service import Service
 
     _CHROMIUM_PROFILE_DIR.mkdir(parents=True, exist_ok=True)
+    _kill_stray_chrome_for_profile()
 
     options = Options()
     options.add_argument("--headless=new")
@@ -134,6 +246,24 @@ def _auto_login_get_code() -> str:
     selectors, which is what broke on the first attempt (their OTP/TOTP
     field has no `maxlength` HTML attribute; their buttons are `id`-only,
     not text-matchable reliably).
+
+    Upstox shows one of two screens depending on whether it recognizes
+    this browser: the full mobile-number -> OTP/TOTP -> PIN flow for a
+    fresh session, or a "Welcome back, enter PIN" shortcut straight to
+    `pinCode` once this browser already has a remembered session. This
+    project reuses one persistent Chrome profile directory across every
+    login attempt (see _CHROMIUM_PROFILE_DIR, for the same reason a real
+    browser would — a fresh profile every time would make Upstox treat
+    every login as a brand-new device, likely triggering *more* OTP
+    friction, not less) — after enough successful logins in that same
+    profile, Upstox started skipping the mobile/OTP steps entirely.
+    Observed directly (2026-08-04): a run against this exact profile
+    landed on "Hi Shubhanshu / Welcome back / Enter 6-digit PIN" with only
+    a `pinCode` input on the page, no `mobileNum` — the original version
+    of this function unconditionally waited for `mobileNum` first, so it
+    just timed out every time once the shortcut started appearing. Wait
+    for whichever field shows up first and branch accordingly, instead of
+    assuming only the full flow.
     """
     driver = _setup_driver()
     try:
@@ -144,30 +274,36 @@ def _auto_login_get_code() -> str:
         }
         driver.get(f"{_LOGIN_URL}?{urllib.parse.urlencode(params)}")
 
-        mobile_field = WebDriverWait(driver, 20).until(
-            EC.presence_of_element_located((By.ID, "mobileNum"))
+        first_field = WebDriverWait(driver, 20).until(
+            EC.presence_of_element_located((By.CSS_SELECTOR, "#mobileNum, #pinCode"))
         )
-        mobile_field.clear()
-        mobile_field.send_keys(UpstoxConfig.USERNAME)
-        driver.find_element(By.ID, "getOtp").click()
-        log.info("Upstox auto-login: mobile number submitted.")
 
-        totp_code = pyotp.TOTP(UpstoxConfig.TOTP_SECRET).now()
-        otp_field = WebDriverWait(driver, 15).until(
-            EC.presence_of_element_located((By.ID, "otpNum"))
-        )
-        otp_field.clear()
-        otp_field.send_keys(totp_code)
-        continue_btn = WebDriverWait(driver, 10).until(
-            EC.presence_of_element_located((By.ID, "continueBtn"))
-        )
-        WebDriverWait(driver, 10).until(lambda d: continue_btn.get_attribute("disabled") is None)
-        _js_click(driver, continue_btn)
-        log.info("Upstox auto-login: TOTP submitted.")
+        if first_field.get_attribute("id") == "mobileNum":
+            first_field.clear()
+            first_field.send_keys(UpstoxConfig.USERNAME)
+            driver.find_element(By.ID, "getOtp").click()
+            log.info("Upstox auto-login: mobile number submitted.")
 
-        pin_field = WebDriverWait(driver, 15).until(
-            EC.presence_of_element_located((By.ID, "pinCode"))
-        )
+            totp_code = pyotp.TOTP(UpstoxConfig.TOTP_SECRET).now()
+            otp_field = WebDriverWait(driver, 15).until(
+                EC.presence_of_element_located((By.ID, "otpNum"))
+            )
+            otp_field.clear()
+            otp_field.send_keys(totp_code)
+            continue_btn = WebDriverWait(driver, 10).until(
+                EC.presence_of_element_located((By.ID, "continueBtn"))
+            )
+            WebDriverWait(driver, 10).until(lambda d: continue_btn.get_attribute("disabled") is None)
+            _js_click(driver, continue_btn)
+            log.info("Upstox auto-login: TOTP submitted.")
+
+            pin_field = WebDriverWait(driver, 15).until(
+                EC.presence_of_element_located((By.ID, "pinCode"))
+            )
+        else:
+            log.info("Upstox auto-login: browser already recognized — skipping straight to PIN.")
+            pin_field = first_field
+
         pin_field.clear()
         pin_field.send_keys(UpstoxConfig.PIN)
         pin_continue_btn = WebDriverWait(driver, 10).until(
