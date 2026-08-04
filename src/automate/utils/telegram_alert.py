@@ -118,6 +118,19 @@ def alert_trade_closed(strategy_name: str, mode: str, symbol: str, details: str)
     )
 
 
+def alert_pnl_update(strategy_name: str, mode: str, symbol: str, details: str) -> None:
+    """Periodic while-open P&L snapshot — see custom_strategy_scheduler.py's _send_pnl_updates (distinct from alert_trade_closed, which fires once, at actual exit)."""
+    icon = "🧪" if mode == "paper" else "✅"
+    mode_label = "PAPER" if mode == "paper" else "LIVE"
+    pnl_icon = _pnl_icon(details)
+    header_suffix = f" {pnl_icon}" if pnl_icon else ""
+    send_telegram_alert(
+        f"{icon} 📊 <b>P&amp;L Update</b> <code>{mode_label}</code>{header_suffix}\n"
+        f"<b>{esc(strategy_name)}</b> · {esc(symbol)}\n"
+        f"{_format_body(details)}"
+    )
+
+
 def alert_manual_intervention(message: str) -> None:
     send_telegram_alert(f"🚨 <b>MANUAL INTERVENTION REQUIRED</b>\n{_format_body(message)}")
 

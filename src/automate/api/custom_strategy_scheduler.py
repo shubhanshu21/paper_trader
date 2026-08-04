@@ -60,7 +60,7 @@ from automate.utils.instrument_cache import InstrumentCache
 from automate.utils.logger import get_logger
 from automate.utils.notify import notify
 from automate.utils.option_utils import check_exit_trigger, is_within_pre_expiry_buffer
-from automate.utils.telegram_alert import alert_trade_closed, alert_trade_opened
+from automate.utils.telegram_alert import alert_pnl_update, alert_trade_closed, alert_trade_opened
 from automate.utils.trailing_stop import advance_trailing_stop, stop_triggered
 
 log = get_logger(__name__)
@@ -74,6 +74,14 @@ _TICK_SEC_CLOSED = 300
 # event, not to run on every tick and hammer the broker's positions API.
 _RECONCILE_INTERVAL_SEC = 600
 _last_reconcile_at: float | None = None
+
+# Periodic "still open, here's the current mark" notification (Telegram +
+# in-app) per basket with an OPEN position — separate from alert_trade_
+# opened/closed, which only fire once, at the actual entry/exit moment.
+# Same coarse-cadence rationale as the reconciliation interval above: a
+# per-tick (60s) P&L push would be spam, not a notification anyone reads.
+_PNL_UPDATE_INTERVAL_SEC = 900
+_last_pnl_update_at: float | None = None
 
 # entry/exit "time" rules (e.g. "10:00") are entered by the user as NSE
 # market-hours-of-day (IST) — the server itself runs on UTC, so comparing
@@ -878,6 +886,61 @@ def _reconcile_live_positions(db, brokers: dict) -> None:
         )
 
 
+def _send_pnl_updates(db, brokers: dict) -> None:
+    """
+    Periodic snapshot of every currently-OPEN basket's live P&L — see
+    _PNL_UPDATE_INTERVAL_SEC above for why this is coarse-cadence, not
+    per-tick. One notification per strategy (not per leg) — legs are
+    grouped and combined the same way _try_exit's TP/SL check does, so
+    the % shown here is the exact number that would trigger an exit.
+    """
+    from automate.utils.wallet import get_charge_rates
+
+    open_legs = db.query(CustomStrategyPosition).filter(CustomStrategyPosition.status == "OPEN").all()
+    if not open_legs:
+        return
+
+    legs_by_strategy = defaultdict(list)
+    for leg in open_legs:
+        legs_by_strategy[leg.strategy_id].append(leg)
+
+    strategies = {
+        s.id: s for s in db.query(CustomStrategy).filter(CustomStrategy.id.in_(legs_by_strategy.keys())).all()
+    }
+
+    for strategy_id, legs in legs_by_strategy.items():
+        strategy = strategies.get(strategy_id)
+        if strategy is None:
+            continue
+        mode = legs[0].mode
+        broker = brokers.get(mode)
+        if broker is None:
+            continue
+
+        tokens = [leg.instrument_key for leg in legs]
+        try:
+            now_prices = broker.get_ltp_batch(tokens)
+        except Exception as exc:
+            log.warning("custom_strategy_scheduler: pnl update LTP fetch failed for strategy %s: %s", strategy_id, exc)
+            continue
+
+        rates = get_charge_rates(strategy.user_id)
+        pnl_pct = _combined_pnl_pct(legs, now_prices, rates)
+        if pnl_pct is None:
+            continue
+
+        symbols = json.loads(strategy.symbols)
+        symbol = next((s for s in symbols if any(_is_leg_for_symbol(leg.instrument_key, s) for leg in legs)), symbols[0] if symbols else "?")
+        leg_details = " | ".join(
+            f"{leg.transaction_type} {leg.option_type} {leg.strike}@{now_prices.get(leg.instrument_key, 0) or 0:.2f}"
+            for leg in legs
+        )
+        details = f"{leg_details} | pnl={pnl_pct:+.2f}%"
+        notify("custom_strategy", f"P&L Update — {strategy.name}\n{symbol} ({mode})\n{details}",
+               level="pnl", user_id=strategy.user_id)
+        alert_pnl_update(strategy.name, mode, symbol, details)
+
+
 def _tick_one_strategy(db, strategy: CustomStrategy, brokers: dict) -> None:
     """
     One strategy's worth of a scheduler tick — extracted from the main
@@ -942,7 +1005,7 @@ async def custom_strategy_scheduler() -> None:
                         for strategy in strategies:
                             _tick_one_strategy(db, strategy, brokers)
 
-                        global _last_reconcile_at
+                        global _last_reconcile_at, _last_pnl_update_at
                         now_monotonic = time.monotonic()
                         if _last_reconcile_at is None or now_monotonic - _last_reconcile_at >= _RECONCILE_INTERVAL_SEC:
                             _last_reconcile_at = now_monotonic
@@ -950,6 +1013,13 @@ async def custom_strategy_scheduler() -> None:
                                 _reconcile_live_positions(db, brokers)
                             except Exception as exc:
                                 log.error("custom_strategy_scheduler: position reconciliation failed: %s", exc, exc_info=True)
+
+                        if _last_pnl_update_at is None or now_monotonic - _last_pnl_update_at >= _PNL_UPDATE_INTERVAL_SEC:
+                            _last_pnl_update_at = now_monotonic
+                            try:
+                                _send_pnl_updates(db, brokers)
+                            except Exception as exc:
+                                log.error("custom_strategy_scheduler: pnl update failed: %s", exc, exc_info=True)
                     finally:
                         db.close()
         except Exception as exc:

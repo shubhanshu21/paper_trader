@@ -1,11 +1,11 @@
 import { useState, useEffect, useRef } from "react";
-import { Bell, AlertTriangle, Info, AlertCircle, CheckCheck, TrendingUp, TrendingDown } from "lucide-react";
+import { Bell, AlertTriangle, Info, AlertCircle, CheckCheck, TrendingUp, TrendingDown, BarChart3 } from "lucide-react";
 import { C } from "../lib/format";
 import { wsUrl, csrfHeaders } from "../api";
 
 interface NotificationItem {
   id: number;
-  level: "info" | "warning" | "error" | "trade";
+  level: "info" | "warning" | "error" | "trade" | "pnl";
   source: string;
   message: string;
   read: boolean;
@@ -17,17 +17,28 @@ const LEVEL_META: Record<string, { icon: typeof Info; color: string }> = {
   warning: { icon: AlertTriangle, color: "#d97706" },
   error: { icon: AlertCircle, color: C.red },
   trade: { icon: TrendingUp, color: C.green },
+  pnl: { icon: BarChart3, color: C.blue },
 };
 
-// custom_strategy_scheduler.py sends level="trade" messages as exactly
-// three lines: "Trade Opened/Closed — <strategy name>", "<symbol> (<mode>)",
-// then a " | "-joined detail line (per-leg entries + qty, or exit reason +
-// legs + pnl) — parsed back out here into a small table instead of one
-// flat run-on line, since that's unreadable once a basket has 2+ legs.
+// custom_strategy_scheduler.py sends level="trade"/"pnl" messages as exactly
+// three lines: "Trade Opened/Closed/P&L Update — <strategy name>",
+// "<symbol> (<mode>)", then a " | "-joined detail line (per-leg entries +
+// qty, or exit reason + legs + pnl) — parsed back out here into a small
+// table instead of one flat run-on line, since that's unreadable once a
+// basket has 2+ legs.
 function parseTradeMessage(message: string): { title: string; subtitle: string; rows: string[] } | null {
   const lines = message.split("\n");
   if (lines.length !== 3) return null;
   return { title: lines[0], subtitle: lines[1], rows: lines[2].split(" | ") };
+}
+
+const PNL_RE = /pnl=([+-]?\d+(?:\.\d+)?)%/;
+function pnlSign(rows: string[]): number | null {
+  for (const row of rows) {
+    const m = PNL_RE.exec(row);
+    if (m) return parseFloat(m[1]);
+  }
+  return null;
 }
 
 function timeAgo(iso: string): string {
@@ -176,9 +187,19 @@ export default function NotificationBell() {
               <div className="px-4 py-10 text-center text-xs text-gray-400">No notifications yet.</div>
             ) : (
               notifications.map((n) => {
-                const trade = n.level === "trade" ? parseTradeMessage(n.message) : null;
+                const trade = (n.level === "trade" || n.level === "pnl") ? parseTradeMessage(n.message) : null;
                 const closed = trade?.title.startsWith("Trade Closed");
-                const meta = trade ? { icon: closed ? TrendingDown : TrendingUp, color: closed ? C.red : C.green } : LEVEL_META[n.level] || LEVEL_META.info;
+                const opened = trade?.title.startsWith("Trade Opened");
+                const sign = trade ? pnlSign(trade.rows) : null;
+                // Opened: always the "started" green up-arrow — no P&L yet.
+                // Closed/periodic update: color + direction follow the
+                // actual sign so a profitable close/update reads as green
+                // even though it's visually a "closed"/neutral event.
+                const meta = trade
+                  ? opened
+                    ? { icon: TrendingUp, color: C.green }
+                    : { icon: sign != null && sign < 0 ? TrendingDown : TrendingUp, color: sign == null ? C.blue : sign < 0 ? C.red : C.green }
+                  : LEVEL_META[n.level] || LEVEL_META.info;
                 const Icon = meta.icon;
                 return (
                   <button
@@ -191,13 +212,13 @@ export default function NotificationBell() {
                     <div className="min-w-0 flex-1">
                       <div className="flex items-center justify-between gap-2">
                         <span className="text-[11px] font-semibold uppercase tracking-wide text-gray-500">
-                          {trade ? (closed ? "Trade Closed" : "Trade Opened") : n.source.replace(/_/g, " ")}
+                          {trade ? (closed ? "Trade Closed" : opened ? "Trade Opened" : "P&L Update") : n.source.replace(/_/g, " ")}
                         </span>
                         <span className="text-[10px] text-gray-400 shrink-0">{timeAgo(n.created_at)}</span>
                       </div>
                       {trade ? (
                         <div className="mt-1">
-                          <div className="text-xs font-semibold text-gray-800">{trade.title.replace(/^Trade (Opened|Closed) — /, "")}</div>
+                          <div className="text-xs font-semibold text-gray-800">{trade.title.replace(/^(Trade (Opened|Closed)|P&L Update) — /, "")}</div>
                           <div className="text-[11px] text-gray-500 mb-1">{trade.subtitle}</div>
                           <div className="rounded-md overflow-hidden border" style={{ borderColor: C.border2 }}>
                             {trade.rows.map((row, i) => {
