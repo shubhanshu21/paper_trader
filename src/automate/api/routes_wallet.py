@@ -128,6 +128,15 @@ def wallet_reset(user: dict = Depends(get_current_user)):
             deleted_custom_legs = session.query(CustomStrategyPosition).filter(
                 CustomStrategyPosition.strategy_id.in_(own_strategy_ids)
             ).delete(synchronize_session=False)
+            # Positions are gone, so any "already entered this cycle" marker
+            # left on the strategy is now stale — without this, the
+            # scheduler's cycle-gate (custom_strategy_scheduler.py's
+            # _get_last_entered_expiry check) sees the old expiry still
+            # recorded and skips re-entry for the rest of that expiry's
+            # cycle, even though there's nothing actually open anymore.
+            session.query(CustomStrategy).filter(
+                CustomStrategy.id.in_(own_strategy_ids)
+            ).update({CustomStrategy.last_entry_date: None}, synchronize_session=False)
 
         # Reset this account's own starting capital baseline to 0
         row = session.query(WalletSettings).filter_by(user_id=user_id).first()
