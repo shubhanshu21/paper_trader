@@ -33,6 +33,13 @@ from automate.utils.option_utils import (
 log = get_logger(__name__)
 
 
+_PREMIUM_RESOLVED_MODES = {"PREMIUM_OFFSET", "PREMIUM_BAND"}
+# How far outward (in strike_step increments) PREMIUM_BAND will search
+# before refusing to guess — generous enough to reach genuinely deep OTM
+# strikes on any index/stock without an unbounded scan.
+_PREMIUM_BAND_MAX_STEPS = 40
+
+
 def resolve_leg_strike(leg: dict, spot_price: float, strike_step: float) -> float:
     """
     Turn a leg's strike_selection rule into an actual tradeable strike.
@@ -40,6 +47,12 @@ def resolve_leg_strike(leg: dict, spot_price: float, strike_step: float) -> floa
     OTM is directional: for a CE (call), "out of the money" means ABOVE
     spot; for a PE (put), it means BELOW spot. FIXED and ATM are the same
     regardless of option_type.
+
+    PREMIUM_OFFSET/PREMIUM_BAND are NOT handled here — they need a live
+    option chain + broker LTPs (this function is deliberately pure/no-
+    broker, same as every other option_utils-style helper), so
+    RuleBasedStrategy._resolve_leg routes those two modes to
+    _resolve_premium_offset_strike/_resolve_premium_band_strike instead.
     """
     sel = leg["strike_selection"]
     mode = sel["mode"]
@@ -276,11 +289,72 @@ class RuleBasedStrategy(BaseStrategy):
             "transaction_type": leg["action"],
         }
 
+    def _resolve_premium_offset_strike(self, leg: dict, spot_price: float, chain_data: list) -> float:
+        """
+        PREMIUM_OFFSET (see rule_schema.py): offset = round_to_nearest_strike
+        (live ATM straddle premium / divisor, strike_step). Always reads the
+        ATM CE+PE premiums straight off THIS leg's own chain_data — not
+        from any other leg's resolved state — so it works regardless of
+        whether the strategy actually has its own ATM legs, and has no
+        leg-resolution-order dependency.
+        """
+        atm_strike = round_to_nearest_strike(spot_price, self.strike_step)
+        ce_token = find_instrument_token(chain_data, atm_strike, "CE")
+        pe_token = find_instrument_token(chain_data, atm_strike, "PE")
+        if not ce_token or not pe_token:
+            raise ComplianceError(
+                f"{self.symbol}: no listed ATM {atm_strike} CE/PE contract to price a PREMIUM_OFFSET leg from."
+            )
+        ce_premium = self.broker.get_ltp(ce_token)
+        pe_premium = self.broker.get_ltp(pe_token)
+        if not ce_premium or not pe_premium:
+            raise RuntimeError(
+                f"{self.symbol}: could not fetch live ATM {atm_strike} CE/PE premiums for a PREMIUM_OFFSET leg — refusing to guess."
+            )
+        divisor = float(leg["strike_selection"]["value"])
+        offset = round_to_nearest_strike((ce_premium + pe_premium) / divisor, self.strike_step)
+        sign = 1 if leg["option_type"] == "CE" else -1
+        return atm_strike + sign * offset
+
+    def _resolve_premium_band_strike(self, leg: dict, spot_price: float, chain_data: list) -> float:
+        """
+        PREMIUM_BAND (see rule_schema.py): the nearest strike, searching
+        outward from ATM in this leg's OTM direction, whose own live
+        premium falls within [min, max] (₹) — a proxy for "pick a strike
+        by how much it costs" (e.g. a deep-OTM insurance leg trading
+        ₹40-70) when no live delta feed is wired up. Refuses (raises)
+        rather than falling back to the nearest miss if nothing in the
+        search window matches — same "wrong strike is a real-money risk,
+        don't guess" discipline as everywhere else in this class.
+        """
+        sel = leg["strike_selection"]
+        band_min, band_max = float(sel["min"]), float(sel["max"])
+        atm_strike = round_to_nearest_strike(spot_price, self.strike_step)
+        sign = 1 if leg["option_type"] == "CE" else -1
+        for step_n in range(1, _PREMIUM_BAND_MAX_STEPS + 1):
+            candidate = atm_strike + sign * step_n * self.strike_step
+            token = find_instrument_token(chain_data, candidate, leg["option_type"])
+            if not token:
+                continue
+            premium = self.broker.get_ltp(token)
+            if premium is not None and band_min <= premium <= band_max:
+                return candidate
+        raise ComplianceError(
+            f"{self.symbol}: no {leg['option_type']} strike within {_PREMIUM_BAND_MAX_STEPS} strikes of ATM "
+            f"{atm_strike} has a live premium between ₹{band_min} and ₹{band_max} — refusing to guess."
+        )
+
     def _resolve_leg(self, leg: dict, spot_price: float, expiry: str | None, chain_data: list | None) -> dict:
         """Return {instrument_token, strike, quantity, transaction_type, tag, ...leg metadata}."""
         if (leg.get("instrument_type") or "OPTION") == "EQUITY":
             return self._resolve_equity_leg(leg, spot_price)
-        strike = resolve_leg_strike(leg, spot_price, self.strike_step)
+        strike_mode = leg["strike_selection"]["mode"]
+        if strike_mode == "PREMIUM_OFFSET":
+            strike = self._resolve_premium_offset_strike(leg, spot_price, chain_data)
+        elif strike_mode == "PREMIUM_BAND":
+            strike = self._resolve_premium_band_strike(leg, spot_price, chain_data)
+        else:
+            strike = resolve_leg_strike(leg, spot_price, self.strike_step)
         token = find_instrument_token(chain_data, strike, leg["option_type"])
         if not token:
             raise ComplianceError(

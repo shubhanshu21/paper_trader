@@ -95,6 +95,21 @@ class BaseBroker(ABC):
         """
         return None
 
+    def get_available_funds(self) -> float | None:
+        """
+        Real available-to-trade balance (₹) on the actual broker account —
+        Upstox's own "cash + pledge available to trade" figure, straight
+        from their funds API, not a locally-simulated wallet. Default None
+        ("not available from this broker") — MockBroker/backtest never
+        overrides this, and PaperBroker deliberately does NOT delegate to
+        its wrapped real_broker here: paper trading's capital pool is the
+        per-user simulated wallet (utils/wallet.py::get_wallet_summary),
+        a completely separate number from whatever is actually sitting in
+        the one real Upstox account this app is configured against — only
+        UpstoxBroker (the LIVE broker) overrides this.
+        """
+        return None
+
     @abstractmethod
     def get_option_contracts(self, instrument_key: str) -> list[str]:
         """

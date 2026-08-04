@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, type ReactNode } from "react";
 import {
   Plus, Play, Pause, RefreshCw, TrendingUp, AlertCircle, BarChart3, Trash2, Pencil,
   Layers, Clock, LogOut, Activity, FileText, Target, ArrowUpRight, ArrowDownRight, Calendar, IndianRupee, Info, X,
-  Download, GitCompare, Eye,
+  Download, GitCompare, Eye, Wallet,
   type LucideIcon,
 } from "lucide-react";
 import { DatePicker } from "./Common";
@@ -11,7 +11,7 @@ import { useToast } from "../hooks/useToast";
 import { api, wsUrl } from "../api";
 import type {
   BacktestCycle, BacktestResult, BacktestRunSummary, BacktestRunDetail,
-  PayoffResponse, PositionLeg,
+  PayoffResponse, PositionLeg, MarginResponse,
 } from "../api";
 import type { CustomStrategy, CustomStrategyRules, PortfolioGreeksResponse } from "../types/customStrategy";
 import { useCustomStrategyPositions } from "../hooks/useCustomStrategyPositions";
@@ -71,10 +71,13 @@ interface LiveGreeksResponse {
   message?: string;
 }
 
-const strikeLabel = (sel: { mode: string; value: number | null }) => {
+const strikeLabel = (sel: { mode: string; value: number | null; min?: number | null; max?: number | null }) => {
   if (sel.mode === "ATM") return "ATM";
   if (sel.mode === "OTM_PERCENT") return `${sel.value}% OTM`;
   if (sel.mode === "OTM_POINTS") return `${sel.value} pts OTM`;
+  if (sel.mode === "FIXED") return `Strike ${sel.value}`;
+  if (sel.mode === "PREMIUM_OFFSET") return `Straddle premium / ${sel.value} OTM`;
+  if (sel.mode === "PREMIUM_BAND") return `₹${sel.min}-₹${sel.max} premium`;
   return `Strike ${sel.value}`;
 };
 
@@ -119,6 +122,53 @@ function StatCard({
         </span>
         {hasValue && (positive ? <ArrowUpRight size={16} style={{ color: C.green }} /> : <ArrowDownRight size={16} style={{ color: C.red }} />)}
       </div>
+    </div>
+  );
+}
+
+/**
+ * A row of three cards — same visual language as the EXPIRY/ENTRY/EXIT row
+ * further down this page (rounded-xl border, small uppercase icon+label
+ * header, value below) — but sized a bit roomier (p-4/text-lg, not
+ * p-3.5/text-sm) since each availability card also carries a second
+ * surplus/shortfall line. Required is neutral (it's just a fact, not a
+ * pass/fail); Paper/Live are colored green when that pool alone covers
+ * the requirement, red when it doesn't, and gray "—" while unknown
+ * (e.g. the live funds API didn't return a figure this time) — never red
+ * for "unknown," only for a confirmed shortfall.
+ */
+function MarginRow({ margin, loading }: { margin: MarginResponse | null; loading: boolean }) {
+  const hasRequired = !loading && margin != null && margin.margin_required > 0;
+
+  const poolCard = (label: string, Icon: LucideIcon, status: { available_balance: number | null; sufficient: boolean | null }) => {
+    const known = status.sufficient != null && status.available_balance != null;
+    const color = !known ? C.muted : status.sufficient ? C.green : C.red;
+    const bg = !known ? "#fafafa" : status.sufficient ? `${C.green}0d` : `${C.red}0d`;
+    const diff = known && hasRequired ? status.available_balance! - margin!.margin_required : null;
+    return (
+      <div key={label} className="rounded-xl border p-4" style={{ borderColor: C.border2, background: bg }}>
+        <div className="flex items-center gap-1.5 text-[11px] font-medium text-gray-400 mb-1.5"><Icon size={12} /> {label.toUpperCase()} AVAILABLE</div>
+        <div className="text-lg font-semibold" style={{ color: known ? color : C.faint }}>
+          {loading ? "…" : status.available_balance != null ? `₹${inr(status.available_balance, 0)}` : "—"}
+        </div>
+        <div className="text-[11px] font-medium mt-1" style={{ color: diff != null ? color : C.faint }}>
+          {diff == null ? "—" : diff >= 0 ? `+₹${inr(diff, 0)} surplus` : `-₹${inr(Math.abs(diff), 0)} short`}
+        </div>
+      </div>
+    );
+  };
+
+  return (
+    <div className="grid grid-cols-3 gap-4">
+      <div className="rounded-xl border p-4" style={{ borderColor: C.border2 }}>
+        <div className="flex items-center gap-1.5 text-[11px] font-medium text-gray-400 mb-1.5"><Wallet size={12} /> MARGIN REQUIRED</div>
+        <div className="text-lg font-semibold" style={{ color: hasRequired ? C.text : C.faint }}>
+          {loading ? "…" : hasRequired ? `₹${inr(margin!.margin_required, 0)}` : "—"}
+        </div>
+        <div className="text-[11px] font-medium mt-1 text-transparent select-none">spacer</div>
+      </div>
+      {poolCard("Paper", Activity, margin?.paper ?? { available_balance: null, sufficient: null })}
+      {poolCard("Live", Target, margin?.live ?? { available_balance: null, sufficient: null })}
     </div>
   );
 }
@@ -607,6 +657,9 @@ export default function StrategiesView({
   strategies, loading, statusUpdatingId, deletingId,
   onRefresh, onCreate, onUpdate, onStatusChange, onDelete,
 }: StrategiesViewProps) {
+  // Only read from the (commented-out) delete buttons below — kept
+  // referenced so it doesn't trip noUnusedLocals while they're disabled.
+  void deletingId;
   const toast = useToast();
   const [selectedStrategy, setSelectedStrategy] = useState<CustomStrategy | null>(null);
   const [modalMode, setModalMode] = useState<null | "create" | "edit">(null);
@@ -700,6 +753,26 @@ export default function StrategiesView({
     setIvShift(0);
     setDaysRemaining(null);
     if (selectedStrategy && selectedStrategy.rules) fetchPayoff(selectedStrategy);
+  }, [selectedStrategy]);
+
+  const [margin, setMargin] = useState<MarginResponse | null>(null);
+  const [marginLoading, setMarginLoading] = useState(false);
+
+  const fetchMargin = async (strategy: CustomStrategy) => {
+    setMarginLoading(true);
+    try {
+      const data = await api.getCustomStrategyMargin(strategy.id);
+      setMargin(data);
+    } catch {
+      setMargin(null);
+    } finally {
+      setMarginLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    setMargin(null);
+    if (selectedStrategy && selectedStrategy.rules) fetchMargin(selectedStrategy);
   }, [selectedStrategy]);
 
   useEffect(() => {
@@ -918,6 +991,10 @@ export default function StrategiesView({
     return () => { backtestPollAbortRef.current?.abort(); };
   }, []);
 
+  // Delete buttons that call this are temporarily commented out (not
+  // removed) below — this reference keeps both this function and the
+  // Trash2 import "used" for noUnusedLocals while they're disabled.
+  void Trash2;
   const handleDeleteStrategy = async (strategy: CustomStrategy) => {
     try {
       await onDelete(strategy.id);
@@ -930,6 +1007,7 @@ export default function StrategiesView({
       toast.error((Array.isArray(err) ? err.join(" ") : typeof err === "string" ? err : null) || "Failed to delete strategy.");
     }
   };
+  void handleDeleteStrategy;
 
   const canTransitionTo = (currentStatus: string, targetStatus: string) => {
     // Mirrors routes_custom_strategies.py::update_strategy_status's
@@ -1067,6 +1145,7 @@ export default function StrategiesView({
                                 {statusUpdatingId === strategy.id ? <RefreshCw size={12} className="animate-spin" /> : <AlertCircle size={12} />}
                               </button>
                             )}
+                            {/* Delete button temporarily hidden — kept commented out, not removed, so it's easy to restore.
                             {["DRAFT", "STOPPED"].includes(strategy.status) && (
                               <button
                                 onClick={(e) => {
@@ -1085,6 +1164,7 @@ export default function StrategiesView({
                                 {deletingId === strategy.id ? <RefreshCw size={12} className="animate-spin" /> : <Trash2 size={12} />}
                               </button>
                             )}
+                            */}
                           </div>
                         </div>
                         <div className="flex items-center gap-2 mt-1.5 flex-wrap">
@@ -1285,6 +1365,7 @@ export default function StrategiesView({
                       <AlertCircle size={14} /> Stop
                     </button>
                   )}
+                  {/* Delete button temporarily hidden — kept commented out, not removed, so it's easy to restore.
                   {["DRAFT", "STOPPED"].includes(selectedStrategy.status) && (
                     <button onClick={() => {
                       setConfirmModal({
@@ -1300,6 +1381,7 @@ export default function StrategiesView({
                       <Trash2 size={14} />
                     </button>
                   )}
+                  */}
                 </div>
               </div>
 
@@ -1309,6 +1391,8 @@ export default function StrategiesView({
                   <StatCard icon={Activity} label="Paper (last trade)" value={selectedStrategy.paper_return_pct} accent={C.green} />
                   <StatCard icon={Target} label="Live (last trade)" value={selectedStrategy.live_return_pct} accent={C.orange} />
                 </div>
+
+                <MarginRow margin={margin} loading={marginLoading} />
 
                 {backtestRuns.length > 0 && (
                   <BacktestRunHistoryPanel

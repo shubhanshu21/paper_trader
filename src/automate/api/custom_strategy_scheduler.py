@@ -260,7 +260,35 @@ def _get_last_entered_expiry(strategy: CustomStrategy, symbol: str, mode: str) -
     return mode_entry.get("expiry") if isinstance(mode_entry, dict) else None
 
 
-def _set_last_entered_expiry(strategy: CustomStrategy, symbol: str, mode: str, expiry: str) -> None:
+def _get_last_entered_margin(strategy: CustomStrategy, symbol: str, mode: str) -> float | None:
+    """
+    The REAL broker-reported margin (₹) blocked for this symbol's `mode`-
+    cycle basket at entry (see _try_entry's get_basket_required_margin
+    call), or None if never recorded — either an old row from before this
+    existed, or the broker couldn't report basket margin that cycle (e.g.
+    MockBroker/backtest). Same JSON blob as _get_last_entered_expiry,
+    just one more key on the same mode_entry dict — no migration needed.
+    Used by exit.take_profit_capital_pct/stop_loss_capital_pct (see
+    rule_schema.py) — those checks simply never fire if this returns
+    None, rather than guessing a capital base.
+    """
+    if not strategy.last_entry_date:
+        return None
+    try:
+        data = json.loads(strategy.last_entry_date)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(data, dict):
+        return None
+    symbol_entry = data.get(symbol)
+    if not isinstance(symbol_entry, dict):
+        return None
+    mode_entry = symbol_entry.get(mode)
+    margin = mode_entry.get("margin") if isinstance(mode_entry, dict) else None
+    return float(margin) if isinstance(margin, (int, float)) else None
+
+
+def _set_last_entered_expiry(strategy: CustomStrategy, symbol: str, mode: str, expiry: str, margin_at_entry: float | None = None) -> None:
     try:
         data = json.loads(strategy.last_entry_date) if strategy.last_entry_date else {}
         if not isinstance(data, dict):
@@ -270,7 +298,7 @@ def _set_last_entered_expiry(strategy: CustomStrategy, symbol: str, mode: str, e
     symbol_entry = data.get(symbol)
     if not isinstance(symbol_entry, dict):
         symbol_entry = {}
-    symbol_entry[mode] = {"expiry": expiry, "date": date.today().isoformat()}
+    symbol_entry[mode] = {"expiry": expiry, "date": date.today().isoformat(), "margin": margin_at_entry}
     data[symbol] = symbol_entry
     strategy.last_entry_date = json.dumps(data)
 
@@ -383,6 +411,41 @@ def _entry_condition_met(broker, symbol: str, condition: dict, instrument_type: 
     return False
 
 
+_WEEKDAY_NUMS = {"MON": 0, "TUE": 1, "WED": 2, "THU": 3, "FRI": 4, "SAT": 5, "SUN": 6}
+# If the preferred weekday never lands inside the window (a holiday, or a
+# short month), force entry once we're down to this many days before
+# expiry rather than silently skip the WHOLE monthly cycle waiting for a
+# weekday that isn't coming — same "never miss a cycle" discipline
+# _resolve_current_expiry's caller already relies on elsewhere.
+_BEFORE_EXPIRY_LATEST_DAYS_FALLBACK = 1
+
+
+def _before_expiry_eligible(before_rule: dict, expiry_str: str) -> bool:
+    """entry.mode == "BEFORE_EXPIRY" (see rule_schema.py) — is TODAY inside this group's entry window for `expiry_str`?"""
+    expiry_date = dtime_or_none(expiry_str)
+    if expiry_date is None:
+        return False
+    today = date.today()
+    days_before = before_rule.get("days_before_expiry")
+    if not isinstance(days_before, int) or days_before < 1:
+        return False
+    if not is_within_pre_expiry_buffer(today, expiry_date, days_before):
+        return False  # window not open yet
+
+    time_gate = before_rule.get("time")
+    if time_gate and datetime.now(_IST).strftime("%H:%M") < time_gate:
+        return False
+
+    weekday = before_rule.get("weekday")
+    if weekday and _WEEKDAY_NUMS.get(weekday) != today.weekday():
+        # Not the preferred weekday — allow it anyway only once we've hit
+        # the last-chance fallback window, so a holiday on the target
+        # weekday can't skip the whole cycle.
+        if not is_within_pre_expiry_buffer(today, expiry_date, _BEFORE_EXPIRY_LATEST_DAYS_FALLBACK):
+            return False
+    return True
+
+
 def _try_entry(db, strategy: CustomStrategy, broker) -> None:
     symbols = json.loads(strategy.symbols)
     rules = json.loads(strategy.rules_json)
@@ -435,6 +498,13 @@ def _try_entry(db, strategy: CustomStrategy, broker) -> None:
             if _get_last_entered_expiry(strategy, symbol, mode) == current_expiry:
                 continue  # Already traded this cycle.
 
+            # BEFORE_EXPIRY is expiry-relative (unlike AT_TIME's strategy-
+            # wide gate above), so it can only be checked once this
+            # group's real resolved expiry is known — "enter close to
+            # THIS expiry", not right after the PREVIOUS one rolled over.
+            if entry_mode == "BEFORE_EXPIRY" and not _before_expiry_eligible(entry_rule.get("before_expiry") or {}, current_expiry):
+                continue
+
             try:
                 rule_strategy = RuleBasedStrategy(
                     broker=broker, audit=_audit, kill_switch=_kill_switch, rate_limiter=_rate_limiter,
@@ -458,7 +528,30 @@ def _try_entry(db, strategy: CustomStrategy, broker) -> None:
             if result.get("status") not in ("success", "dry_run"):
                 continue
             entered_expiry = (result.get("expiries") or {}).get(mode) or current_expiry
-            _set_last_entered_expiry(strategy, symbol, mode, entered_expiry)
+
+            # Snapshot the REAL broker-reported basket margin ONCE, right
+            # at entry — the only correct denominator for exit.
+            # take_profit_capital_pct/stop_loss_capital_pct (rule_schema.py):
+            # "% of deployed capital" means % of what the broker actually
+            # blocked for this multi-leg basket, not % of premium
+            # collected. Never guessed: None (unsupported broker, e.g.
+            # MockBroker/backtest, or a lookup failure) means those two
+            # exit checks simply never fire for this cycle — see
+            # _get_last_entered_margin/_try_exit.
+            margin_at_entry = None
+            option_instruments = [
+                {"instrument_key": leg["instrument_token"], "quantity": leg["quantity"],
+                 "transaction_type": leg["transaction_type"], "product": rule_strategy.product}
+                for leg in result["legs"] if leg["instrument_type"] == "OPTION"
+            ]
+            if option_instruments:
+                try:
+                    margin_at_entry = broker.get_basket_required_margin(option_instruments)
+                except Exception as exc:
+                    log.warning("custom_strategy_scheduler: basket margin lookup failed for strategy %s (%s) symbol %s: %s",
+                                strategy.id, strategy.name, symbol, exc)
+
+            _set_last_entered_expiry(strategy, symbol, mode, entered_expiry, margin_at_entry)
 
             db_mode = _mode_for_status(strategy.status)
             for original_idx, leg in zip(result["leg_indices"], result["legs"], strict=False):
@@ -495,21 +588,23 @@ def _try_entry(db, strategy: CustomStrategy, broker) -> None:
             alert_trade_opened(strategy.name, db_mode, symbol, details)
 
 
-def _combined_pnl_pct(legs: list[CustomStrategyPosition], now_prices: dict, rates: dict | None = None) -> float | None:
+def _combined_pnl(legs: list[CustomStrategyPosition], now_prices: dict, rates: dict | None = None) -> tuple[float, float] | None:
     """
-    NET P&L (of the combined premium at entry) — includes real Upstox
-    transaction costs (brokerage/STT/exchange charges/GST/SEBI charges/
-    stamp duty, see utils/costs.py) on both the original entry AND the
-    hypothetical exit at `now_prices`, same as backtest/custom_engine.py
-    computes for historical cycles. Slippage is already baked into
-    leg.entry_price/now_prices themselves (PaperBroker/UpstoxBroker apply
-    it at fill time) — this function only adds the fee layer backtest
-    already had and paper/live previously didn't, so the two modes are
-    now comparable apples-to-apples.
+    (pnl_amount, pnl_pct) — NET P&L (₹, and as % of the combined premium
+    at entry) — includes real Upstox transaction costs (brokerage/STT/
+    exchange charges/GST/SEBI charges/stamp duty, see utils/costs.py) on
+    both the original entry AND the hypothetical exit at `now_prices`,
+    same as backtest/custom_engine.py computes for historical cycles.
+    Slippage is already baked into leg.entry_price/now_prices themselves
+    (PaperBroker/UpstoxBroker apply it at fill time) — this function only
+    adds the fee layer backtest already had and paper/live previously
+    didn't, so the two modes are now comparable apples-to-apples.
 
-    Used both for the live TP/SL trigger check (so a "+40% profit"
-    target is evaluated net of real costs, not a false-positive gross
-    number) and for the final stored paper_return_pct/live_return_pct.
+    Used for both TP/SL trigger checks (a "+40% profit" or a flat
+    "+₹4,500 profit" target is evaluated net of real costs, not a
+    false-positive gross number) and for the final stored
+    paper_return_pct/live_return_pct. Returns None if any leg's current
+    price is unavailable (never guesses a partial P&L).
     """
     from automate.utils.costs import calculate_options_transaction_cost_breakdown
 
@@ -529,7 +624,14 @@ def _combined_pnl_pct(legs: list[CustomStrategyPosition], now_prices: dict, rate
         entry_costs = calculate_options_transaction_cost_breakdown(entry, qty, leg.transaction_type, rates)
         exit_costs = calculate_options_transaction_cost_breakdown(now, qty, exit_transaction_type, rates)
         pnl_amount -= entry_costs.get("total", 0) + exit_costs.get("total", 0)
-    return (pnl_amount / denom * 100.0) if denom > 0 else 0.0
+    pnl_pct = (pnl_amount / denom * 100.0) if denom > 0 else 0.0
+    return pnl_amount, pnl_pct
+
+
+def _combined_pnl_pct(legs: list[CustomStrategyPosition], now_prices: dict, rates: dict | None = None) -> float | None:
+    """pnl_pct only — see _combined_pnl. Kept for callers (per-leg exit check) that only ever needed the percentage."""
+    result = _combined_pnl(legs, now_prices, rates)
+    return result[1] if result else None
 
 
 def _close_leg(db, strategy: CustomStrategy, broker, leg: CustomStrategyPosition, trigger: str, now_prices: dict) -> bool:
@@ -636,6 +738,40 @@ def _try_exit_individual_leg(db, strategy: CustomStrategy, broker, leg: CustomSt
     return _close_leg(db, strategy, broker, leg, trigger, now_prices)
 
 
+def _breakeven_breached(broker, symbol: str, legs: list[CustomStrategyPosition]) -> bool:
+    """
+    stop_loss_mode="BREAKEVEN" (see rule_schema.py) — True once the
+    underlying's current spot has moved outside this basket's own
+    computed breakeven range (utils/option_utils.py::find_breakevens, an
+    exact piecewise-linear payoff root-find over every leg's own strike/
+    entry_price/quantity, not a fixed distance). False (never triggers)
+    if there's no OPTION leg to compute a breakeven from, or the
+    underlying's LTP can't be fetched right now — same "can't evaluate
+    safely -> don't guess" default every other exit condition in this
+    module uses.
+    """
+    from automate.utils.option_utils import find_breakevens
+
+    leg_dicts = [
+        {
+            "strike": float(leg.strike), "option_type": leg.option_type,
+            "transaction_type": leg.transaction_type, "entry_price": float(leg.entry_price),
+            "quantity": leg.quantity,
+        }
+        for leg in legs if leg.strike is not None and leg.option_type is not None
+    ]
+    breakevens = find_breakevens(leg_dicts)
+    if not breakevens:
+        return False
+    try:
+        spot = broker.get_ltp(broker.resolve_instrument_key(symbol))
+    except Exception:
+        spot = None
+    if spot is None:
+        return False
+    return spot < min(breakevens) or spot > max(breakevens)
+
+
 def _try_exit(db, strategy: CustomStrategy, broker) -> None:
     legs = db.query(CustomStrategyPosition).filter(
         CustomStrategyPosition.strategy_id == strategy.id,
@@ -650,9 +786,19 @@ def _try_exit(db, strategy: CustomStrategy, broker) -> None:
     rules = json.loads(strategy.rules_json)
     exit_rule = rules.get("exit") or {}
     take_profit_pct = exit_rule.get("take_profit_pct")
+    take_profit_amount = exit_rule.get("take_profit_amount")
+    take_profit_capital_pct = exit_rule.get("take_profit_capital_pct")
+    stop_loss_capital_pct = exit_rule.get("stop_loss_capital_pct")
+    stop_loss_mode = exit_rule.get("stop_loss_mode") or "PCT"
     stop_loss_pct = exit_rule.get("stop_loss_pct")
     exit_time = exit_rule.get("exit_time")
     exit_days_before_expiry = exit_rule.get("exit_days_before_expiry", 0)
+    # Real broker margin at entry — the denominator for take_profit_capital_pct/
+    # stop_loss_capital_pct (see rule_schema.py). Only meaningful for the
+    # strategy's own default expiry-mode group; a true calendar spread's
+    # OTHER group(s) aren't covered by this single lookup (same documented
+    # limitation as execute()'s single "expiry" field for calendar spreads).
+    default_expiry_mode = (rules.get("expiry") or {}).get("mode", "WEEKLY")
 
     # Group open legs by symbol
     symbols = json.loads(strategy.symbols)
@@ -692,9 +838,35 @@ def _try_exit(db, strategy: CustomStrategy, broker) -> None:
         # 2. Strategy-level combined TP/SL — only over legs WITHOUT their
         #    own exit config (today's exact behavior when no leg has a
         #    per-leg config: combined_managed == still_open == symbol_legs).
+        # take_profit_amount (flat ₹) is checked ALONGSIDE take_profit_pct
+        # (either firing exits) — a rupee target doesn't scale with
+        # premium the way a % target does, so a strategy can want both/
+        # either. stop_loss_mode="BREAKEVEN" REPLACES stop_loss_pct
+        # entirely (see rule_schema.py) with a spot-crossing check against
+        # this basket's own computed breakeven range.
+        trigger = None
         combined_managed = [leg for leg in still_open if not leg.leg_config_json]
-        pnl_pct = _combined_pnl_pct(combined_managed, now_prices, rates) if combined_managed else None
-        trigger = check_exit_trigger(pnl_pct, take_profit_pct, stop_loss_pct) if pnl_pct is not None else None
+        if combined_managed:
+            pnl_result = _combined_pnl(combined_managed, now_prices, rates)
+            if pnl_result is not None:
+                pnl_amount, pnl_pct = pnl_result
+                margin_at_entry = (
+                    _get_last_entered_margin(strategy, symbol, default_expiry_mode)
+                    if (take_profit_capital_pct is not None or stop_loss_capital_pct is not None) else None
+                )
+                if take_profit_amount is not None and pnl_amount >= take_profit_amount:
+                    trigger = "TAKE_PROFIT"
+                elif take_profit_pct is not None and pnl_pct >= take_profit_pct:
+                    trigger = "TAKE_PROFIT"
+                elif take_profit_capital_pct is not None and margin_at_entry and pnl_amount >= margin_at_entry * take_profit_capital_pct / 100.0:
+                    trigger = "TAKE_PROFIT"
+                elif stop_loss_capital_pct is not None and margin_at_entry and pnl_amount <= -margin_at_entry * stop_loss_capital_pct / 100.0:
+                    trigger = "STOP_LOSS"
+                elif stop_loss_mode == "BREAKEVEN":
+                    if _breakeven_breached(broker, symbol, combined_managed):
+                        trigger = "STOP_LOSS"
+                elif stop_loss_pct is not None and pnl_pct <= -abs(stop_loss_pct):
+                    trigger = "STOP_LOSS"
 
         # 3. Strategy-level time/expiry — a calendar "hard stop" that
         #    still applies to EVERY still-open leg of this symbol,

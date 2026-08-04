@@ -2,7 +2,7 @@
 api/iv_history_scheduler.py — daily ATM-IV snapshot job, once per symbol
 per trading day, feeding the entry.condition IV_RANK feature
 (rule_schema.py, utils/iv_rank.py). Same asyncio background-task pattern
-as token_refresh_scheduler.py/advanced_orders_scheduler.py, registered in
+as token_refresh_scheduler.py/custom_strategy_scheduler.py, registered in
 main.py's startup hook — no second systemd service.
 
 Runs shortly after market close (once the day's real closing premiums

@@ -177,11 +177,23 @@ function LegNode({ data }: NodeProps) {
                 options={[
                   { value: "ATM", label: "ATM" }, { value: "OTM_PERCENT", label: "% OTM" },
                   { value: "OTM_POINTS", label: "Points OTM" }, { value: "FIXED", label: "Exact strike" },
+                  { value: "PREMIUM_OFFSET", label: "Straddle premium / N" }, { value: "PREMIUM_BAND", label: "Premium band (₹)" },
                 ]} />
             </div>
-            {leg.strike_mode !== "ATM" ? (
+            {leg.strike_mode === "PREMIUM_BAND" ? (
+              <div className="grid grid-cols-2 gap-1">
+                <div>
+                  <label style={fieldLabel}>Min ₹</label>
+                  <input type="number" value={leg.band_min} onChange={(e) => onUpdate({ band_min: e.target.value })} className={numInput} />
+                </div>
+                <div>
+                  <label style={fieldLabel}>Max ₹</label>
+                  <input type="number" value={leg.band_max} onChange={(e) => onUpdate({ band_max: e.target.value })} className={numInput} />
+                </div>
+              </div>
+            ) : leg.strike_mode !== "ATM" ? (
               <div>
-                <label style={fieldLabel}>{leg.strike_mode === "FIXED" ? "Strike price" : "Distance"}</label>
+                <label style={fieldLabel}>{leg.strike_mode === "FIXED" ? "Strike price" : leg.strike_mode === "PREMIUM_OFFSET" ? "Divisor" : "Distance"}</label>
                 <input type="number" value={leg.strike_value} onChange={(e) => onUpdate({ strike_value: e.target.value })} className={numInput} />
               </div>
             ) : <div className="flex items-end pb-1 text-[10px] text-gray-400 italic">{strikeLabel(leg)}</div>}

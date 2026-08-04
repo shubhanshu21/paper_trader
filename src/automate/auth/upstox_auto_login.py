@@ -134,6 +134,32 @@ def _token_is_valid(token: str) -> bool:
         return False
 
 
+def token_status() -> dict:
+    """
+    Public, read-only status snapshot for the current Upstox access token
+    — used by api/routes_upstox_token.py's GET /status (a header badge the
+    user can glance at/poll). Real, not guessed: `valid` is the same live
+    LTP-endpoint probe (_token_is_valid) token_refresh_scheduler.py itself
+    relies on before deciding whether to re-login, not a locally-decoded
+    guess from the JWT's own `exp` claim alone (see _token_is_valid's
+    docstring for why that alone isn't trustworthy).
+
+    Returns {"configured": bool, "valid": bool, "expiry_epoch": float | None}
+    — `configured` is whether auto-login (Selenium re-login on demand) is
+    even possible right now (UPSTOX_USERNAME/PIN/TOTP_SECRET all set);
+    `valid` is still meaningful when False (a manually-pasted token can be
+    valid without auto-login being configured at all).
+    """
+    from automate.config import UpstoxConfig
+
+    token = UpstoxConfig.ACCESS_TOKEN
+    return {
+        "configured": UpstoxConfig.auto_login_configured(),
+        "valid": _token_is_valid(token),
+        "expiry_epoch": token_expiry_epoch(token) if token else None,
+    }
+
+
 # This host is Oracle Cloud arm64 (aarch64), which Google's official Chrome
 # .deb does not target at all (amd64-only) — attempting that install fails
 # apt dependency resolution outright. Since this box is Oracle Cloud, not

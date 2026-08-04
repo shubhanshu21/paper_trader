@@ -565,10 +565,8 @@ class CustomStrategyPosition(Base):
     # behavior) — see custom_strategy_scheduler.py::_try_exit.
     leg_config_json = Column(Text, nullable=True)
     # Live trailing-stop ratchet state for this leg (highest_price/
-    # lowest_price/current_stop_price) — same shape
-    # advanced_orders_scheduler.py already persists for standalone
-    # trailing stops, see utils/trailing_stop.py. NULL unless
-    # leg_config_json.exit.trailing.enabled is true.
+    # lowest_price/current_stop_price — see utils/trailing_stop.py). NULL
+    # unless leg_config_json.exit.trailing.enabled is true.
     trail_state_json = Column(Text, nullable=True)
 
     __table_args__ = (
@@ -628,60 +626,6 @@ class Notification(Base):
             "message": self.message,
             "read": bool(self.read),
             "created_at": self.created_at.isoformat() if self.created_at else None,
-        }
-
-
-class AdvancedOrder(Base):
-    """
-    OCO / trailing-stop / bracket orders (api/routes_advanced_orders.py),
-    driven each tick by api/advanced_orders_scheduler.py. One row per
-    OCO pair / trailing stop / bracket — kind-specific mutable state
-    (broker order_ids, current trailing stop level, per-leg status) lives
-    in state_json rather than as separate columns, since the three kinds
-    don't share a shape and this table would otherwise need three sets of
-    mostly-null columns.
-
-    mode='live' rows place real orders at the broker immediately and are
-    driven by polling get_order_status()/modify_order()/cancel_order().
-    mode='paper' rows never touch the broker until their trigger
-    condition is actually met against live LTP (PaperBroker has no
-    resting-order concept of its own) — see advanced_orders_scheduler.py
-    for the per-mode branching.
-    """
-    __tablename__ = "advanced_orders"
-
-    id = Column(BigInteger, primary_key=True, autoincrement=True)
-    # Caller-facing id, e.g. 'oco_20260801120000ab12' — kept distinct from
-    # the numeric PK so the API's existing {oco,ts,bracket}_id URL shape
-    # doesn't change for callers.
-    public_id = Column(String(40), nullable=False, unique=True)
-    kind = Column(String(16), nullable=False)  # 'OCO' | 'TRAILING_STOP' | 'BRACKET'
-    user_id = Column(BigInteger, nullable=False)
-    mode = Column(String(8), nullable=False)  # 'paper' | 'live'
-    strategy_name = Column(String(64), nullable=True)
-    status = Column(String(16), nullable=False, default="ACTIVE")  # 'ACTIVE' | 'COMPLETED' | 'CANCELLED'
-    state_json = Column(Text, nullable=False)
-    created_at = Column(DateTime, nullable=False, server_default=func.now())
-    updated_at = Column(DateTime, nullable=True, onupdate=func.now())
-
-    __table_args__ = (
-        Index("ix_advanced_orders_public_id", "public_id"),
-        Index("ix_advanced_orders_user_id", "user_id"),
-        Index("ix_advanced_orders_status", "status"),
-    )
-
-    def to_dict(self):
-        import json
-        state = json.loads(self.state_json) if self.state_json else {}
-        return {
-            "id": self.public_id,
-            "kind": self.kind,
-            "mode": self.mode,
-            "strategy_name": self.strategy_name,
-            "status": self.status,
-            "created_at": self.created_at.isoformat() if self.created_at else None,
-            "updated_at": self.updated_at.isoformat() if self.updated_at else None,
-            **state,
         }
 
 

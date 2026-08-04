@@ -379,6 +379,77 @@ def check_exit_trigger(
     return None
 
 
+# ---------------------------------------------------------------------------
+# Multi-leg payoff / breakeven (spot-based stop-loss for N-leg structures)
+# ---------------------------------------------------------------------------
+
+def strategy_payoff_at_expiry(spot: float, legs: list[dict]) -> float:
+    """
+    Total INTRINSIC-value P&L of an N-leg option position if the
+    underlying settled at `spot` at expiry — the standard basis for a
+    "breakeven" (ignores remaining time value, which is exactly what
+    "breakeven" conventionally means for an options structure).
+
+    Each leg dict needs: strike, option_type ('CE'/'PE'),
+    transaction_type ('BUY'/'SELL'), entry_price, quantity. EQUITY legs
+    (no strike) are skipped — they have no expiry-payoff kink and aren't
+    part of what "breakeven" means for the options structure wrapped
+    around them.
+    """
+    total = 0.0
+    for leg in legs:
+        strike = leg.get("strike")
+        option_type = leg.get("option_type")
+        if strike is None or option_type is None:
+            continue
+        intrinsic = max(spot - strike, 0.0) if option_type == "CE" else max(strike - spot, 0.0)
+        entry_price = float(leg["entry_price"])
+        quantity = leg["quantity"]
+        pnl_per_unit = (intrinsic - entry_price) if leg["transaction_type"] == "BUY" else (entry_price - intrinsic)
+        total += pnl_per_unit * quantity
+    return total
+
+
+def find_breakevens(legs: list[dict]) -> list[float]:
+    """
+    Every spot price at which `strategy_payoff_at_expiry` crosses zero,
+    ascending — a multi-leg, mixed-quantity structure (e.g. a straddle +
+    a bigger strangle + even-bigger deep-OTM wings) can have more than
+    the textbook two, so this returns however many actually exist rather
+    than assuming a fixed shape.
+
+    Exact, not a coarse numeric scan: the payoff is piecewise LINEAR in
+    spot with kinks only at each leg's own strike (an option's intrinsic
+    value is linear on each side of its strike), so evaluating only at
+    the strikes (plus far-below/far-above bounds) and interpolating
+    between consecutive points is exact — no grid-resolution tradeoff.
+
+    Returns [] if there are no OPTION legs (nothing to find a breakeven
+    of).
+    """
+    strikes = sorted({leg["strike"] for leg in legs if leg.get("strike") is not None and leg.get("option_type") is not None})
+    if not strikes:
+        return []
+
+    # Bounds far enough past the outermost strikes that intrinsic value
+    # there is a straight line with no further kinks in between.
+    span = max(strikes[-1] - strikes[0], strikes[0] * 0.5, 1000.0)
+    points = [strikes[0] - span] + strikes + [strikes[-1] + span]
+
+    breakevens: list[float] = []
+    prev_x, prev_y = points[0], strategy_payoff_at_expiry(points[0], legs)
+    for x in points[1:]:
+        y = strategy_payoff_at_expiry(x, legs)
+        if prev_y == 0.0:
+            breakevens.append(prev_x)
+        elif (prev_y < 0) != (y < 0):
+            breakevens.append(prev_x + (0.0 - prev_y) * (x - prev_x) / (y - prev_y))
+        prev_x, prev_y = x, y
+    if prev_y == 0.0:
+        breakevens.append(prev_x)
+    return breakevens
+
+
 def is_within_pre_expiry_buffer(today: date, expiry: date, exit_days_before_expiry: int) -> bool:
     """
     True once `today` has reached the position's own pre-expiry exit

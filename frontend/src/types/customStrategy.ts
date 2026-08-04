@@ -9,7 +9,12 @@ export interface CustomStrategyLeg {
   instrument_type?: 'OPTION' | 'EQUITY' | null;  // optional, defaults to OPTION (backward compat)
   action: 'BUY' | 'SELL';
   option_type?: 'CE' | 'PE' | null;              // required iff instrument_type === OPTION
-  strike_selection?: { mode: 'ATM' | 'OTM_PERCENT' | 'OTM_POINTS' | 'FIXED'; value: number | null } | null;
+  strike_selection?: {
+    mode: 'ATM' | 'OTM_PERCENT' | 'OTM_POINTS' | 'FIXED' | 'PREMIUM_OFFSET' | 'PREMIUM_BAND';
+    value: number | null;          // PREMIUM_OFFSET: divisor applied to the live ATM straddle premium
+    min?: number | null;           // PREMIUM_BAND only — premium band lower bound (₹)
+    max?: number | null;           // PREMIUM_BAND only — premium band upper bound (₹)
+  } | null;
   lots: number;                                   // for EQUITY: raw share quantity, not an F&O lot count
   expiry_mode?: 'WEEKLY' | 'MONTHLY' | null;
   sizing?: { mode: 'LOTS' | 'RISK_PCT'; risk_pct?: number } | null;
@@ -23,15 +28,29 @@ export interface CustomStrategyLeg {
 export interface CustomStrategyRules {
   legs: CustomStrategyLeg[];
   entry: {
-    mode: 'IMMEDIATE' | 'AT_TIME' | 'CONDITIONAL';
+    mode: 'IMMEDIATE' | 'AT_TIME' | 'CONDITIONAL' | 'BEFORE_EXPIRY';
     time: string | null;
     condition?:
       | { type: 'MA_CROSSOVER'; period_days: number; direction: 'ABOVE' | 'BELOW' }
       | { type: 'IV_RANK'; operator: 'ABOVE' | 'BELOW'; threshold: number }
       | null;
+    before_expiry?: {                                 // required iff mode === 'BEFORE_EXPIRY'
+      days_before_expiry: number;                      // entry window opens this many calendar days before the resolved expiry
+      weekday?: 'MON' | 'TUE' | 'WED' | 'THU' | 'FRI' | 'SAT' | 'SUN' | null; // soft preference, never skips a whole cycle
+      time?: string | null;
+    } | null;
   };
   expiry?: { mode: 'WEEKLY' | 'MONTHLY' };
-  exit: { take_profit_pct: number | null; stop_loss_pct: number | null; exit_time: string | null; exit_days_before_expiry: number };
+  exit: {
+    take_profit_pct: number | null;
+    stop_loss_pct: number | null;
+    take_profit_amount?: number | null;              // flat ₹ combined MTM profit target, checked alongside take_profit_pct
+    take_profit_capital_pct?: number | null;          // % of REAL broker margin blocked for this basket at entry (not premium)
+    stop_loss_capital_pct?: number | null;            // same capital base as take_profit_capital_pct
+    stop_loss_mode?: 'PCT' | 'BREAKEVEN';             // 'BREAKEVEN' ignores stop_loss_pct — exits on a spot breakeven breach instead
+    exit_time: string | null;
+    exit_days_before_expiry: number;
+  };
 }
 
 export interface CustomStrategy {

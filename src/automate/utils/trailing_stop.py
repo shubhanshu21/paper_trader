@@ -1,13 +1,9 @@
 """
 utils/trailing_stop.py — shared trailing-stop ratchet math.
 
-Used by both api/advanced_orders_scheduler.py (standalone trailing-stop
-orders) and api/custom_strategy_scheduler.py (per-leg trailing stops on a
-custom strategy — see rule_schema.py's leg.exit.trailing). Extracted here
-(originally lived inline in advanced_orders_scheduler.py) so both callers
-run the exact same tested math instead of two copies silently drifting
-apart over time. Pure functions — no broker/DB access, easy to unit test
-exhaustively.
+Used by api/custom_strategy_scheduler.py (per-leg trailing stops on a
+custom strategy — see rule_schema.py's leg.exit.trailing). Pure functions
+— no broker/DB access, easy to unit test exhaustively.
 """
 
 

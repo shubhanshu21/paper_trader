@@ -10,7 +10,6 @@ import HoldingsRoute from './routes/HoldingsRoute';
 import PositionsRoute from './routes/PositionsRoute';
 import ProfileRoute from './routes/ProfileRoute';
 import LeaderboardRoute from './routes/LeaderboardRoute';
-import AdvancedOrdersRoute from './routes/AdvancedOrdersRoute';
 
 export const router = createBrowserRouter([
   {
@@ -31,7 +30,6 @@ export const router = createBrowserRouter([
       { path: 'positions', element: <PositionsRoute /> },
       { path: 'profile', element: <ProfileRoute /> },
       { path: 'leaderboard', element: <LeaderboardRoute /> },
-      { path: 'advanced-orders', element: <AdvancedOrdersRoute /> },
     ],
   },
 ]);

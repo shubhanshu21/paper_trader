@@ -153,6 +153,8 @@ class UpstoxBroker(BaseBroker):
         # Real broker-side open positions — see get_broker_positions(),
         # used only for reconciliation against this app's own DB records.
         self._portfolio_api = upstox_client.PortfolioApi(self._api_client)
+        # Real account funds — see get_available_funds().
+        self._user_api = upstox_client.UserApi(self._api_client)
 
         # Instrument master cache (downloaded daily before market open)
         self._cache = InstrumentCache()
@@ -294,6 +296,25 @@ class UpstoxBroker(BaseBroker):
             return float(response.data.required_margin)
         except Exception as exc:
             log.warning("UpstoxBroker: margin calculator call failed for basket of %d instrument(s): %s", len(instruments), exc)
+            return None
+
+    def get_available_funds(self) -> float | None:
+        """
+        Real "available to trade" balance (₹) via Upstox's own funds &
+        margin API (GET /v2/user/get-funds-and-margin, v3) — cash +
+        pledge available to trade, summed across segments (equity +
+        commodity). See BaseBroker.get_available_funds for why only this
+        LIVE broker overrides it (paper trading uses its own simulated
+        wallet, not this real account's actual balance).
+        """
+        try:
+            response = self._user_api.get_user_fund_margin_v3()
+            if response.status != "success" or response.data is None:
+                log.warning("UpstoxBroker: funds & margin API returned no data.")
+                return None
+            return float(response.data.available_to_trade.total)
+        except Exception as exc:
+            log.warning("UpstoxBroker: could not fetch account funds: %s", exc)
             return None
 
     def get_broker_positions(self) -> dict[str, int] | None:
@@ -874,68 +895,6 @@ class UpstoxBroker(BaseBroker):
     ) -> str | None:
         """Place a BUY order to square off an options leg. See BaseBroker. user_id unused — see place_sell_order. price/trigger_price: see _place_order."""
         return self._place_order("BUY", instrument_token, quantity, product, order_type, tag, price, trigger_price)
-
-    # ------------------------------------------------------------------
-    # Order Execution: Cancel / Modify
-    # ------------------------------------------------------------------
-
-    def cancel_order(self, order_id: str) -> bool:
-        """
-        Cancel a live order that hasn't fully filled yet, via the v3 OrderApi.
-        Used by advanced_orders_scheduler.py to cancel the sibling leg of an
-        OCO pair once the other leg fills, and to tear down a trailing-stop
-        order that's being replaced with a new trigger price.
-        """
-        try:
-            self._order_api_v3.cancel_order(order_id=order_id)
-            log.info("Order cancelled | order_id=%s", order_id)
-            return True
-        except ApiException as exc:
-            log.error("ApiException cancelling order '%s': HTTP %s — %s", order_id, exc.status, exc.body)
-            return False
-        except Exception as exc:
-            log.error("Unexpected error cancelling order '%s': %s", order_id, exc, exc_info=True)
-            return False
-
-    def modify_order(
-        self,
-        order_id: str,
-        order_type: str,
-        price: float = 0,
-        trigger_price: float = 0,
-        quantity: int | None = None,
-    ) -> bool:
-        """
-        Modify a resting order's price/trigger/quantity in place, via the v3
-        OrderApi. Used by advanced_orders_scheduler.py to advance a
-        trailing-stop order's trigger_price without cancel+replace (avoids a
-        window where no protective order is resting at the exchange).
-
-        order_type/price/trigger_price are all REQUIRED (not merely
-        re-sent) — ModifyOrderRequest.price/order_type/trigger_price/
-        validity setters all raise ValueError on None (verified against
-        the installed upstox_client SDK's generated setters; this is a
-        full order replace, not a partial patch, so the caller must pass
-        the order's complete current shape, not just the field it wants
-        to change).
-        """
-        try:
-            self._order_api_v3.modify_order(body=upstox_client.ModifyOrderRequest(
-                order_id=order_id,
-                quantity=quantity,
-                price=price,
-                trigger_price=trigger_price,
-                order_type=order_type,
-                validity="DAY",
-            ))
-            log.info("Order modified | order_id=%s | price=%s | trigger_price=%s", order_id, price, trigger_price)
-            return True
-        except ApiException as exc:
-            log.error("ApiException modifying order '%s': HTTP %s — %s", order_id, exc.status, exc.body)
-            return False
-        except Exception as exc:
-            log.error("Unexpected error modifying order '%s': %s", order_id, exc, exc_info=True)
-            return False
 
     # ------------------------------------------------------------------
     # Order Execution: Basket (multi-order) SELL

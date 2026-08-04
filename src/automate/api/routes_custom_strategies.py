@@ -703,6 +703,74 @@ def get_strategy_types():
                 ],
             },
             {
+                "type": "OVERHEDGED_MONTHLY_IRON_FLY",
+                "description": (
+                    "Buy 1 lot ATM straddle, sell a 2-lot strangle offset by half the straddle's own live "
+                    "premium (rounded to the nearest strike), then over-hedge with 2 lots of deep-OTM ₹40-₹70 "
+                    "insurance on each side — a low-touch monthly income structure with defined-ish risk. "
+                    "Exits on a flat ₹4,500 profit or the underlying crossing the position's own computed "
+                    "breakeven; review the wing lot counts (2 vs 3 a side) once you see the actual entry "
+                    "T+0 curve — an asymmetric skew may need an extra lot on one side to flatten it, same as "
+                    "any over-hedge."
+                ),
+                "risk_level": "medium",
+                "legs": [
+                    {"action": "BUY", "option_type": "CE", "strike_selection": {"mode": "ATM", "value": None}, "lots": 1},
+                    {"action": "BUY", "option_type": "PE", "strike_selection": {"mode": "ATM", "value": None}, "lots": 1},
+                    {"action": "SELL", "option_type": "CE", "strike_selection": {"mode": "PREMIUM_OFFSET", "value": 2}, "lots": 2},
+                    {"action": "SELL", "option_type": "PE", "strike_selection": {"mode": "PREMIUM_OFFSET", "value": 2}, "lots": 2},
+                    {"action": "BUY", "option_type": "CE", "strike_selection": {"mode": "PREMIUM_BAND", "value": None, "min": 40, "max": 70}, "lots": 2},
+                    {"action": "BUY", "option_type": "PE", "strike_selection": {"mode": "PREMIUM_BAND", "value": None, "min": 40, "max": 70}, "lots": 2},
+                ],
+                # Suggested entry/expiry/exit for this template — the
+                # frontend template picker applies these too (not just
+                # `legs`), since "enter on the monthly cycle at 10am,
+                # exit on a flat ₹4,500 or a breakeven breach" is as much
+                # a part of this strategy's shape as its legs are.
+                "entry": {"mode": "AT_TIME", "time": "10:00"},
+                "expiry": {"mode": "MONTHLY"},
+                "exit": {
+                    "take_profit_pct": None, "stop_loss_pct": None,
+                    "take_profit_amount": 4500, "stop_loss_mode": "BREAKEVEN",
+                    "exit_time": None, "exit_days_before_expiry": 0,
+                },
+            },
+            {
+                "type": "MONTHLY_BATMAN_1_3_2",
+                "description": (
+                    "1:3:2 call + put ratio spreads (buy 1 lot 400pt OTM, sell 3 lots 600pt OTM, buy 2 lots "
+                    "1400pt OTM hedge, on both sides) — a symmetric, non-directional payoff shaped like the "
+                    "Batman logo. Two things to check BEFORE deploying each cycle, once premiums are live: "
+                    "(1) the net credit at the payoff's center valley should stay under ~6% of deployed "
+                    "capital — if IV is elevated (budget/earnings), shift all three buy/sell distances "
+                    "outward together (keep the 200pt and 800pt gaps fixed) until it drops back under 6%; "
+                    "(2) balance the T+0 curve — raise the outer hedge lots (2 → 3 or 4) on whichever side "
+                    "shows the bigger max loss, until both sides are roughly equal. Exits on ±2%/-2.5% of "
+                    "the REAL broker margin blocked for this basket at entry, or monthly expiry."
+                ),
+                "risk_level": "medium",
+                "legs": [
+                    {"action": "BUY", "option_type": "CE", "strike_selection": {"mode": "OTM_POINTS", "value": 400}, "lots": 1},
+                    {"action": "SELL", "option_type": "CE", "strike_selection": {"mode": "OTM_POINTS", "value": 600}, "lots": 3},
+                    {"action": "BUY", "option_type": "CE", "strike_selection": {"mode": "OTM_POINTS", "value": 1400}, "lots": 2},
+                    {"action": "BUY", "option_type": "PE", "strike_selection": {"mode": "OTM_POINTS", "value": 400}, "lots": 1},
+                    {"action": "SELL", "option_type": "PE", "strike_selection": {"mode": "OTM_POINTS", "value": 600}, "lots": 3},
+                    {"action": "BUY", "option_type": "PE", "strike_selection": {"mode": "OTM_POINTS", "value": 1400}, "lots": 2},
+                ],
+                # "Last Friday before expiry week at 3:16pm" — BEFORE_EXPIRY
+                # opens a 10-day window ahead of the resolved monthly expiry,
+                # preferring Friday, with a built-in fallback so a holiday on
+                # that Friday never skips the whole month (see
+                # custom_strategy_scheduler.py::_before_expiry_eligible).
+                "entry": {"mode": "BEFORE_EXPIRY", "time": None, "before_expiry": {"days_before_expiry": 10, "weekday": "FRI", "time": "15:16"}},
+                "expiry": {"mode": "MONTHLY"},
+                "exit": {
+                    "take_profit_pct": None, "stop_loss_pct": None, "take_profit_amount": None,
+                    "take_profit_capital_pct": 2.0, "stop_loss_capital_pct": 2.5, "stop_loss_mode": "PCT",
+                    "exit_time": None, "exit_days_before_expiry": 0,
+                },
+            },
+            {
                 "type": "CUSTOM",
                 "description": "Start from a single leg and build any combination yourself.",
                 "risk_level": "variable",
@@ -985,6 +1053,105 @@ def get_expected_payoff(strategy_id: int, db: Session = Depends(get_db), user: d
         }
 
     return {"strategy_id": strategy_id, "symbols": results}
+
+
+@router.get("/{strategy_id}/margin")
+def get_required_margin(strategy_id: int, db: Session = Depends(get_db), user: dict = Depends(get_current_user)):
+    """
+    Real margin (₹) needed to deploy this strategy's legs right now, plus
+    whether the user currently has enough — checked against BOTH capital
+    pools independently, since they're genuinely separate: the per-user
+    simulated paper wallet (utils/wallet.py::get_wallet_summary) and the
+    one real Upstox account's actual funds (UpstoxBroker.get_available_
+    funds — only ever the single account this app is configured against,
+    not per-user). A strategy only ever trades in ONE of these at a time
+    (its own status), but showing both up front lets the user see if
+    they're ready for either before switching modes.
+
+    Margin itself is computed via the real broker Margin Calculator basket
+    call (netted across every leg — see get_basket_required_margin), same
+    "real number when available" tier as get_expected_payoff's capital_basis,
+    but the ACTUAL exchange figure here, not a flat-rate approximation —
+    falling back to the flat-rate estimate (summed per leg) only if the
+    basket call itself is unavailable (e.g. a transient API failure).
+    """
+    from automate.api.custom_strategy_scheduler import (
+        _audit,
+        _get_brokers,
+        _kill_switch,
+        _rate_limiter,
+    )
+    from automate.strategies.custom.rule_strategy import RuleBasedStrategy
+    from automate.utils.margin import is_commodity_instrument_key, resolve_required_margin
+    from automate.utils.wallet import get_wallet_summary
+
+    db_strategy = _get_owned_strategy(db, strategy_id, _current_user_id(user))
+    if not db_strategy.rules_json:
+        raise HTTPException(status_code=400, detail="This strategy has no rules configured.")
+
+    brokers = _get_brokers()
+    if brokers is None:
+        raise HTTPException(status_code=503, detail="Broker connection not ready yet — try again shortly.")
+    broker = brokers["paper"]  # read-only preview — same rationale as get_expected_payoff above
+    rules = json.loads(db_strategy.rules_json)
+    symbols = json.loads(db_strategy.symbols)
+    is_index = db_strategy.instrument_type == "INDEX"
+
+    results = {}
+    total_margin = 0.0
+    any_real = False
+    for symbol in symbols:
+        try:
+            strategy = RuleBasedStrategy(
+                broker=broker, audit=_audit, kill_switch=_kill_switch, rate_limiter=_rate_limiter,
+                symbol=symbol, rules=rules,
+            )
+            preview = strategy.preview()
+        except Exception as exc:
+            results[symbol] = {"error": str(exc)}
+            continue
+
+        option_legs = [leg for leg in preview["legs"] if leg["instrument_type"] == "OPTION"]
+        if not option_legs:
+            results[symbol] = {"margin_required": 0.0, "is_real": True}
+            continue
+
+        instruments = [
+            {"instrument_key": leg["instrument_token"], "quantity": leg["quantity"],
+             "transaction_type": leg["transaction_type"], "product": "D"}
+            for leg in option_legs
+        ]
+        margin = broker.get_basket_required_margin(instruments)
+        is_real = margin is not None and margin > 0
+        if not is_real:
+            spot = preview["spot_price"]
+            is_commodity = is_commodity_instrument_key(strategy.instrument_key)
+            margin = sum(
+                resolve_required_margin(
+                    broker, leg["instrument_token"], leg["quantity"], leg["transaction_type"],
+                    spot, is_index, is_commodity,
+                )
+                for leg in option_legs
+            )
+
+        results[symbol] = {"margin_required": round(margin, 2), "is_real": is_real}
+        total_margin += margin
+        any_real = any_real or is_real
+
+    paper_available = get_wallet_summary(_current_user_id(user))["available_balance"]
+    live_available = brokers["live"].get_available_funds() if brokers.get("live") else None
+
+    return {
+        "strategy_id": strategy_id,
+        "symbols": results,
+        "margin_required": round(total_margin, 2),
+        "is_real": any_real,
+        "paper": {"available_balance": paper_available, "sufficient": paper_available >= total_margin},
+        "live": (
+            {"available_balance": round(live_available, 2), "sufficient": live_available >= total_margin}
+            if live_available is not None else {"available_balance": None, "sufficient": None}
+        ),
+    }
 
 
 @router.post("/positions/{position_id}/close")

@@ -5,7 +5,7 @@ import { C, FONT, formatTime12h, fmtDate } from "../lib/format";
 import type { CustomStrategy, CustomStrategyRules } from "../types/customStrategy";
 import {
   type LegForm, newLeg, type ConditionForm, newCondition, type EntryMode, type StrikeMode, strikeLabel,
-  type ExpiryModeOverride, type ConditionType,
+  type ExpiryModeOverride, type ConditionType, type BeforeExpiryForm, newBeforeExpiry, type Weekday,
 } from "../types/strategyBuilder";
 
 // @xyflow/react (the node canvas) is a sizeable dependency only needed
@@ -23,8 +23,7 @@ interface StrategyBuilderModalProps {
   onSuccess: () => void;
   editStrategy?: EditableStrategy | null;
   // Dispatch the redux thunk (see router/routes/StrategiesRoute.tsx) —
-  // this modal never touches fetch()/the store directly, same boundary
-  // Advanced Orders draws (AdvancedOrdersView's onCreateOco/etc. props).
+  // this modal never touches fetch()/the store directly.
   // Rejects with the server's per-field validation messages (string[]) via
   // ApiError.detail — see store/thunks/customStrategiesThunks.ts.
   onCreate: (payload: { name: string; instrument_type: string; symbols: string[]; rules: CustomStrategyRules }) => Promise<CustomStrategy>;
@@ -41,6 +40,8 @@ function legFromEditable(l: NonNullable<EditableStrategy["rules"]>["legs"][numbe
     option_type: l.option_type ?? "CE",
     strike_mode: l.strike_selection?.mode ?? "ATM",
     strike_value: l.strike_selection?.value != null ? String(l.strike_selection.value) : "",
+    band_min: l.strike_selection?.min != null ? String(l.strike_selection.min) : "",
+    band_max: l.strike_selection?.max != null ? String(l.strike_selection.max) : "",
     lots: l.lots,
     expiry_mode: l.expiry_mode ?? "",
     sizing_mode: l.sizing?.mode === "RISK_PCT" ? "RISK_PCT" : "LOTS",
@@ -63,15 +64,34 @@ function conditionFromEditable(entry: EditableStrategy["rules"] extends null ? n
   return { ...c, type: "IV_RANK", iv_operator: condition.operator, iv_threshold: String(condition.threshold) };
 }
 
+function beforeExpiryFromEditable(entry: EditableStrategy["rules"] extends null ? never : NonNullable<EditableStrategy["rules"]>["entry"] | undefined): BeforeExpiryForm {
+  const b = entry?.before_expiry;
+  if (!b) return newBeforeExpiry();
+  return { days_before_expiry: String(b.days_before_expiry), weekday: b.weekday ?? "", time: b.time ?? "" };
+}
+
 interface StrategyTemplate {
   type: string;
   description: string;
   risk_level: string;
-  legs: { action: "BUY" | "SELL"; option_type: "CE" | "PE"; strike_selection: { mode: StrikeMode; value: number | null }; lots: number }[];
+  legs: { action: "BUY" | "SELL"; option_type: "CE" | "PE"; strike_selection: { mode: StrikeMode; value: number | null; min?: number | null; max?: number | null }; lots: number }[];
+  // Optional — most templates only suggest legs and leave entry/expiry/exit
+  // at the builder's defaults; a template that needs a specific cadence
+  // (e.g. a monthly-cycle income structure) carries these too. See
+  // routes_custom_strategies.py::get_strategy_types().
+  entry?: { mode: EntryMode; time?: string | null; before_expiry?: { days_before_expiry: number; weekday?: Weekday | null; time?: string | null } | null };
+  expiry?: { mode: "WEEKLY" | "MONTHLY" };
+  exit?: {
+    take_profit_pct: number | null; stop_loss_pct: number | null;
+    take_profit_amount?: number | null; take_profit_capital_pct?: number | null; stop_loss_capital_pct?: number | null;
+    stop_loss_mode?: "PCT" | "BREAKEVEN";
+    exit_time: string | null; exit_days_before_expiry: number;
+  };
 }
 
 const TEMPLATE_LABELS: Record<string, string> = {
-  STRADDLE: "Straddle", STRANGLE: "Strangle", IRON_CONDOR: "Iron Condor", BUTTERFLY: "Butterfly", CUSTOM: "Custom",
+  STRADDLE: "Straddle", STRANGLE: "Strangle", IRON_CONDOR: "Iron Condor", BUTTERFLY: "Butterfly",
+  OVERHEDGED_MONTHLY_IRON_FLY: "Over-Hedged Monthly Income", CUSTOM: "Custom",
 };
 
 function templateLegsToForm(legs: StrategyTemplate["legs"]): LegForm[] {
@@ -81,6 +101,8 @@ function templateLegsToForm(legs: StrategyTemplate["legs"]): LegForm[] {
     option_type: l.option_type,
     strike_mode: l.strike_selection.mode,
     strike_value: l.strike_selection.value != null ? String(l.strike_selection.value) : "",
+    band_min: l.strike_selection.min != null ? String(l.strike_selection.min) : "",
+    band_max: l.strike_selection.max != null ? String(l.strike_selection.max) : "",
     lots: l.lots,
   }));
 }
@@ -100,6 +122,8 @@ function findDuplicateLegPairs(legs: LegForm[]): [number, number][] {
       }
       const sameStrike = a.strike_mode === "ATM"
         ? b.strike_mode === "ATM"
+        : a.strike_mode === "PREMIUM_BAND"
+        ? b.strike_mode === "PREMIUM_BAND" && a.band_min === b.band_min && a.band_max === b.band_max
         : b.strike_mode === a.strike_mode && parseFloat(a.strike_value || "0") === parseFloat(b.strike_value || "0");
       if (a.action === b.action && a.option_type === b.option_type && sameStrike) pairs.push([i, j]);
     }
@@ -120,6 +144,8 @@ function legPhrase(leg: LegForm): string {
     if (leg.strike_mode === "OTM_PERCENT") strike = `${leg.strike_value || "?"}% OTM`;
     else if (leg.strike_mode === "OTM_POINTS") strike = `${leg.strike_value || "?"} points OTM`;
     else if (leg.strike_mode === "FIXED") strike = `strike ${leg.strike_value || "?"}`;
+    else if (leg.strike_mode === "PREMIUM_OFFSET") strike = `ATM straddle premium / ${leg.strike_value || "?"} OTM`;
+    else if (leg.strike_mode === "PREMIUM_BAND") strike = `₹${leg.band_min || "?"}-₹${leg.band_max || "?"} premium band`;
     phrase = `${leg.action} ${size} ${strike} ${leg.option_type}`;
     if (leg.expiry_mode) phrase += ` (${leg.expiry_mode.toLowerCase()} expiry, own cycle)`;
   }
@@ -142,7 +168,16 @@ export default function StrategyBuilderModal({ onClose, onSuccess, editStrategy,
   const isEditing = !!editStrategy;
   const [step, setStep] = useState(1);
   const [canvasFullscreen, setCanvasFullscreen] = useState(false);
-  const [editorMode, setEditorMode] = useState<"canvas" | "table">("canvas");
+  // The canvas editor's dropdowns don't yet cover BEFORE_EXPIRY entry or
+  // PREMIUM_OFFSET/PREMIUM_BAND strikes (they degrade gracefully — no
+  // crash — but render as an unlabeled/blank selection) — default an
+  // existing strategy using any of those straight into the Table editor,
+  // which supports all of them, instead of a confusing blank canvas node.
+  const needsTableEditor = !!(
+    editStrategy?.rules?.entry.mode === "BEFORE_EXPIRY" ||
+    editStrategy?.rules?.legs.some((l) => l.strike_selection?.mode === "PREMIUM_OFFSET" || l.strike_selection?.mode === "PREMIUM_BAND")
+  );
+  const [editorMode, setEditorMode] = useState<"canvas" | "table">(needsTableEditor ? "table" : "canvas");
   const modalRef = useRef<HTMLDivElement>(null);
 
   // Real browser Fullscreen API (hides the tab/address bar too — CSS
@@ -206,9 +241,14 @@ export default function StrategyBuilderModal({ onClose, onSuccess, editStrategy,
   const [entryMode, setEntryMode] = useState<EntryMode>(editStrategy?.rules?.entry.mode ?? "IMMEDIATE");
   const [entryTime, setEntryTime] = useState(editStrategy?.rules?.entry.time ?? "09:20");
   const [condition, setCondition] = useState<ConditionForm>(conditionFromEditable(editStrategy?.rules?.entry));
+  const [beforeExpiry, setBeforeExpiry] = useState<BeforeExpiryForm>(beforeExpiryFromEditable(editStrategy?.rules?.entry));
   const [expiryMode, setExpiryMode] = useState<"WEEKLY" | "MONTHLY">(editStrategy?.rules?.expiry?.mode ?? "WEEKLY");
   const [expiryPreview, setExpiryPreview] = useState<{ date: string; label: string }[]>([]);
   const [takeProfitPct, setTakeProfitPct] = useState(editStrategy?.rules?.exit.take_profit_pct != null ? String(editStrategy.rules.exit.take_profit_pct) : "");
+  const [takeProfitAmount, setTakeProfitAmount] = useState(editStrategy?.rules?.exit.take_profit_amount != null ? String(editStrategy.rules.exit.take_profit_amount) : "");
+  const [takeProfitCapitalPct, setTakeProfitCapitalPct] = useState(editStrategy?.rules?.exit.take_profit_capital_pct != null ? String(editStrategy.rules.exit.take_profit_capital_pct) : "");
+  const [stopLossCapitalPct, setStopLossCapitalPct] = useState(editStrategy?.rules?.exit.stop_loss_capital_pct != null ? String(editStrategy.rules.exit.stop_loss_capital_pct) : "");
+  const [stopLossMode, setStopLossMode] = useState<"PCT" | "BREAKEVEN">(editStrategy?.rules?.exit.stop_loss_mode === "BREAKEVEN" ? "BREAKEVEN" : "PCT");
   const [stopLossPct, setStopLossPct] = useState(editStrategy?.rules?.exit.stop_loss_pct != null ? String(editStrategy.rules.exit.stop_loss_pct) : "");
   const [exitTime, setExitTime] = useState(editStrategy?.rules?.exit.exit_time ?? "");
   const [exitDaysBeforeExpiry, setExitDaysBeforeExpiry] = useState(editStrategy?.rules?.exit.exit_days_before_expiry ?? 1);
@@ -216,7 +256,29 @@ export default function StrategyBuilderModal({ onClose, onSuccess, editStrategy,
   const [symbolsError, setSymbolsError] = useState("");
 
   const pickTemplate = (template: StrategyTemplate | null) => {
-    if (template) setLegs(templateLegsToForm(template.legs));
+    if (template) {
+      setLegs(templateLegsToForm(template.legs));
+      if (template.entry) {
+        setEntryMode(template.entry.mode);
+        if (template.entry.time) setEntryTime(template.entry.time);
+        setBeforeExpiry(
+          template.entry.before_expiry
+            ? { days_before_expiry: String(template.entry.before_expiry.days_before_expiry), weekday: template.entry.before_expiry.weekday ?? "", time: template.entry.before_expiry.time ?? "" }
+            : newBeforeExpiry()
+        );
+      }
+      if (template.expiry) setExpiryMode(template.expiry.mode);
+      if (template.exit) {
+        setTakeProfitPct(template.exit.take_profit_pct != null ? String(template.exit.take_profit_pct) : "");
+        setTakeProfitAmount(template.exit.take_profit_amount != null ? String(template.exit.take_profit_amount) : "");
+        setTakeProfitCapitalPct(template.exit.take_profit_capital_pct != null ? String(template.exit.take_profit_capital_pct) : "");
+        setStopLossCapitalPct(template.exit.stop_loss_capital_pct != null ? String(template.exit.stop_loss_capital_pct) : "");
+        setStopLossMode(template.exit.stop_loss_mode === "BREAKEVEN" ? "BREAKEVEN" : "PCT");
+        setStopLossPct(template.exit.stop_loss_pct != null ? String(template.exit.stop_loss_pct) : "");
+        setExitTime(template.exit.exit_time ?? "");
+        setExitDaysBeforeExpiry(template.exit.exit_days_before_expiry ?? 1);
+      }
+    }
     setShowTemplatePicker(false);
   };
 
@@ -287,10 +349,10 @@ export default function StrategyBuilderModal({ onClose, onSuccess, editStrategy,
         ? {}
         : {
             option_type: l.option_type,
-            strike_selection: {
-              mode: l.strike_mode,
-              value: l.strike_mode === "ATM" ? null : parseFloat(l.strike_value) || 0,
-            },
+            strike_selection:
+              l.strike_mode === "PREMIUM_BAND"
+                ? { mode: l.strike_mode, value: null, min: parseFloat(l.band_min) || 0, max: parseFloat(l.band_max) || 0 }
+                : { mode: l.strike_mode, value: l.strike_mode === "ATM" ? null : parseFloat(l.strike_value) || 0 },
             ...(l.expiry_mode ? { expiry_mode: l.expiry_mode } : {}),
           }),
       ...(l.sizing_mode === "RISK_PCT" && l.risk_pct
@@ -317,11 +379,24 @@ export default function StrategyBuilderModal({ onClose, onSuccess, editStrategy,
                 ? { type: "MA_CROSSOVER", period_days: parseInt(condition.ma_period_days) || 20, direction: condition.ma_direction }
                 : { type: "IV_RANK", operator: condition.iv_operator, threshold: parseFloat(condition.iv_threshold) || 50 },
           }
+        : entryMode === "BEFORE_EXPIRY"
+        ? {
+            mode: "BEFORE_EXPIRY", time: null,
+            before_expiry: {
+              days_before_expiry: parseInt(beforeExpiry.days_before_expiry) || 1,
+              weekday: beforeExpiry.weekday || null,
+              time: beforeExpiry.time || null,
+            },
+          }
         : { mode: entryMode, time: entryMode === "AT_TIME" ? entryTime : null },
     expiry: { mode: expiryMode },
     exit: {
       take_profit_pct: takeProfitPct ? parseFloat(takeProfitPct) : null,
-      stop_loss_pct: stopLossPct ? parseFloat(stopLossPct) : null,
+      take_profit_amount: takeProfitAmount ? parseFloat(takeProfitAmount) : null,
+      take_profit_capital_pct: takeProfitCapitalPct ? parseFloat(takeProfitCapitalPct) : null,
+      stop_loss_capital_pct: stopLossCapitalPct ? parseFloat(stopLossCapitalPct) : null,
+      stop_loss_mode: stopLossMode,
+      stop_loss_pct: stopLossMode === "BREAKEVEN" ? null : (stopLossPct ? parseFloat(stopLossPct) : null),
       exit_time: exitTime || null,
       exit_days_before_expiry: exitDaysBeforeExpiry,
     },
@@ -332,10 +407,19 @@ export default function StrategyBuilderModal({ onClose, onSuccess, editStrategy,
     let s = `${legsTxt} on ${selectedSymbols.join(", ") || "..."} (${expiryMode.toLowerCase()} expiry by default)`;
     if (entryMode === "AT_TIME" && entryTime) s += `, enter at ${formatTime12h(entryTime)}`;
     else if (entryMode === "CONDITIONAL") s += `, enter when ${conditionPhrase(condition)}`;
+    else if (entryMode === "BEFORE_EXPIRY") {
+      s += `, enter within ${beforeExpiry.days_before_expiry || "?"} day(s) of expiry`;
+      if (beforeExpiry.weekday) s += ` (preferring ${beforeExpiry.weekday})`;
+      if (beforeExpiry.time) s += ` at ${formatTime12h(beforeExpiry.time)}`;
+    }
     else s += ", enter immediately when the strategy goes live";
     const bits: string[] = [];
     if (takeProfitPct) bits.push(`+${takeProfitPct}% profit`);
-    if (stopLossPct) bits.push(`-${stopLossPct}% loss`);
+    if (takeProfitAmount) bits.push(`+₹${takeProfitAmount} profit`);
+    if (takeProfitCapitalPct) bits.push(`+${takeProfitCapitalPct}% of deployed capital`);
+    if (stopLossCapitalPct) bits.push(`-${stopLossCapitalPct}% of deployed capital`);
+    if (stopLossMode === "BREAKEVEN") bits.push("spot crossing the position's breakeven");
+    else if (stopLossPct) bits.push(`-${stopLossPct}% loss`);
     if (exitTime) bits.push(`${formatTime12h(exitTime)} time exit`);
     if (exitDaysBeforeExpiry) bits.push(`${exitDaysBeforeExpiry} day${exitDaysBeforeExpiry !== 1 ? "s" : ""} before expiry`);
     s += ", exit (legs without their own exit) on " + (bits.length ? bits.join(" or ") : "expiry only");
@@ -347,7 +431,8 @@ export default function StrategyBuilderModal({ onClose, onSuccess, editStrategy,
       case 1: return name.trim() && instrumentType && selectedSymbols.length > 0;
       case 2:
         return legs.length > 0 && legs.every((l) =>
-          (l.instrument_type === "EQUITY" || l.strike_mode === "ATM" || l.strike_value !== "") &&
+          (l.instrument_type === "EQUITY" || l.strike_mode === "ATM" ||
+            (l.strike_mode === "PREMIUM_BAND" ? (l.band_min !== "" && l.band_max !== "") : l.strike_value !== "")) &&
           (l.sizing_mode === "LOTS" || l.risk_pct !== "") &&
           (!l.trailing_enabled || l.trail_amount !== "")
         );
@@ -398,9 +483,51 @@ export default function StrategyBuilderModal({ onClose, onSuccess, editStrategy,
                     { value: "IMMEDIATE", label: "Immediately" },
                     { value: "AT_TIME", label: "At a specific time" },
                     { value: "CONDITIONAL", label: "On a condition" },
+                    { value: "BEFORE_EXPIRY", label: "N days before expiry", description: "Enters close to the NEXT expiry, not right after the previous one rolls over — for strategies meant to hold only the last stretch before expiry" },
                   ]}
                 />
               </div>
+
+              {entryMode === "BEFORE_EXPIRY" && (
+                <div className="space-y-2 pt-2.5 border-t" style={{ borderColor: C.border }}>
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <label style={{ fontSize: 10, color: C.muted, marginBottom: 4, display: "block" }}>Days before expiry</label>
+                      <input
+                        type="number"
+                        min={1}
+                        value={beforeExpiry.days_before_expiry}
+                        onChange={(e) => setBeforeExpiry((b) => ({ ...b, days_before_expiry: e.target.value }))}
+                        className="w-full px-2.5 py-1.5 border rounded-lg text-xs font-semibold outline-none focus:border-orange-500"
+                        style={{ borderColor: C.border2 }}
+                      />
+                    </div>
+                    <div>
+                      <label style={{ fontSize: 10, color: C.muted, marginBottom: 4, display: "block" }}>Preferred weekday</label>
+                      <Select
+                        value={beforeExpiry.weekday || "__any"}
+                        onChange={(v) => setBeforeExpiry((b) => ({ ...b, weekday: (v === "__any" ? "" : v) as Weekday | "" }))}
+                        options={[
+                          { value: "__any", label: "Any day" },
+                          { value: "MON", label: "Monday" }, { value: "TUE", label: "Tuesday" }, { value: "WED", label: "Wednesday" },
+                          { value: "THU", label: "Thursday" }, { value: "FRI", label: "Friday" }, { value: "SAT", label: "Saturday" }, { value: "SUN", label: "Sunday" },
+                        ]}
+                      />
+                    </div>
+                  </div>
+                  <div>
+                    <label style={{ fontSize: 10, color: C.muted, marginBottom: 4, display: "block" }}>Entry time (IST, optional)</label>
+                    <input
+                      type="time"
+                      value={beforeExpiry.time}
+                      onChange={(e) => setBeforeExpiry((b) => ({ ...b, time: e.target.value }))}
+                      className="w-full px-2.5 py-1.5 border rounded-lg text-xs font-semibold outline-none focus:border-orange-500"
+                      style={{ borderColor: C.border2 }}
+                    />
+                  </div>
+                  <p className="text-[10px] text-gray-500 leading-snug">If the preferred weekday falls on a holiday, entry is forced 1 day before expiry instead of skipping the whole cycle.</p>
+                </div>
+              )}
 
               {entryMode === "AT_TIME" && (
                 <div>
@@ -502,7 +629,55 @@ export default function StrategyBuilderModal({ onClose, onSuccess, editStrategy,
                   />
                 </div>
                 <div>
-                  <label style={{ fontSize: 10, color: C.muted, marginBottom: 4, display: "block" }}>Stop Loss %</label>
+                  <label style={{ fontSize: 10, color: C.muted, marginBottom: 4, display: "block" }}>Take Profit ₹ (flat amount)</label>
+                  <input
+                    type="number"
+                    value={takeProfitAmount}
+                    onChange={(e) => setTakeProfitAmount(e.target.value)}
+                    placeholder="None"
+                    className="w-full px-2.5 py-1.5 border rounded-lg text-xs font-semibold outline-none focus:border-orange-500"
+                    style={{ borderColor: C.border2 }}
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label style={{ fontSize: 10, color: C.muted, marginBottom: 4, display: "block" }}>Take Profit % of deployed capital</label>
+                  <input
+                    type="number"
+                    value={takeProfitCapitalPct}
+                    onChange={(e) => setTakeProfitCapitalPct(e.target.value)}
+                    placeholder="None"
+                    className="w-full px-2.5 py-1.5 border rounded-lg text-xs font-semibold outline-none focus:border-orange-500"
+                    style={{ borderColor: C.border2 }}
+                  />
+                </div>
+                <div>
+                  <label style={{ fontSize: 10, color: C.muted, marginBottom: 4, display: "block" }}>Stop Loss % of deployed capital</label>
+                  <input
+                    type="number"
+                    value={stopLossCapitalPct}
+                    onChange={(e) => setStopLossCapitalPct(e.target.value)}
+                    placeholder="None"
+                    className="w-full px-2.5 py-1.5 border rounded-lg text-xs font-semibold outline-none focus:border-orange-500"
+                    style={{ borderColor: C.border2 }}
+                  />
+                </div>
+              </div>
+              <p className="text-[10px] text-gray-500 leading-snug -mt-1.5">"% of deployed capital" uses the REAL broker margin blocked for this basket at entry (not premium) — only fires for brokers that report basket margin (paper/live; not backtest).</p>
+
+              <div>
+                <label style={{ fontSize: 10, color: C.muted, marginBottom: 4, display: "block" }}>Stop Loss</label>
+                <div className="flex rounded overflow-hidden border mb-1.5" style={{ borderColor: C.border2 }}>
+                  {(["PCT", "BREAKEVEN"] as const).map((m) => (
+                    <button key={m} type="button" onClick={() => setStopLossMode(m)}
+                      className={`flex-1 py-1 text-[10px] font-bold ${stopLossMode === m ? "bg-gray-700 text-white" : "bg-white text-gray-600"}`}>
+                      {m === "PCT" ? "% of premium" : "Underlying breakeven"}
+                    </button>
+                  ))}
+                </div>
+                {stopLossMode === "PCT" ? (
                   <input
                     type="number"
                     value={stopLossPct}
@@ -511,7 +686,9 @@ export default function StrategyBuilderModal({ onClose, onSuccess, editStrategy,
                     className="w-full px-2.5 py-1.5 border rounded-lg text-xs font-semibold outline-none focus:border-orange-500"
                     style={{ borderColor: C.border2 }}
                   />
-                </div>
+                ) : (
+                  <p className="text-[10px] text-gray-500 leading-snug">Exits once the underlying's spot moves outside this basket's own computed breakeven range (from every leg's strike/entry price/quantity) — no fixed distance to set.</p>
+                )}
               </div>
 
               <div>
@@ -640,14 +817,35 @@ export default function StrategyBuilderModal({ onClose, onSuccess, editStrategy,
                                 { value: "OTM_PERCENT", label: "% OTM" },
                                 { value: "OTM_POINTS", label: "Points OTM" },
                                 { value: "FIXED", label: "Exact strike" },
+                                { value: "PREMIUM_OFFSET", label: "Straddle premium / N OTM", description: "Offset off ATM = live ATM straddle premium ÷ N, rounded to the nearest strike" },
+                                { value: "PREMIUM_BAND", label: "Premium band (₹)", description: "Nearest strike outward from ATM whose own live premium falls in a ₹ range" },
                               ]}
                             />
-                            {leg.strike_mode !== "ATM" ? (
+                            {leg.strike_mode === "PREMIUM_BAND" ? (
+                              <div className="grid grid-cols-2 gap-1">
+                                <input
+                                  type="number"
+                                  value={leg.band_min}
+                                  onChange={(e) => updateLeg(idx, { band_min: e.target.value })}
+                                  placeholder="Min ₹"
+                                  className="w-full px-2 py-1 border rounded text-[11px] outline-none focus:border-orange-500"
+                                  style={{ borderColor: C.border2 }}
+                                />
+                                <input
+                                  type="number"
+                                  value={leg.band_max}
+                                  onChange={(e) => updateLeg(idx, { band_max: e.target.value })}
+                                  placeholder="Max ₹"
+                                  className="w-full px-2 py-1 border rounded text-[11px] outline-none focus:border-orange-500"
+                                  style={{ borderColor: C.border2 }}
+                                />
+                              </div>
+                            ) : leg.strike_mode !== "ATM" ? (
                               <input
                                 type="number"
                                 value={leg.strike_value}
                                 onChange={(e) => updateLeg(idx, { strike_value: e.target.value })}
-                                placeholder={leg.strike_mode === "FIXED" ? "Price" : "Offset"}
+                                placeholder={leg.strike_mode === "FIXED" ? "Price" : leg.strike_mode === "PREMIUM_OFFSET" ? "Divisor (e.g. 2)" : "Offset"}
                                 className="w-full px-2 py-1 border rounded text-[11px] outline-none focus:border-orange-500"
                                 style={{ borderColor: C.border2 }}
                               />

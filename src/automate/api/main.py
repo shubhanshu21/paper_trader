@@ -25,7 +25,6 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
 from automate.api import (
-    routes_advanced_orders,
     routes_auth,
     routes_backtest,
     routes_custom_strategies,
@@ -42,6 +41,7 @@ from automate.api import (
     routes_positions,
     routes_strategies,
     routes_terminal,
+    routes_upstox_token,
     routes_wallet,
     routes_watchlist,
     routes_websocket,
@@ -79,7 +79,6 @@ async def _lifespan(application: FastAPI):
     @app.on_event('startup') pattern removed in FastAPI 0.109+)."""
     import asyncio
 
-    from automate.api.advanced_orders_scheduler import advanced_orders_scheduler
     from automate.api.custom_strategy_scheduler import custom_strategy_scheduler
     from automate.api.instrument_sync_scheduler import instrument_sync_scheduler
     from automate.api.iv_history_scheduler import iv_history_scheduler
@@ -102,7 +101,6 @@ async def _lifespan(application: FastAPI):
         asyncio.create_task(market_price_broadcaster()),
         asyncio.create_task(custom_strategy_scheduler()),
         asyncio.create_task(token_refresh_scheduler()),
-        asyncio.create_task(advanced_orders_scheduler()),
         asyncio.create_task(iv_history_scheduler()),
         asyncio.create_task(instrument_sync_scheduler()),
     ]
@@ -285,10 +283,10 @@ app.include_router(routes_equity.router)
 app.include_router(routes_terminal.router)
 app.include_router(routes_watchlist.router)
 app.include_router(routes_websocket.router)
-app.include_router(routes_advanced_orders.router)
 app.include_router(routes_multi_leg.router)
 app.include_router(routes_performance.router)
 app.include_router(routes_custom_strategies.router)
+app.include_router(routes_upstox_token.router)
 app.include_router(routes_health.router)
 app.include_router(ws_positions.router)
 app.include_router(ws_custom_strategy_greeks.router)

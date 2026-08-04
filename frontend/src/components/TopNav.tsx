@@ -5,8 +5,9 @@ import { User as UserType } from "../api";
 import { C, FONT } from "../lib/format";
 import NotificationBell from "./NotificationBell";
 import MarketStatusBadge from "./MarketStatusBadge";
+import UpstoxTokenBadge from "./UpstoxTokenBadge";
 
-const NAV = ["Dashboard", "Strategies", "Orders", "Advanced Orders", "Holdings", "Positions", "Leaderboard"];
+const NAV = ["Dashboard", "Strategies", "Orders", "Holdings", "Positions", "Leaderboard"];
 
 const navSlug = (navItem: string) => navItem.toLowerCase().replace(/\s+/g, "-");
 
@@ -85,9 +86,12 @@ export default function TopNav({ currentUser, onLogout }: TopNavProps) {
             <MarketStatusBadge />
           </div>
           <div className="hidden md:block">
+            <UpstoxTokenBadge />
+          </div>
+          <div className="hidden md:block">
             <NotificationBell />
           </div>
-          
+
           {/* Profile controls (Always visible, falls back to demo account if backend auth is disabled) */}
           <div className="relative" ref={menuRef}>
             <button className="flex items-center gap-2 focus:outline-none" onClick={() => setMenu((m) => !m)}>
@@ -161,7 +165,7 @@ export default function TopNav({ currentUser, onLogout }: TopNavProps) {
       {mobileMenu && (
         <div className="md:hidden absolute top-16 left-0 right-0 bg-white border-b shadow-lg z-30" style={{ borderColor: C.border2 }}>
           <div className="flex flex-col p-4 space-y-3">
-            <div><MarketStatusBadge /></div>
+            <div className="flex items-center gap-2 flex-wrap"><MarketStatusBadge /><UpstoxTokenBadge /></div>
             {NAV.map((n) => {
               const slug = navSlug(n);
               const path = `/${slug}`;
