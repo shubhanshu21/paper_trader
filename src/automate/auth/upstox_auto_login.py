@@ -77,25 +77,41 @@ def _token_is_valid(token: str) -> bool:
         return False
 
 
-# Installed via the official Google Chrome .deb (not snap — snap's strict
-# confinement fails under WSL2's mount-namespace restrictions, verified
-# during setup: `snap install chromium` errors out with "cannot preserve
-# mount namespace"). chromedriver itself is auto-resolved by Selenium
-# Manager (built into selenium>=4.6) to match whatever Chrome version is
-# actually installed — no separate driver binary/version to keep in sync.
-_CHROME_BINARY = "/usr/bin/google-chrome"
+# This host is Oracle Cloud arm64 (aarch64), which Google's official Chrome
+# .deb does not target at all (amd64-only) — attempting that install fails
+# apt dependency resolution outright. Since this box is Oracle Cloud, not
+# WSL2, the mount-namespace restriction that used to break `snap install
+# chromium` doesn't apply here, so we use the snap-packaged Chromium
+# instead (Ubuntu 24.04 ships Chromium as snap-only anyway, no .deb).
+# chromedriver comes bundled inside the same snap revision, so it's pinned
+# to it directly rather than relying on Selenium Manager to resolve one —
+# Selenium Manager doesn't know how to match a driver to a snap install.
+_CHROMIUM_BINARY = "/snap/bin/chromium"
+_CHROMIUM_DRIVER = "/snap/chromium/current/usr/lib/chromium-browser/chromedriver"
+
+# Snap's AppArmor confinement only allows Chromium to write under its own
+# ~/snap/chromium/ data dir — a --user-data-dir anywhere else in $HOME (or
+# /tmp) fails with "Failed to create SingletonLock: Permission denied" and
+# the session never starts.
+_CHROMIUM_PROFILE_DIR = Path.home() / "snap" / "chromium" / "current" / "selenium-profile"
 
 
 def _setup_driver() -> webdriver.Chrome:
+    from selenium.webdriver.chrome.service import Service
+
+    _CHROMIUM_PROFILE_DIR.mkdir(parents=True, exist_ok=True)
+
     options = Options()
     options.add_argument("--headless=new")
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
     options.add_argument("--disable-gpu")
+    options.add_argument(f"--user-data-dir={_CHROMIUM_PROFILE_DIR}")
     options.add_argument("--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36")
-    if Path(_CHROME_BINARY).exists():
-        options.binary_location = _CHROME_BINARY
-    return webdriver.Chrome(options=options)
+    if Path(_CHROMIUM_BINARY).exists():
+        options.binary_location = _CHROMIUM_BINARY
+    service = Service(_CHROMIUM_DRIVER) if Path(_CHROMIUM_DRIVER).exists() else None
+    return webdriver.Chrome(options=options, service=service)
 
 
 def _js_click(driver, element) -> None:
