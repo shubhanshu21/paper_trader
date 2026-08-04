@@ -60,6 +60,7 @@ from automate.utils.instrument_cache import InstrumentCache
 from automate.utils.logger import get_logger
 from automate.utils.notify import notify
 from automate.utils.option_utils import check_exit_trigger, is_within_pre_expiry_buffer
+from automate.utils.telegram_alert import alert_trade_closed, alert_trade_opened
 from automate.utils.trailing_stop import advance_trailing_stop, stop_triggered
 
 log = get_logger(__name__)
@@ -470,6 +471,21 @@ def _try_entry(db, strategy: CustomStrategy, broker) -> None:
             log.info("custom_strategy_scheduler: entered strategy %s (%s) symbol %s [%s cycle] — %d legs.",
                      strategy.id, strategy.name, symbol, mode, len(result["legs"]))
 
+            leg_details = " | ".join(
+                f"{leg['transaction_type']} {leg['option_type']} {leg['strike']}@{leg['entry_price'] or 0:.2f}"
+                for leg in result["legs"]
+            )
+            qty = result["legs"][0]["quantity"] if result["legs"] else None
+            details = f"{leg_details} | qty={qty}" if qty is not None else leg_details
+            # level="trade" (not "info"/"warning"/"error") — NotificationBell.tsx
+            # renders it as its own "trade opened" card (icon + strategy name +
+            # per-leg detail rows) instead of a flat info line; notify() itself
+            # only pushes to Telegram for "warning"/"error", so the nicely
+            # formatted Telegram message below is sent separately.
+            notify("custom_strategy", f"Trade Opened — {strategy.name}\n{symbol} ({db_mode})\n{details}",
+                   level="trade", user_id=strategy.user_id)
+            alert_trade_opened(strategy.name, db_mode, symbol, details)
+
 
 def _combined_pnl_pct(legs: list[CustomStrategyPosition], now_prices: dict, rates: dict | None = None) -> float | None:
     """
@@ -714,6 +730,15 @@ def _try_exit(db, strategy: CustomStrategy, broker) -> None:
                 "custom_strategy_scheduler: exited strategy %s (%s) symbol %s | trigger=%s | pnl_pct=%.2f",
                 strategy.id, strategy.name, symbol, trigger, final_pct,
             )
+            leg_details = " | ".join(
+                f"{leg.transaction_type} {leg.option_type} {leg.strike}@{leg.exit_price or 0:.2f}"
+                for leg in combined_closed
+            )
+            details = f"reason={trigger} | {leg_details} | pnl={final_pct:+.2f}%"
+            leg_mode = combined_closed[0].mode if combined_closed else _mode_for_status(strategy.status)
+            notify("custom_strategy", f"Trade Closed — {strategy.name}\n{symbol} ({leg_mode})\n{details}",
+                   level="trade", user_id=strategy.user_id)
+            alert_trade_closed(strategy.name, leg_mode, symbol, details)
         elif combined_managed:
             log.warning(
                 "custom_strategy_scheduler: only %d/%d combined-managed legs closed for strategy %s (%s) symbol %s | trigger=%s — "
