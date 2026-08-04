@@ -1,25 +1,35 @@
 """
-api/token_refresh_scheduler.py — daily Upstox token auto-login, running as
-a background asyncio task inside the API process.
+api/token_refresh_scheduler.py — Upstox token auto-login/auto-heal, running
+as a background asyncio task inside the API process.
 
 This used to be run_daemon.py's job (it called ensure_fresh_upstox_token()
 once at startup and once per market-open loop tick). Now that run_daemon.py
 itself is retired (it only ever ran hand-written strategies — see
 strategies/registry.py — which have been replaced by the custom-strategy
 builder), token refresh needed a new home so daily auto-login doesn't
-silently stop working. Same "once a day, market hours only" contract as
-before, same bounded-timeout wrapper (a stuck Selenium session must never
-block anything else in this process — see market_price_broadcaster.py/
-custom_strategy_scheduler.py, which both need a working token too).
+silently stop working. Same bounded-timeout wrapper (a stuck Selenium
+session must never block anything else in this process — see
+market_price_broadcaster.py/custom_strategy_scheduler.py, which both need
+a working token too).
+
+Re-validates every _CHECK_INTERVAL_SEC, all day, not just once — Upstox
+tokens have been observed going invalid mid-session (well before their
+nominal daily expiry, e.g. after Cloudflare bot-mitigation kicks in on the
+Selenium-driven login, or account-level single-session enforcement when a
+login happens elsewhere), and ensure_fresh_upstox_token() is cheap to call
+when the token is still valid — it does one real get_profile check
+(upstox_auto_login._token_is_valid) and returns immediately, only paying
+the cost of a full Selenium re-login when that check actually fails. An
+earlier version of this scheduler gated re-checks behind a "done today"
+marker file, which meant any invalidation after the first tick of the day
+went undetected — and every LTP/order call kept 401ing — until the process
+was manually restarted. Do not reintroduce a once-a-day gate here.
 """
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeoutError
-from datetime import date
-from pathlib import Path
 
 from automate.auth.upstox_auto_login import ensure_fresh_upstox_token
-from automate.compliance.sebi_rules import assert_market_is_open
 from automate.utils.logger import get_logger
 from automate.utils.notify import notify
 
@@ -27,18 +37,6 @@ log = get_logger(__name__)
 
 _CHECK_INTERVAL_SEC = 300
 _TOKEN_REFRESH_TIMEOUT_SEC = 300
-
-
-def _marker_path() -> Path:
-    return Path("logs") / f".api_token_refresh_done_{date.today().isoformat()}"
-
-
-def _market_is_open_now() -> bool:
-    try:
-        assert_market_is_open()
-        return True
-    except RuntimeError:
-        return False
 
 
 def _refresh_bounded() -> str | None:
@@ -84,13 +82,12 @@ async def token_refresh_scheduler() -> None:
     while True:
         await asyncio.sleep(_CHECK_INTERVAL_SEC)
         try:
-            if not _market_is_open_now():
-                continue
-            marker = _marker_path()
-            if marker.exists():
-                continue
+            # Re-validate every tick, all day — not just once. LTP/payoff
+            # requests happen outside market hours too (e.g. the strategy
+            # detail page's "Expected Profit & Loss" preview), and tokens
+            # have been observed going invalid mid-session well before
+            # market close, so this must not stop checking just because
+            # the market is currently closed.
             await asyncio.to_thread(_refresh_bounded)
-            marker.parent.mkdir(parents=True, exist_ok=True)
-            marker.touch()
         except Exception:
             log.exception("token_refresh_scheduler: tick failed.")
