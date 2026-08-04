@@ -83,6 +83,7 @@ class UpstoxBroker(BaseBroker):
         # It is never stored as a plain attribute on this class.
         configuration = upstox_client.Configuration()
         configuration.access_token = access_token
+        self._configuration = configuration
 
         self._api_client = upstox_client.ApiClient(configuration)
 
@@ -109,6 +110,28 @@ class UpstoxBroker(BaseBroker):
             "UpstoxBroker initialised | dry_run=%s",
             self.dry_run,
         )
+
+    def _resync_access_token(self) -> None:
+        """
+        Re-read the access token from the DB and push it into the SDK's
+        Configuration object if it has changed.
+
+        __init__ bakes access_token into `self._configuration` once, and
+        every SDK API object (self._market_quote_v3 etc.) holds a reference
+        to that same Configuration — so mutating .access_token in place
+        updates every call site without rebuilding the client. This is what
+        lets a token refreshed in a *different* process (e.g. the manual
+        `python -m automate.auth.upstox_auth` CLI, which can't reach this
+        process's in-memory broker cache to invalidate it) still take
+        effect on the next retried call instead of failing with a stale
+        401 for the rest of this process's lifetime.
+        """
+        from automate.config import UpstoxConfig
+
+        fresh_token = UpstoxConfig.ACCESS_TOKEN
+        if fresh_token and fresh_token != self._configuration.access_token:
+            log.info("Detected refreshed Upstox access token — updating SDK client.")
+            self._configuration.access_token = fresh_token
 
     # ------------------------------------------------------------------
     # Instrument Master: daily download + symbol resolution
@@ -361,6 +384,11 @@ class UpstoxBroker(BaseBroker):
                     "ApiException on LTP fetch (attempt %d/%d): HTTP %s — %s",
                     attempt, _MAX_RETRIES, exc.status, exc.reason,
                 )
+                if exc.status == 401:
+                    # Stale token baked into this client — pick up whatever
+                    # is currently in the DB before burning the rest of the
+                    # retry budget on the same doomed request.
+                    self._resync_access_token()
                 if attempt < _MAX_RETRIES:
                     time.sleep(_RETRY_DELAY_SEC)
                 else:
@@ -429,6 +457,8 @@ class UpstoxBroker(BaseBroker):
                         "ApiException on batch LTP fetch (attempt %d/%d, %d symbols): HTTP %s — %s",
                         attempt, _MAX_RETRIES, len(chunk), exc.status, exc.reason,
                     )
+                    if exc.status == 401:
+                        self._resync_access_token()
                     if attempt < _MAX_RETRIES:
                         time.sleep(_RETRY_DELAY_SEC)
                 except Exception as exc:
