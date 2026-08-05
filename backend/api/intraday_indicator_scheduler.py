@@ -39,7 +39,6 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import func
 
 from compliance.sebi_rules import AuditTrail, ComplianceError, KillSwitch, OrderRateLimiter, assert_market_is_open
-from db.engine import SessionLocal
 from db.models import CustomStrategy, CustomStrategyPosition
 from strategies.custom.intraday_indicator_strategy import IntradaySupertrendStrategy
 from strategies.custom.intraday_schema import get_setting

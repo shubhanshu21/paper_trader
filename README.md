@@ -30,7 +30,7 @@ A robust, Python-based algorithmic trading system designed specifically for the 
 
 ## Architecture & Project Structure
 
-The bot is designed with clear separation of concerns to keep strategy logic isolated from broker implementation and SEBI compliance rules. `src/automate/` is a real installable package (`pip install -e .`) — every internal import is `from automate.X import Y`, so nothing depends on being run from one exact directory.
+The bot is designed with clear separation of concerns to keep strategy logic isolated from broker implementation and SEBI compliance rules. `backend/` is a self-contained, real installable package (`pip install -e .`, flat layout — `api/`, `db/`, `strategies/`, `utils/`, `broker/`, `compliance/`, `config/`, `cli/`, `auth/`, `backtest/` are all top-level directories directly inside `backend/`, each importable as a bare package: `from db.engine import SessionLocal`, `from config import ...`, no wrapping package name). `frontend/` is its sibling at the repo root.
 
 ### Flow Diagram
 
@@ -43,33 +43,41 @@ The bot is designed with clear separation of concerns to keep strategy logic iso
 ### Directory Structure
 
 ```text
-automate/
-├── pyproject.toml            # Makes src/automate importable (pip install -e .)
-├── docs/                     # Diagram assets referenced above
-├── data/
-│   ├── historical/           # Real downloaded candle CSVs (download_real_history.py)
-│   └── runtime/
-│       └── strategy_overrides.json # Runtime edits (MODE/SYMBOLS/lots/SL/TP/exit-days) made from the web control panel — layered on top of config.py, see "Web Control Panel" below
-├── dataset/                  # Raw bhavcopy archives (gitignored) — bulk-loaded into MySQL's fno_bhavcopy table, the backtest engine reads that table directly, not any file here
-├── scripts/                   # Standalone operational scripts
-│   ├── refresh_all_data.py             # ONE command to run the whole data pipeline in order
-│   ├── download_real_history.py        # Downloads real spot + option candles from Upstox
-│   ├── import_bhavcopy_to_db.py        # Bulk raw bhavcopy CSV -> MySQL fno_bhavcopy table
-│   └── fill_bhavcopy_gap.py            # Downloads NSE's own bhavcopy archive to fill date gaps
-├── tests/                     # pytest suite — see "Testing" below
-├── src/automate/              # The actual package — everything below is `automate.X`
-│   ├── config.py               # Centralized configuration (no secrets) — DEFAULTS; runtime-overridable, see below
-│   ├── cli/                    # Entry points — `python3 -m automate.cli.X`
+automate/                     # repo root
+├── backend/                   # Self-contained Python package + everything it needs at runtime
+│   ├── pyproject.toml           # Flat layout (pip install -e .) — api/db/strategies/utils/broker/compliance/config/cli/auth/backtest are SIBLING top-level packages, no wrapping package name
+│   ├── .env / .env.example      # Credentials and market hours (.env gitignored)
+│   ├── docs/                    # Diagram assets referenced above
+│   ├── data/
+│   │   ├── historical/            # Real downloaded candle CSVs (download_real_history.py)
+│   │   └── runtime/
+│   │       └── strategy_overrides.json # Runtime edits (MODE/SYMBOLS/lots/SL/TP/exit-days) made from the web control panel — layered on top of config.py, see "Web Control Panel" below
+│   ├── dataset/                 # Raw bhavcopy archives (gitignored) — bulk-loaded into MySQL's fno_bhavcopy table, the backtest engine reads that table directly, not any file here
+│   ├── cache/                    # Daily instrument-master CSV cache (gitignored, self-cleaning — see utils/instrument_cache.py)
+│   ├── logs/                     # Runtime logs (gitignored)
+│   ├── deploy/                   # systemd unit + nginx site templates
+│   ├── scripts/                   # Standalone operational scripts
+│   │   ├── refresh_all_data.py             # ONE command to run the whole data pipeline in order
+│   │   ├── download_real_history.py        # Downloads real spot + option candles from Upstox
+│   │   ├── import_bhavcopy_to_db.py        # Bulk raw bhavcopy CSV -> MySQL fno_bhavcopy table
+│   │   └── fill_bhavcopy_gap.py            # Downloads NSE's own bhavcopy archive to fill date gaps
+│   ├── tests/                     # pytest suite — see "Testing" below
+│   ├── config/                  # Centralized configuration (no secrets) — DEFAULTS; runtime-overridable, see below
+│   ├── cli/                    # Entry points — `python3 -m cli.X`
 │   │   ├── run_strategy.py       # Position entry — standalone (cron-scheduled) or via run_daemon
 │   │   ├── run_position_monitor.py # Exits on SL/TP trigger or expiry — standalone or via run_daemon
-│   │   └── run_daemon.py         # LEGACY — cron/systemd-style daemon for hand-written strategies via STRATEGY_CONFIGS. No longer auto-started (strategies/registry.py is now empty); superseded by api/custom_strategy_scheduler.py below. Still works standalone if you register a hand-written strategy in strategies/registry.py yourself.
+│   │   └── run_daemon.py         # LEGACY — cron/systemd-style daemon for hand-written strategies via STRATEGY_CONFIGS. No longer auto-started (strategies/registry.py is now empty); superseded by api/strategy_scheduler.py below. Still works standalone if you register a hand-written strategy in strategies/registry.py yourself.
 │   ├── api/                    # Web control panel's FastAPI backend — see "Web Control Panel" below
 │   │   ├── main.py                # App + router wiring; starts all background tasks below on startup; serves frontend/dist as static files if built
 │   │   ├── routes_custom_strategies.py # CRUD + backtest + expected-payoff + templates/symbols + templates/expiries for the Custom Strategy Builder
 │   │   ├── routes_strategy_deployment.py # deploy/pause/resume/stop for a custom strategy (pause/stop square off any open position)
-│   │   ├── custom_strategy_scheduler.py  # Background task (started in main.py, NOT a separate process) — enters/exits every PAPER_TRADING/LIVE custom strategy each tick, cycle-aware (won't double-enter the same expiry)
+│   │   ├── strategy_scheduler.py  # The SINGLE background task (started in main.py, NOT a separate process) — ticks every PAPER_TRADING/LIVE/PAUSED custom strategy (any strategy_type) and dispatches each to its engine's tick function
+│   │   ├── custom_strategy_scheduler.py  # Leg-based engine helpers (entry/exit/reconciliation/P&L push) — ticked from strategy_scheduler.py, no longer owns its own loop
+│   │   ├── intraday_indicator_scheduler.py # Signal-driven Supertrend+Pivot engine (SUPERTREND_INTRADAY) — ticked from strategy_scheduler.py
+│   │   ├── weekend_combo_scheduler.py    # Combined multi-symbol engine (WEEKEND_GAP_COMBO) — ticked from strategy_scheduler.py
+│   │   ├── otm_put_roll_engine.py        # Roll-adjustable engine (OTM_PUT_ROLL) — ticked from strategy_scheduler.py
 │   │   ├── token_refresh_scheduler.py    # Background task — daily headless Upstox login, moved here from run_daemon.py
-│   │   ├── live_greeks.py         # Shared Black-76 Greeks computation for open custom-strategy legs (used by both the REST endpoint and the WebSocket)
+│   │   ├── live_greeks.py         # Shared Black-76 Greeks + portfolio-margin computation for open custom-strategy legs (used by both the REST endpoints and the WebSocket)
 │   │   ├── ws_custom_strategy_greeks.py  # WebSocket — pushes live Greeks for one custom strategy's open legs
 │   │   ├── routes_notifications.py, ws_notifications.py # REST + WebSocket for the in-app notification bell (see utils/notify.py)
 │   │   ├── routes_positions.py    # Open/closed positions, manual close
@@ -85,13 +93,13 @@ automate/
 │   │   └── deps.py                # Shared broker/audit/rate-limiter singletons, MTM calculation
 │   ├── auth/                   # Daily Upstox token refresh (manual + headless auto-login)
 │   ├── broker/                  # Broker abstraction layer
-│   │   ├── base_broker.py         # Base interface
+│   │   ├── base_broker.py         # Base interface (incl. get_historical_candles, get_basket_required_margin)
 │   │   ├── broker_factory.py      # Builds the paper + live broker pair
-│   │   ├── upstox_broker.py       # Live: Upstox implementation (incl. real basket/multi-order, market depth)
+│   │   ├── upstox_broker.py       # Live: Upstox implementation (incl. real basket/multi-order, market depth, funds, candles)
 │   │   ├── paper_broker.py        # Sim: paper trading against live data, no separate db of its own
 │   │   └── mock_broker.py         # Sim: historical backtesting
 │   ├── backtest/                # Runs the REAL strategy classes — no separate reimplementation
-│   │   ├── __main__.py             # SIMPLE unified entry point: symbol + type + date range (`python3 -m automate.backtest`) — legacy hand-written-strategy path
+│   │   ├── __main__.py             # SIMPLE unified entry point: symbol + type + date range (`python3 -m backtest`) — legacy hand-written-strategy path
 │   │   ├── data_feed.py           # Loads real intraday candle CSVs, serves prices by simulated time
 │   │   ├── engine.py              # Steps through real intraday bars, reports one real trade's P&L (legacy)
 │   │   ├── bhavcopy_data_feed.py  # Serves prices from the daily bhavcopy DB, one simulated date at a time
@@ -101,12 +109,16 @@ automate/
 │   │   └── sebi_rules.py           # Kill switch, rate limiter, audit trail
 │   ├── strategies/               # Trading strategy implementations
 │   │   ├── common/base_strategy.py # Abstract base class shared by every strategy, hand-written or builder-generated
-│   │   ├── custom/rule_schema.py   # The composable rules JSON contract (legs/entry/expiry/exit) the builder UI produces
+│   │   ├── custom/rule_schema.py   # The composable rules JSON contract (legs/entry/expiry/exit) the builder UI produces — the leg-based/general engine
 │   │   ├── custom/rule_strategy.py # RuleBasedStrategy — generic interpreter that executes ANY rules_json basket (entry, preview, order placement/unwind)
+│   │   ├── custom/engine_registry.py # strategy_type -> {validate, describe, backtest_supported} dispatch table, used by routes_custom_strategies.py — new strategy_types only need an entry here if they need a genuinely new execution model
+│   │   ├── custom/intraday_schema.py, custom/intraday_indicator_strategy.py # Supertrend+Pivot signal-driven engine
+│   │   ├── custom/combo_schema.py, custom/weekend_combo_strategy.py         # Combined Nifty+Sensex weekend-gap engine
+│   │   ├── custom/otm_put_roll_schema.py, custom/otm_put_roll_strategy.py  # Far-month OTM put roll-adjustable engine
 │   │   └── registry.py             # Hand-written strategy registry — empty by default now; add an entry here only if writing a new strategy directly in Python
 │   └── utils/                    # Shared utilities
 │       ├── black76.py              # Black-76 option pricing, implied volatility solver, Greeks, and risk-neutral probability (N(d2)) — same model Sensibull/Zerodha's calculators use
-│       ├── payoff.py               # Expiry payoff-diagram math — max profit/loss, breakevens, probability of profit
+│       ├── payoff.py               # Expiry payoff-diagram math — max profit/loss, breakevens (incl. exact piecewise-linear root-finder), probability of profit
 │       ├── notify.py               # Single funnel for in-app + Telegram alerts, deduplicated — see db.models.Notification
 │       ├── costs.py                # Real Indian F&O transaction cost model — itemised brokerage/exchange-charges/GST/STT/SEBI/stamp-duty breakdown, not just a total
 │       ├── margin.py               # Shared rough margin/capital-needed estimate (index vs stock rate), used by the backtest engine, the live-side wallet, and the payoff calculator's ROI%
@@ -114,24 +126,23 @@ automate/
 │       ├── wallet.py               # Derived virtual paper-trading wallet + funds ledger — balance/margin/charges recomputed from the positions table on every request; starting capital itself is the one real DB row (wallet_settings, see db/migrations/versions/0002_wallet_settings.py), editable via /api/wallet/capital
 │       ├── wallet_adjustments.py   # Manual deposit/withdrawal log (data/runtime/wallet_adjustments.json) — same runtime-JSON pattern as strategy_overrides.py
 │       ├── orders.py               # Derived order book — expands each position into its up-to-4 real leg fills (CE/PE entry+exit), no separate order log
-│       ├── instrument_cache.py     # Daily master symbol downloader + dynamic lot-size/strike-step/tradable-symbol/nearest-future-key resolution
+│       ├── instrument_cache.py     # Daily master symbol downloader + dynamic lot-size/strike-step/tradable-symbol/nearest-future-key resolution (self-cleaning cache — see cache/ above)
+│       ├── technical_indicators.py # Supertrend/ATR/pivot-points — pure-math indicators used by the intraday engine
 │       ├── logger.py               # Custom logging setup
 │       ├── market_calendar.py      # Live NSE holidays and freeze qty
-│       ├── option_utils.py         # Strike calculation math + stop-loss/take-profit trigger math + weekly/monthly expiry resolution
+│       ├── option_utils.py         # Strike calculation math + stop-loss/take-profit trigger math + weekly/monthly expiry resolution + monthly-expiry-list resolution (for far-month roll strategies)
 │       ├── position_tracker.py     # Position CRUD against MySQL (see DatabaseConfig/config.py) — SL/TP/expiry tracking, paper + live
 │       ├── strategy_overrides.py   # Runtime-editable MODE/SYMBOLS/NUM_LOTS/SL/TP/exit-days layered on config.py, see below (hand-written strategies only)
 │       ├── backtest_history.py     # Persists historical backtest runs (backtest_runs table) for the dashboard comparison view
 │       └── telegram_alert.py       # Low-level Telegram sender — utils/notify.py is the higher-level funnel that also writes the in-app notification table
-├── frontend/                  # Web control panel's React/TypeScript frontend (Vite) — see "Web Control Panel" below
-│   ├── src/
-│   │   ├── views/                 # Dashboard, Positions, Strategies, Leaderboard, Wallet, Orders, Backtest, Logs (one per sidebar route)
-│   │   ├── store/                 # Redux Toolkit — positions/strategies/daemon slices
-│   │   ├── charts/                # Chart.js wrappers — PnlBarChart, EquityCurveChart, ComparisonBarChart, PositionStatusDonut
-│   │   └── layout/Shell.tsx       # Sidebar + topbar shell (React Router outlet)
-│   ├── node_modules/           # gitignored — `npm install`
-│   └── dist/                  # gitignored — production build output (`npm run build`), served by nginx and/or uvicorn directly
-├── .env.example               # Template for credentials and market hours
-└── requirements.txt           # Python dependencies
+└── frontend/                  # Web control panel's React/TypeScript frontend (Vite), sibling of backend/ — see "Web Control Panel" below
+    ├── src/
+    │   ├── views/                 # Dashboard, Positions, Strategies, Leaderboard, Wallet, Orders, Backtest, Logs (one per sidebar route)
+    │   ├── store/                 # Redux Toolkit — positions/strategies/daemon slices
+    │   ├── charts/                # Chart.js wrappers — PnlBarChart, EquityCurveChart, ComparisonBarChart, PositionStatusDonut
+    │   └── layout/Shell.tsx       # Sidebar + topbar shell (React Router outlet)
+    ├── node_modules/           # gitignored — `npm install`
+    └── dist/                  # gitignored — production build output (`npm run build`), served by nginx and/or uvicorn directly
 ```
 
 ---
@@ -196,10 +207,11 @@ Strike selection modes: `ATM`, `OTM_PERCENT`, `OTM_POINTS`, `FIXED`. Expiry: `WE
 
 ### 2. Install Dependencies
 ```bash
+cd backend
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt -r requirements-dev.txt
-pip install -e .            # makes automate.* importable everywhere (see pyproject.toml)
+pip install -e .            # makes api/db/strategies/utils/... importable everywhere (see pyproject.toml)
 ```
 **Use a real, regular-user-executable `python3`** (a normal apt/deadsnakes install, or `pyenv`) as the interpreter behind `python3 -m venv` — verified the hard way: a venv built from a Python that's itself a symlink into `/root/...` (e.g. a root-owned conda/miniconda install) silently "works" for whoever set it up, then fails with `Permission denied` for every other user, since `/root` typically isn't traversable by anyone else. `python3 --version` and `ls -la $(readlink -f $(which python3))` before creating the venv are worth checking if this ever happens again.
 
@@ -215,10 +227,10 @@ Create the tables (idempotent — safe to re-run; only applies migrations not al
 ```bash
 alembic upgrade head
 ```
-See `src/automate/db/migrations/versions/` for what each revision adds.
+See `db/migrations/versions/` for what each revision adds.
 
 ### 5. Broker Authentication
-Upstox API access tokens expire daily. Run `python3 -m automate.auth.upstox_auth` every morning before the market opens to generate a fresh token and save it to `.env` — or set up headless auto-login (`python3 -m automate.auth.upstox_auto_login`) so this happens on its own; see "Operational Alerts" below and that module's docstring for the security tradeoff involved before enabling it.
+Upstox API access tokens expire daily. Run `python3 -m auth.upstox_auth` every morning before the market opens to generate a fresh token and save it to `.env` — or set up headless auto-login (`python3 -m auth.upstox_auto_login`) so this happens on its own; see "Operational Alerts" below and that module's docstring for the security tradeoff involved before enabling it.
 
 ---
 
@@ -254,17 +266,9 @@ class TenPercentOTMStrangleConfig:
 
 ## Running the Bot (legacy CLI path — hand-written strategies only)
 
-**Custom Strategy Builder strategies (the primary path) need none of this** — the API process (`uvicorn`, started once, see "Web Control Panel" below) already runs their entry/exit/token-refresh as background tasks (`api/custom_strategy_scheduler.py`, `api/token_refresh_scheduler.py`). This whole section — `run_strategy.py`, `run_position_monitor.py`, `run_daemon.py`, cron — is the older, still-functional path for a hand-written `BaseStrategy` subclass registered in `strategies/registry.py`, not started automatically by anything anymore.
+**Custom Strategy Builder strategies (the primary path) need none of this** — the API process (`uvicorn`, started once, see "Web Control Panel" below) already runs their entry/exit/token-refresh as background tasks (`api/strategy_scheduler.py`, `api/token_refresh_scheduler.py`). This whole section — `run_strategy.py`, `run_position_monitor.py`, `run_daemon.py`, cron — is the older, still-functional path for a hand-written `BaseStrategy` subclass registered in `strategies/registry.py`, not started automatically by anything anymore.
 
-Every `python3 -m automate...` command below assumes the venv is active (`source .venv/bin/activate`) or that you're calling `.venv/bin/python` directly — `automate` is only installed inside `.venv`, not system-wide, so running these with your system `python3` fails with `ModuleNotFoundError: No module named 'automate'`.
-
-### Manual Run
-You can run the strategy manually from your terminal.
-
-```bash
-# Uses ACTIVE_STRATEGIES from .env, each in its own configured MODE (paper/live)
-python3 -m automate.cli.run_strategy
-```
+`run_strategy.py`, `run_position_monitor.py`, and `run_daemon.py` (under `cli/`) can each be run standalone (`python3 -m cli.X`, venv active, `cwd=backend/`) or wired into cron — see each module's own docstring for its arguments; not reproduced here since nothing in this project currently invokes them.
 
 ### Paper vs. Live: It's a Per-Strategy Setting
 There are exactly three modes anywhere in this system: paper, live, and backtest (a separate subsystem) — no fourth "dry-run" flag layered on top of any of them. Paper-vs-live is **not** a CLI flag or an `.env` value — it's each strategy's own `MODE` field in its `config.py` entry (e.g. `TenPercentOTMStrangleConfig.MODE = "paper"`), right next to that strategy's `SYMBOLS`. `MODE="paper"` always trades through `PaperBroker` (real market data, simulated fills, never real money); `MODE="live"` always places real orders with your real Upstox account — live means live, unconditionally. Every strategy defaults to `MODE="paper"` — flip it to `"live"` only after you've proven it out.
@@ -274,30 +278,12 @@ This means several strategies can run side by side at different stages of trust 
 ### Choosing Which Strategies Actually Go Live
 `strategies/registry.py` (`STRATEGIES`) is shared with backtesting — a strategy can exist there and be backtested without ever going live. What `run_strategy.py` actually **executes** is controlled separately by `config.RunConfig.ACTIVE_STRATEGIES` (`.env`'s `ACTIVE_STRATEGIES`, comma-separated strategy names), so adding a new strategy for backtesting purposes can't silently make it start placing real orders. Each active strategy also needs a matching entry in `config.STRATEGY_CONFIGS`, including its own `MODE` (different strategies aren't forced to share one global symbol list, or one global paper/live setting).
 
-```bash
-# Uses ACTIVE_STRATEGIES from .env
-python3 -m automate.cli.run_strategy
-
-# Run only specific strategies this one time, ignoring .env — still each in its own configured MODE
-python3 -m automate.cli.run_strategy --strategies ten_percent_otm_strangle
-```
-
 ### Running Hands-Free: `run_daemon.py`
 `run_strategy.py` (entry) and `run_position_monitor.py` (exits — see below) are each single-shot scripts, meant to be triggered by *something* on a schedule. Rather than encoding that schedule as cron timing flags (a separate line for "once at 09:20", another for "every 5 minutes from 9 to 15"), `run_daemon.py` wraps both into ONE persistent process that knows NSE market hours itself and decides when to act — cron's only job becomes "make sure this one process is running," not "know when to run it."
 
-```bash
-python3 -m automate.cli.run_daemon
-```
-
 Each tick it checks (via the same live market-calendar logic every other entry point uses) whether the market is actually open right now; if not, it sleeps and checks again later. If it is open, it attempts entry once per calendar day (tracked with a marker file so a restart mid-day can't double-enter) and checks every open position for stop-loss/take-profit/expiry every ~60 seconds — the same underlying logic as `run_strategy.py`/`run_position_monitor.py`, just self-scheduled instead of cron-scheduled. Paper vs. live is resolved per strategy exactly as above — nothing about that changes just because it's the daemon calling it.
 
-Cron becomes one line — just start it, nothing about *when*, nothing about paper/live:
-```bash
-# Starts the daemon at system boot. @reboot only fires on an actual reboot,
-# so also run this same command once manually right after setup.
-@reboot cd /path/to/automate && nohup /path/to/automate/.venv/bin/python -m automate.cli.run_daemon >> logs/daemon.log 2>&1 &
-```
-For crash resilience beyond what a bare `@reboot` line gives you (cron doesn't supervise long-running processes — if the daemon dies, it stays dead until the next reboot), run it under `systemd` instead (`ExecStart=` the same command, `Restart=always`).
+Not currently wired into cron or systemd anywhere in this deployment — the Custom Strategy Builder's own `api/strategy_scheduler.py` (see "Web Control Panel" below) is what actually runs in production. For crash resilience beyond a bare `@reboot` cron line (cron doesn't supervise long-running processes), run under `systemd` instead (`Restart=always`) if you ever do wire this path up.
 
 **Prefer the old two-cron-line design instead** (separate `run_strategy.py`/`run_position_monitor.py` cron entries, each fired externally)? Both scripts still work standalone exactly as before — `run_daemon.py` is an additional option, not a replacement.
 
@@ -329,18 +315,13 @@ On top of the always-on pre-expiry exit above, `TAKE_PROFIT_PCT`/`STOP_LOSS_PCT`
 
 No stop-loss won on total return despite the much larger worst-case loss — the stop-loss's constant cost (repeatedly exiting trades early that would have come back) outweighed the benefit of capping that one bad cycle, once measured over enough cycles. **This is a genuine preference (smaller, more predictable worst-case vs. higher average return), not a free improvement** — there is no universally "right" threshold, and the right choice depends on your own risk tolerance and (very likely) differs by symbol. Always validate via backtest before enabling this live.
 
-**Entering a position does NOT by itself monitor it.** Every fill (paper or live, regardless of whether SL/TP is configured) is recorded to MySQL (`positions` table); something has to separately watch it and exit when needed. `run_daemon.py` (above) does this automatically as part of its own tick loop. If you're instead running `run_strategy.py`/`run_position_monitor.py` as two separate cron-scheduled scripts, schedule the monitor more frequently, independently of the entry job:
-
-```bash
-# Check open positions every 5 minutes during market hours (Monday to Friday)
-*/5 9-15 * * 1-5 cd /path/to/automate && /path/to/automate/.venv/bin/python -m automate.cli.run_position_monitor >> logs/position_monitor_cron.log 2>&1
-```
+**Entering a position does NOT by itself monitor it.** Every fill (paper or live, regardless of whether SL/TP is configured) is recorded to MySQL (`positions` table); something has to separately watch it and exit when needed. `run_daemon.py` (above) does this automatically as part of its own tick loop. If you're instead running `run_strategy.py`/`run_position_monitor.py` as two separate cron-scheduled scripts, schedule the monitor more frequently, independently of the entry job.
 
 Each position is exited through whichever mode (paper or live) it was actually **entered** with — recorded on the position row itself at entry time, not re-derived from the strategy's current config, so changing a strategy's `MODE` later can never misroute an already-open position's exit. mode='paper' always simulates the exit; mode='live' always places a real exit order the moment a trigger fires — no dry-run preview step. If closing a leg fails after retries, the position is left OPEN (retried next run) and a `logs/ALERT_MANUAL_INTERVENTION_*.flag` file is written, same pattern as the entry-side auto-unwind.
 
 **Expiry safety net (always on, not tied to SL/TP):** once a position enters its own recorded pre-expiry buffer (`entry.expiry - EXIT_DAYS_BEFORE_EXPIRY`, above), `run_position_monitor.py` force-closes it regardless of SL/TP state — this is *why* every position gets recorded, not just ones with SL/TP configured. It reads each position's own `expiry` field, so this works correctly for any future strategy too, whatever its expiry cadence (weekly, monthly) or instrument (stock, index) — nothing here is hardcoded to this strategy's monthly-stock schedule. This matters most for **stock options, which are compulsorily physically settled in India** (unlike index options, which are cash-settled) — an ITM stock leg left open past expiry can trigger real share delivery/receipt obligations far larger than the options margin the position was using, and nothing else in this codebase currently guards against that.
 
-**Validate thresholds via backtest first** — `python3 -m automate.backtest.historical_engine --symbol X --stop-loss-pct N --take-profit-pct N` (or pass `none` to explicitly turn either off) runs the exact same trigger math day-by-day against real historical data, and applies the same `--exit-days-before-expiry` buffer by default (pass `0` to see the original held-to-literal-expiry numbers for comparison). Use as long a date range as you can, not just a window you already know contains one bad cycle — see the table above for why that matters.
+**Validate thresholds via backtest first** — `python3 -m backtest.historical_engine --symbol X --stop-loss-pct N --take-profit-pct N` (or pass `none` to explicitly turn either off) runs the exact same trigger math day-by-day against real historical data, and applies the same `--exit-days-before-expiry` buffer by default (pass `0` to see the original held-to-literal-expiry numbers for comparison). Use as long a date range as you can, not just a window you already know contains one bad cycle — see the table above for why that matters.
 
 ---
 
@@ -377,8 +358,8 @@ run_daemon.py (started/stopped BY the API, or by cron @reboot) ──▶ everyth
 **Development** (hot-reload frontend, separate ports):
 ```bash
 # Terminal 1 — backend
-source .venv/bin/activate
-uvicorn automate.api.main:app --host 127.0.0.1 --port 8000 --reload
+cd backend && source .venv/bin/activate
+uvicorn api.main:app --host 127.0.0.1 --port 8000 --reload
 
 # Terminal 2 — frontend (Vite dev server proxies /api and /ws to :8000, see frontend/vite.config.ts)
 cd frontend && npm install && npm run dev   # http://127.0.0.1:5173
@@ -389,18 +370,18 @@ cd frontend && npm install && npm run dev   # http://127.0.0.1:5173
 # One-time: build the frontend
 cd frontend && npm install && npm run build   # → frontend/dist
 
-# One-time: install the systemd unit (deploy/automate-api.service — edit User=/
+# One-time: install the systemd unit (backend/deploy/automate-api.service — edit User=/
 # WorkingDirectory= if your checkout isn't at /var/www/html/automate; keep
 # Restart=always and KillMode=process — see the gotcha above)
-sudo cp deploy/automate-api.service /etc/systemd/system/
+sudo cp backend/deploy/automate-api.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now automate-api
 
-# One-time: install the nginx site (deploy/automate-nginx.conf — listens on
+# One-time: install the nginx site (backend/deploy/automate-nginx.conf — listens on
 # 127.0.0.1:8090 by default, edit the port if you need a different one;
 # proxies /api and /ws to 127.0.0.1:8000, roots frontend/dist for everything
 # else, sets the WebSocket upgrade headers on /ws/)
-sudo cp deploy/automate-nginx.conf /etc/nginx/sites-available/automate
+sudo cp backend/deploy/automate-nginx.conf /etc/nginx/sites-available/automate
 sudo ln -s /etc/nginx/sites-available/automate /etc/nginx/sites-enabled/automate
 sudo nginx -t && sudo systemctl reload nginx
 ```
@@ -416,8 +397,8 @@ The system includes a robust simulation engine that perfectly mirrors real-world
 
 ### Simple: One Command
 ```bash
-python3 -m automate.backtest --symbol RELIANCE --type stock --from 2026-07-20 --to 2026-07-27
-python3 -m automate.backtest --symbol NIFTY --type index --from 2015-01-01 --to 2019-12-31
+python3 -m backtest --symbol RELIANCE --type stock --from 2026-07-20 --to 2026-07-27
+python3 -m backtest --symbol NIFTY --type index --from 2015-01-01 --to 2019-12-31
 ```
 Symbol, type (`index`/`stock`, auto-detected if omitted), a date range. That's it — `backtest/__main__.py` automatically routes to whichever backend can actually serve that range:
 
@@ -458,11 +439,11 @@ This resolves the equity/index key, current spot, nearest expiry, and CE/PE stri
 
 **Step 2 — Run the backtest engine.** Just the symbol — everything else is read back from the manifest Step 1 saved:
 ```bash
-python3 -m automate.backtest.engine --symbol RELIANCE
+python3 -m backtest.engine --symbol RELIANCE
 ```
 Add `--entry-time "2026-07-21T09:20:00+05:30"` to enter at a specific bar (default: the very first bar in the dataset), or `--slippage-pct 0.01` / `--num-lots 2` etc. to override defaults — any flag you pass explicitly overrides the manifest. `--num-lots` is a lot **count**; actual quantity is resolved from the real per-symbol lot size (see Configuration above).
 
-Using data that didn't come from Step 1 (hand-picked contracts, bhavcopy-derived CSVs)? Pass the per-contract flags manually instead — run `python3 -m automate.backtest.engine --help` for the full list.
+Using data that didn't come from Step 1 (hand-picked contracts, bhavcopy-derived CSVs)? Pass the per-contract flags manually instead — run `python3 -m backtest.engine --help` for the full list.
 
 ### Long-History Data (Bhavcopy Database, Aggregate Statistics)
 Upstox's own history API caps out at 30 days for 1-minute candles and can't discover expired option contracts. For genuinely long-history analysis, this repo bulk-loads NSE's real daily F&O settlement data (bhavcopy) into MySQL's `fno_bhavcopy` table — which, unlike Upstox, *does* include expired contracts — and runs the REAL strategy class (via `backtest/historical_engine.py`'s `MockBroker` + `BhavcopyDataFeed`, the daily-data counterpart to `backtest/engine.py`'s intraday path) across every historical expiry cycle rather than one trade. There's no separate hand-written copy of the strategy's entry logic here — change the strategy once, and both live trading and this backtest pick it up.
@@ -483,8 +464,8 @@ Upstox's own history API caps out at 30 days for 1-minute candles and can't disc
 
 **Running the statistics** directly (this is what `python3 -m automate.backtest` calls for older date ranges):
 ```bash
-python3 -m automate.backtest.historical_engine --symbol NIFTY --type index --from-date 2015-01-01 --to-date 2019-12-31
-python3 -m automate.backtest.historical_engine --symbol RELIANCE --type stock --from-date 2024-01-01 --to-date 2024-12-31
+python3 -m backtest.historical_engine --symbol NIFTY --type index --from-date 2015-01-01 --to-date 2019-12-31
+python3 -m backtest.historical_engine --symbol RELIANCE --type stock --from-date 2024-01-01 --to-date 2024-12-31
 ```
 Reports a plain-language, Indian-Rupee-formatted table: every individual trade taken (entry/exit dates, strikes, money blocked, profit/loss, return %), plus a summary (win rate, total/average P&L, best/worst trade). Money amounts and win/loss counts are also split into ALL cycles vs LIQUID-ONLY cycles (every leg had real trading volume) — see the module docstring in `backtest/historical_engine.py` for the full data-quality caveats. `--num-lots` is a lot **count** (default 1) — actual quantity is `num_lots x` the real lot size resolved live from today's cached Upstox instrument master, same as strike interval (`--strike-step` to override; both resolved dynamically by default, no hardcoded table, the strategy raises if the cache is missing/stale). Note this uses **today's** lot size/strike step for every cycle, even decades-old ones — both have changed multiple times over this history and that timeline isn't reconstructed here.
 
@@ -498,7 +479,7 @@ Run strategies live during market hours without executing real orders on the exc
 
 **To run a strategy in paper trading mode:** set `MODE = "paper"` on that strategy's `config.py` entry (this is already the default for every strategy) and just run normally:
 ```bash
-python3 -m automate.cli.run_strategy
+python3 -m cli.run_strategy
 ```
 
 **To watch your paper trades' live P&L:** `run_position_monitor.py`/`run_daemon.py` already log this on every check (entry/current prices, P&L%, trigger status) and send a Telegram alert on open/close — see "Operational Alerts (Telegram)" above.

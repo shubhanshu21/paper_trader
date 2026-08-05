@@ -7,8 +7,9 @@ graph TD
     Backtest --> CE[backtest/custom_engine.py]
     CE --> BhavDB[(dataset/fno_bhavcopy.db)]
 
-    DB --> Scheduler[api/custom_strategy_scheduler.py — background task in the API process]
-    Scheduler --> RS[strategies/custom/rule_strategy.py: RuleBasedStrategy]
+    DB --> Scheduler[api/strategy_scheduler.py — single background task in the API process]
+    Scheduler --> |strategy_type dispatch| RS[strategies/custom/rule_strategy.py: RuleBasedStrategy]
+    Scheduler --> |strategy_type dispatch| Other[Intraday / Weekend Combo / OTM Put Roll engines]
     RS --> SEBI[compliance/sebi_rules.py]
     RS --> Factory[broker_factory.py]
     Factory --> Broker[PaperBroker / UpstoxBroker]

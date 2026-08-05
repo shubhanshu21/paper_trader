@@ -22,7 +22,7 @@ def _full_rules(legs):
 class TestStrategyTemplates:
     def test_returns_expected_template_types(self):
         types = {t["type"] for t in get_strategy_types()["strategy_types"]}
-        assert types == {"STRADDLE", "STRANGLE", "IRON_CONDOR", "BUTTERFLY", "CUSTOM"}
+        assert types == {"STRADDLE", "STRANGLE", "IRON_CONDOR", "BUTTERFLY", "OVERHEDGED_MONTHLY_IRON_FLY", "MONTHLY_BATMAN_1_3_2", "CUSTOM"}
 
     def test_every_template_legs_pass_validate_rules(self):
         for template in get_strategy_types()["strategy_types"]:

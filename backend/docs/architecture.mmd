@@ -1,6 +1,7 @@
 graph TD
     Rules[custom_strategies.rules_json — legs / entry / expiry / exit] --> RS[RuleBasedStrategy]
     HandWritten[Hand-written strategies — strategies/registry.py, optional] --> BS
+    Other[Intraday / Weekend Combo / OTM Put Roll engines — own execution model] --> B
     RS --> |Inherits| BS[BaseStrategy]
     BS --> |Executes on| B{BaseBroker Interface}
 

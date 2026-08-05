@@ -37,7 +37,6 @@ from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from compliance.sebi_rules import AuditTrail, ComplianceError, KillSwitch, OrderRateLimiter, assert_market_is_open
-from db.engine import SessionLocal
 from db.models import CustomStrategy, CustomStrategyPosition
 from strategies.custom.combo_schema import get_setting
 from strategies.custom.weekend_combo_strategy import WeekendGapComboStrategy

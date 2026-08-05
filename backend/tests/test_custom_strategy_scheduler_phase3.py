@@ -275,12 +275,17 @@ class TestTryExitSplit:
         )
         managed_leg = CustomStrategyPosition(
             strategy_id=1, leg_index=0, mode="paper", instrument_key="TOK_MANAGED", instrument_type="OPTION",
-            option_type="CE", strike=100, expiry="2026-01-29", transaction_type="SELL", quantity=50,
+            # Far-future expiry — this test's whole point is "no hard stop
+            # fires," so the expiry must never actually be within the
+            # (correctly, post-bugfix) always-checked exit_days_before_expiry=0
+            # buffer (see custom_strategy_scheduler.py's exit_days_before_expiry
+            # is not None fix — 0 is a real, checked value, not "disabled").
+            option_type="CE", strike=100, expiry="2099-12-31", transaction_type="SELL", quantity=50,
             entry_price=10.0, status="OPEN", leg_config_json=json.dumps({"take_profit_pct": 20.0}),
         )
         combined_leg = CustomStrategyPosition(
             strategy_id=1, leg_index=1, mode="paper", instrument_key="TOK_COMBINED", instrument_type="OPTION",
-            option_type="PE", strike=100, expiry="2026-01-29", transaction_type="SELL", quantity=50,
+            option_type="PE", strike=100, expiry="2099-12-31", transaction_type="SELL", quantity=50,
             entry_price=8.0, status="OPEN", leg_config_json=None,
         )
         db.add_all([managed_leg, combined_leg])
