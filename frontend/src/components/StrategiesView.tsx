@@ -484,11 +484,15 @@ function BacktestResultsModal({
   const [symbolFilter, setSymbolFilter] = useState<string>("all");
 
   const symbols = Array.from(new Set(result.cycles.map((c) => c.symbol).filter(Boolean))) as string[];
-  const filteredCycles = result.cycles.filter((c) =>
+  const baseFilteredCycles = result.cycles.filter((c) =>
     (outcomeFilter === "all" || (outcomeFilter === "won") === c.won) &&
-    (!liquidOnly || c.liquid) &&
     (symbolFilter === "all" || c.symbol === symbolFilter)
   );
+  const filteredCycles = baseFilteredCycles.filter((c) => !liquidOnly || c.liquid);
+  // "Liquid only" hid every cycle these OTHER filters would've shown — worth telling the
+  // user why, rather than the generic empty state (see the Info tooltip on the toggle
+  // itself for what "liquid" means: every leg traded a nonzero volume on its exit day).
+  const liquidOnlyHidAll = liquidOnly && filteredCycles.length === 0 && baseFilteredCycles.length > 0;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-40 backdrop-blur-sm p-4">
@@ -523,9 +527,12 @@ function BacktestResultsModal({
                 </button>
               ))}
               <button onClick={() => setLiquidOnly((v) => !v)}
-                className="px-2.5 py-1 rounded-full text-[11px] font-semibold transition-colors focus:outline-none"
+                className="flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-semibold transition-colors focus:outline-none"
                 style={liquidOnly ? { backgroundColor: C.orange, color: "#fff" } : { backgroundColor: C.hover, color: C.text }}>
                 Liquid only
+                <span title="Only show cycles where EVERY leg traded a nonzero volume (contracts) in NSE's real historical data on its exit day. Deep-OTM/far-hedge legs commonly show zero traded volume on any given day — that's real market illiquidity, not a bug, so this filter can legitimately hide most or all cycles for a wide-hedge strategy.">
+                  <Info size={11} style={{ color: liquidOnly ? "#fff" : C.faint, opacity: 0.85 }} />
+                </span>
               </button>
               {symbols.length > 1 && (
                 <select value={symbolFilter} onChange={(e) => setSymbolFilter(e.target.value)}
@@ -555,7 +562,15 @@ function BacktestResultsModal({
             </thead>
             <tbody>
               {filteredCycles.length === 0 ? (
-                <tr><td colSpan={symbols.length > 1 ? 7 : 6} className="px-4 py-8 text-center text-xs text-gray-400">No cycles match these filters.</td></tr>
+                <tr><td colSpan={symbols.length > 1 ? 7 : 6} className="px-4 py-8 text-center text-xs text-gray-400">
+                  {liquidOnlyHidAll ? (
+                    <>
+                      "Liquid only" hid all {baseFilteredCycles.length} matching cycle{baseFilteredCycles.length === 1 ? "" : "s"} — at least one leg
+                      traded zero volume on its exit day in every one of them (common for far-OTM/deep-hedge legs; real historical illiquidity, not a bug).{" "}
+                      <button onClick={() => setLiquidOnly(false)} className="font-semibold hover:underline focus:outline-none" style={{ color: C.blue }}>Turn it off</button> to see them.
+                    </>
+                  ) : "No cycles match these filters."}
+                </td></tr>
               ) : filteredCycles.map((c, i) => (
                 <tr key={i} className="border-b last:border-0 text-xs" style={{ borderColor: C.border }}>
                   {symbols.length > 1 && <td className="px-4 py-2.5 font-semibold text-gray-600">{c.symbol}</td>}
