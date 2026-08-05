@@ -25,6 +25,7 @@ from compliance.sebi_rules import AuditTrail, ComplianceError, KillSwitch, Order
 from strategies.common.base_strategy import BaseStrategy
 from utils.logger import get_logger
 from utils.option_utils import (
+    find_expiry_by_type_offset,
     find_instrument_token,
     find_nearest_expiry_by_type,
     round_to_nearest_strike,
@@ -195,11 +196,24 @@ class RuleBasedStrategy(BaseStrategy):
             raise RuntimeError(f"No option expiries returned for '{self.symbol}'.")
         now = self.broker.get_current_time()
 
+        # expiry_offset only applies to legs using the STRATEGY's own
+        # default mode — a leg with its own expiry_mode override (calendar
+        # spread) always resolves offset 0 (its nearest), since "trade N
+        # cycles out" is a property of the strategy's main expiry choice,
+        # not something a calendar-spread override leg inherits implicitly.
+        default_expiry_rule = self.rules.get("expiry") or {}
+        default_mode = default_expiry_rule.get("mode", "WEEKLY")
+        default_offset = default_expiry_rule.get("expiry_offset") or 0
+
         mode_to_expiry: dict = {}
         for mode in modes_needed:
-            nearest = find_nearest_expiry_by_type(expiries, mode, reference_date=now.date() if now else None)
+            offset = default_offset if mode == default_mode else 0
+            if offset:
+                nearest = find_expiry_by_type_offset(expiries, mode, offset, reference_date=now.date() if now else None)
+            else:
+                nearest = find_nearest_expiry_by_type(expiries, mode, reference_date=now.date() if now else None)
             if not nearest:
-                raise RuntimeError(f"Could not determine nearest {mode.lower()} expiry for '{self.symbol}'.")
+                raise RuntimeError(f"Could not determine the {mode.lower()} expiry ({offset} out) for '{self.symbol}'.")
             mode_to_expiry[mode] = nearest
 
         expiry_to_chain: dict = {}

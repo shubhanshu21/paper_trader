@@ -63,6 +63,12 @@ Rules JSON shape::
       "entry": {
         "mode": "IMMEDIATE" | "AT_TIME" | "CONDITIONAL" | "BEFORE_EXPIRY",
         "time": "HH:MM" | null,                      # required iff AT_TIME
+        "weekday": "MON".."SUN" | null,               # AT_TIME only, optional — restricts entry to this ONE
+                                                       #   weekday (a HARD gate, unlike BEFORE_EXPIRY.weekday's
+                                                       #   soft holiday-fallback preference — AT_TIME has no
+                                                       #   expiry-relative "last chance" window to fall back to,
+                                                       #   so a wrong/missed weekday just waits for next cycle).
+                                                       #   Omitted = every day, today's original behavior.
         "condition": {                                # required iff CONDITIONAL
           "type": "MA_CROSSOVER",
           "period_days": <int> >= 2,
@@ -85,8 +91,17 @@ Rules JSON shape::
                                                          #   holiday landing on the target weekday
       },
       "expiry": {
-        "mode": "WEEKLY" | "MONTHLY"                 # optional, defaults to WEEKLY — the STRATEGY default;
-      },                                              # a leg's own expiry_mode above overrides it for that leg
+        "mode": "WEEKLY" | "MONTHLY",                # optional, defaults to WEEKLY — the STRATEGY default;
+                                                       #   a leg's own expiry_mode above overrides it for that leg
+        "expiry_offset": <int> >= 0 | null            # optional, defaults to 0 (the nearest expiry of `mode`) —
+                                                       #   1 = skip the nearest and trade the one after that
+                                                       #   instead (e.g. "next week's" contract entered every
+                                                       #   Monday, to avoid an unintentionally short-DTE entry).
+                                                       #   Only applied to legs using the strategy's default
+                                                       #   mode — a leg with its own expiry_mode override
+                                                       #   (calendar spread) always resolves offset 0.
+      },
+
       "exit": {
         "take_profit_pct": <number> | null,
         "stop_loss_pct": <number> | null,
@@ -115,6 +130,10 @@ Rules JSON shape::
                                                        #   not a fixed distance). stop_loss_capital_pct above is
                                                        #   independent of this switch, same as take_profit_amount.
         "exit_time": "HH:MM" | null,
+        "exit_weekday": "MON".."SUN" | null,         # exit_time only, optional — restricts the exit_time hard
+                                                       #   stop to this ONE weekday (e.g. "close by 3:15pm
+                                                       #   Friday", not every single day at 3:15pm). Omitted =
+                                                       #   every day, today's original behavior.
         "exit_days_before_expiry": <int> >= 0
       }
     }
@@ -359,8 +378,12 @@ def validate_rules(rules: dict) -> list[str]:
     entry = rules.get("entry")
     if not isinstance(entry, dict) or entry.get("mode") not in _ENTRY_MODES:
         errors.append(f"Entry mode must be one of {sorted(_ENTRY_MODES)}.")
-    elif entry["mode"] == "AT_TIME" and not _is_hhmm(entry.get("time")):
-        errors.append("Entry time must be in HH:MM format.")
+    elif entry["mode"] == "AT_TIME":
+        if not _is_hhmm(entry.get("time")):
+            errors.append("Entry time must be in HH:MM format.")
+        weekday = entry.get("weekday")
+        if weekday is not None and weekday not in _WEEKDAYS:
+            errors.append(f"'entry.weekday' must be one of {sorted(_WEEKDAYS)}, or omitted.")
     elif entry["mode"] == "CONDITIONAL":
         errors.extend(_validate_entry_condition(entry))
     elif entry["mode"] == "BEFORE_EXPIRY":
@@ -369,6 +392,10 @@ def validate_rules(rules: dict) -> list[str]:
     expiry = rules.get("expiry")
     if expiry is not None and (not isinstance(expiry, dict) or expiry.get("mode") not in _EXPIRY_MODES):
         errors.append(f"Expiry mode must be one of {sorted(_EXPIRY_MODES)} (or omitted — defaults to WEEKLY).")
+    if isinstance(expiry, dict) and expiry.get("expiry_offset") is not None:
+        offset = expiry["expiry_offset"]
+        if not isinstance(offset, int) or offset < 0:
+            errors.append("'expiry.expiry_offset' must be a whole number >= 0, or omitted.")
 
     exit_ = rules.get("exit")
     if not isinstance(exit_, dict):
@@ -384,6 +411,9 @@ def validate_rules(rules: dict) -> list[str]:
         exit_time = exit_.get("exit_time")
         if exit_time is not None and not _is_hhmm(exit_time):
             errors.append("Exit time must be in HH:MM format.")
+        exit_weekday = exit_.get("exit_weekday")
+        if exit_weekday is not None and exit_weekday not in _WEEKDAYS:
+            errors.append(f"'exit.exit_weekday' must be one of {sorted(_WEEKDAYS)}, or omitted.")
         exit_days = exit_.get("exit_days_before_expiry", 0)
         if not isinstance(exit_days, int) or exit_days < 0:
             errors.append("'Exit days before expiry' must be a whole number >= 0.")
@@ -437,12 +467,18 @@ def describe_rules(rules: dict | None, symbol: str = "") -> str:
     subject = f"{symbol} " if symbol else ""
     sentence = f"{legs_txt} on {subject}".rstrip() if symbol else legs_txt
 
-    expiry_mode = (rules.get("expiry") or {}).get("mode", "WEEKLY")
-    sentence += f" ({expiry_mode.lower()} expiry default)"
+    expiry_rule = rules.get("expiry") or {}
+    expiry_mode = expiry_rule.get("mode", "WEEKLY")
+    expiry_offset = expiry_rule.get("expiry_offset") or 0
+    cycle_noun = "week" if expiry_mode == "WEEKLY" else "month"
+    offset_txt = f", {expiry_offset} {cycle_noun}{'s' if expiry_offset != 1 else ''} out" if expiry_offset else ""
+    sentence += f" ({expiry_mode.lower()} expiry default{offset_txt})"
 
     entry = rules.get("entry") or {}
     if entry.get("mode") == "AT_TIME" and entry.get("time"):
         sentence += f", enter at {entry['time']}"
+        if entry.get("weekday"):
+            sentence += f" on {entry['weekday'].title()}"
     elif entry.get("mode") == "CONDITIONAL" and entry.get("condition"):
         c = entry["condition"]
         if c.get("type") == "MA_CROSSOVER":
@@ -474,7 +510,8 @@ def describe_rules(rules: dict | None, symbol: str = "") -> str:
     elif exit_.get("stop_loss_pct"):
         exit_bits.append(f"-{exit_['stop_loss_pct']}% loss")
     if exit_.get("exit_time"):
-        exit_bits.append(f"{exit_['exit_time']} time exit")
+        weekday_txt = f" {exit_['exit_weekday'].title()}" if exit_.get("exit_weekday") else ""
+        exit_bits.append(f"{exit_['exit_time']}{weekday_txt} time exit")
     if exit_.get("exit_days_before_expiry"):
         d = exit_["exit_days_before_expiry"]
         exit_bits.append(f"{d} day{'s' if d != 1 else ''} before expiry")

@@ -788,6 +788,91 @@ def get_strategy_types():
                 },
             },
             {
+                "type": "NO_DECAY_WEEKLY_RATIO_SPREAD",
+                "description": (
+                    "Sell 1 lot ATM straddle (CE+PE), buy 2 lots OTM CE + 2 lots OTM PE ~200-300pts away — "
+                    "double-quantity long wings blunt theta in a flat market while a sharp break either way lets "
+                    "the 2x OTM long legs outrun the 1x ATM short and turn net profitable. Check the live payoff "
+                    "graph before each entry: if either side shows a loss in the non-moving zone, push that "
+                    "side's OTM strike out another 50-100pts until both sides flatten. There is still a real risk "
+                    "zone between the ATM and OTM strikes on a MODERATE (not flat, not sharp) move — this is "
+                    "inherent to the structure, not a bug, which is why stop_loss_capital_pct is on by default here."
+                ),
+                "risk_level": "medium",
+                "legs": [
+                    {"action": "SELL", "option_type": "CE", "strike_selection": {"mode": "ATM", "value": None}, "lots": 1},
+                    {"action": "SELL", "option_type": "PE", "strike_selection": {"mode": "ATM", "value": None}, "lots": 1},
+                    {"action": "BUY", "option_type": "CE", "strike_selection": {"mode": "OTM_POINTS", "value": 250}, "lots": 2},
+                    {"action": "BUY", "option_type": "PE", "strike_selection": {"mode": "OTM_POINTS", "value": 250}, "lots": 2},
+                ],
+                # "Active trading days, ~9:30am after opening volatility
+                # settles" — AT_TIME (not BEFORE_EXPIRY) since this isn't
+                # tied to being near expiry, just once per weekly cycle.
+                "entry": {"mode": "AT_TIME", "time": "09:30"},
+                "expiry": {"mode": "WEEKLY"},
+                "exit": {
+                    "take_profit_pct": None, "stop_loss_pct": None, "take_profit_amount": None,
+                    "take_profit_capital_pct": 40.0, "stop_loss_capital_pct": 8.0, "stop_loss_mode": "PCT",
+                    "exit_time": None, "exit_days_before_expiry": 0,
+                },
+            },
+            {
+                "type": "WEEKLY_HEDGED_PUT_RATIO",
+                "description": (
+                    "Fully-hedged put ratio (broken-wing butterfly): BUY 1 lot near-OTM PE (closer to spot) + "
+                    "SELL 2 lots further-OTM PE (the credit engine) + BUY 1 lot deep-OTM PE (tail hedge) — every "
+                    "leg hedged, so margin stays well below naked put-selling and the wide downside breakeven "
+                    "gives a high probability of profit. Base case (market flat/up): small theta-decay credit. "
+                    "Best case: the underlying drifts down toward the sold strike by expiry, where the profit "
+                    "peaks — this same 'peak' also cushions a late, sharp gamma spike that would hurt an "
+                    "unhedged put seller. Manual tuning each cycle (not automated by this engine): start with "
+                    "the sold strike far OTM for maximum safety, then as the week progresses with the market "
+                    "flat, you can shift the sold strike 50-100pts closer to spot to collect more credit — "
+                    "review the live payoff graph before doing so. Works the same way on a monthly expiry for "
+                    "a wider (but slower) breakeven cushion — just change Expiry to Monthly in the builder."
+                ),
+                "risk_level": "medium",
+                "legs": [
+                    {"action": "BUY", "option_type": "PE", "strike_selection": {"mode": "OTM_POINTS", "value": 150}, "lots": 1},
+                    {"action": "SELL", "option_type": "PE", "strike_selection": {"mode": "OTM_POINTS", "value": 750}, "lots": 2},
+                    {"action": "BUY", "option_type": "PE", "strike_selection": {"mode": "OTM_POINTS", "value": 1400}, "lots": 1},
+                ],
+                "entry": {"mode": "AT_TIME", "time": "09:30"},
+                "expiry": {"mode": "WEEKLY"},
+                "exit": {
+                    "take_profit_pct": None, "stop_loss_pct": None, "take_profit_amount": None,
+                    "take_profit_capital_pct": 1.0, "stop_loss_capital_pct": 1.0, "stop_loss_mode": "PCT",
+                    "exit_time": None, "exit_days_before_expiry": 0,
+                },
+            },
+            {
+                "type": "HAI_WEEKLY_1_3_2_CALL_RATIO",
+                "description": (
+                    "H.A.I. weekly call ratio spread: BUY 1 lot 200pt OTM CE + SELL 3 lots 400pt OTM CE + BUY 2 "
+                    "lots 600pt OTM CE — all-CALL, so a downside gap/crash carries no black-swan risk (capped at "
+                    "a small net credit/debit); the 1(bought)+2(bought)=3(sold) balance caps the upside too, "
+                    "unlike a naked ratio spread. Zero adjustments — strictly rule-based. Trades next week's "
+                    "Tuesday expiry (entered every Monday, avoiding an unintentionally short-DTE contract), "
+                    "exits by Friday 3:15pm regardless — no weekend carry, ever. Before entering each cycle: "
+                    "check the net credit collected stays under ~0.5-0.6% of deployed capital; if NIFTY VIX > 20 "
+                    "is inflating premiums, widen all three strike distances together (e.g. 400/800/1200pt) to "
+                    "bring it back down — the builder's Step 2 lets you adjust these like any other leg."
+                ),
+                "risk_level": "medium",
+                "legs": [
+                    {"action": "BUY", "option_type": "CE", "strike_selection": {"mode": "OTM_POINTS", "value": 200}, "lots": 1},
+                    {"action": "SELL", "option_type": "CE", "strike_selection": {"mode": "OTM_POINTS", "value": 400}, "lots": 3},
+                    {"action": "BUY", "option_type": "CE", "strike_selection": {"mode": "OTM_POINTS", "value": 600}, "lots": 2},
+                ],
+                "entry": {"mode": "AT_TIME", "time": "09:45", "weekday": "MON"},
+                "expiry": {"mode": "WEEKLY", "expiry_offset": 1},
+                "exit": {
+                    "take_profit_pct": None, "stop_loss_pct": None, "take_profit_amount": None,
+                    "take_profit_capital_pct": 1.0, "stop_loss_capital_pct": 1.0, "stop_loss_mode": "PCT",
+                    "exit_time": "15:15", "exit_weekday": "FRI", "exit_days_before_expiry": 0,
+                },
+            },
+            {
                 "type": "CUSTOM",
                 "description": "Start from a single leg and build any combination yourself.",
                 "risk_level": "variable",

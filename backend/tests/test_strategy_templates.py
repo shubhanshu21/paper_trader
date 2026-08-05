@@ -22,7 +22,16 @@ def _full_rules(legs):
 class TestStrategyTemplates:
     def test_returns_expected_template_types(self):
         types = {t["type"] for t in get_strategy_types()["strategy_types"]}
-        assert types == {"STRADDLE", "STRANGLE", "IRON_CONDOR", "BUTTERFLY", "OVERHEDGED_MONTHLY_IRON_FLY", "MONTHLY_BATMAN_1_3_2", "CUSTOM"}
+        assert types == {
+            "STRADDLE", "STRANGLE", "IRON_CONDOR", "BUTTERFLY", "OVERHEDGED_MONTHLY_IRON_FLY",
+            "MONTHLY_BATMAN_1_3_2", "NO_DECAY_WEEKLY_RATIO_SPREAD", "WEEKLY_HEDGED_PUT_RATIO",
+            "HAI_WEEKLY_1_3_2_CALL_RATIO", "CUSTOM",
+        }
+        # SMART_CONDOR is intentionally NOT a strategy-types template — it's a
+        # genuinely new engine (see engine_registry.py/smart_condor_schema.py),
+        # not a leg-combination shape the builder's template picker feeds legs
+        # into; it's created directly, same as SUPERTREND_INTRADAY/
+        # WEEKEND_GAP_COMBO/OTM_PUT_ROLL.
 
     def test_every_template_legs_pass_validate_rules(self):
         for template in get_strategy_types()["strategy_types"]:

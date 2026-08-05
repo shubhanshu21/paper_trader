@@ -110,14 +110,16 @@ function StatusPill({ status, big = false }: { status: string; big?: boolean }) 
 // strategies" spot below checks membership here instead of repeating a
 // strategy_type string each time, so a future new engine only needs
 // adding to this one set.
-const NON_LEG_STRATEGY_TYPES = new Set(["SUPERTREND_INTRADAY", "WEEKEND_GAP_COMBO", "OTM_PUT_ROLL"]);
+const NON_LEG_STRATEGY_TYPES = new Set(["SUPERTREND_INTRADAY", "WEEKEND_GAP_COMBO", "OTM_PUT_ROLL", "SMART_CONDOR", "GRAVITY"]);
 const isLegBased = (strategy: Pick<CustomStrategy, "strategy_type">): boolean => !NON_LEG_STRATEGY_TYPES.has(strategy.strategy_type);
 
-/** "Intraday"/"Weekend Combo"/"Roll" for the non-leg-based engines (see NON_LEG_STRATEGY_TYPES); otherwise the leg-based builder's own expiry cadence (defaults to Weekly, same convention as rule_schema.py/describe_rules). */
+/** "Intraday"/"Weekend Combo"/"Roll"/"Condor"/"Signal" for the non-leg-based engines (see NON_LEG_STRATEGY_TYPES); otherwise the leg-based builder's own expiry cadence (defaults to Weekly, same convention as rule_schema.py/describe_rules). */
 function cadenceLabel(strategy: Pick<CustomStrategy, "strategy_type" | "rules">): string {
   if (strategy.strategy_type === "SUPERTREND_INTRADAY") return "Intraday";
   if (strategy.strategy_type === "WEEKEND_GAP_COMBO") return "Weekend Combo";
   if (strategy.strategy_type === "OTM_PUT_ROLL") return "Roll";
+  if (strategy.strategy_type === "SMART_CONDOR") return "Condor";
+  if (strategy.strategy_type === "GRAVITY") return "Signal";
   return (strategy.rules?.expiry?.mode || "WEEKLY") === "MONTHLY" ? "Monthly" : "Weekly";
 }
 
@@ -129,6 +131,44 @@ function CadenceBadge({ strategy }: { strategy: Pick<CustomStrategy, "strategy_t
   return (
     <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold" style={{ backgroundColor: bg, color }}>
       {label}
+    </span>
+  );
+}
+
+/**
+ * "Buying" (net long/debit) vs "Selling" (net short/credit) — from total
+ * lots on BUY legs vs SELL legs (not live premium, which isn't available
+ * for a DRAFT strategy that's never been priced). PREMIUM_BAND legs are
+ * excluded from the count entirely — rule_schema.py's own contract
+ * defines that mode as "a deep-OTM insurance leg" (e.g. an over-hedge
+ * bought in a ₹40-70 premium band), so counting its lots as part of the
+ * core position would misclassify a lot-heavy-but-cheap hedge as the
+ * strategy's real bias (this is what a plain lot count gets wrong for
+ * the Over-Hedged Iron Fly template). A tie on the remaining legs (e.g.
+ * Iron Condor, Butterfly, the 1:3:2 ratio spreads) defaults to "Selling"
+ * since every tied template on this platform is actually a credit/
+ * theta-decay structure. Returns null for non-leg-based engines (no
+ * rules.legs shape to read at all — see NON_LEG_STRATEGY_TYPES).
+ */
+function strategyBias(strategy: Pick<CustomStrategy, "strategy_type" | "rules">): "BUYING" | "SELLING" | null {
+  if (!isLegBased(strategy) || !strategy.rules?.legs?.length) return null;
+  let buyLots = 0, sellLots = 0;
+  for (const leg of strategy.rules.legs) {
+    if (leg.strike_selection?.mode === "PREMIUM_BAND") continue;
+    if (leg.action === "BUY") buyLots += leg.lots;
+    else sellLots += leg.lots;
+  }
+  return buyLots > sellLots ? "BUYING" : "SELLING";
+}
+
+function BiasBadge({ strategy }: { strategy: Pick<CustomStrategy, "strategy_type" | "rules"> }) {
+  const bias = strategyBias(strategy);
+  if (!bias) return null;
+  const isBuying = bias === "BUYING";
+  return (
+    <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold"
+      style={{ backgroundColor: isBuying ? C.buyBg : C.sellBg, color: isBuying ? C.buyText : C.sellText }}>
+      {isBuying ? "Buying" : "Selling"}
     </span>
   );
 }
@@ -1108,52 +1148,56 @@ export default function StrategiesView({
         </button>
       </div>
 
-      {portfolioGreeks && portfolioGreeks.net && (
-        <div className="bg-white border rounded-xl overflow-hidden shadow-sm mb-6" style={{ borderColor: C.border2 }}>
-          <div className="px-5 py-3.5 flex items-center gap-6 flex-wrap">
-            <h3 className="text-xs font-semibold uppercase tracking-wide text-gray-500 flex items-center gap-2 shrink-0">
-              <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse" /> Portfolio Greeks
-            </h3>
-            <div className="flex items-center gap-5 flex-wrap">
-              {([
-                ["Delta", portfolioGreeks.net.delta],
-                ["Gamma", portfolioGreeks.net.gamma],
-                ["Theta", portfolioGreeks.net.theta],
-                ["Vega", portfolioGreeks.net.vega],
-              ] as [string, number][]).map(([label, val]) => (
-                <div key={label} className="text-xs">
-                  <span className="text-gray-400">Net {label}</span>{" "}
-                  <span className="font-semibold" style={{ color: val > 0 ? C.green : val < 0 ? C.red : C.text }}>{val}</span>
+      {((portfolioGreeks && portfolioGreeks.net) || (portfolioMargin && (portfolioMargin.paper.open_legs > 0 || portfolioMargin.live.open_legs > 0))) && (
+        <div className="flex items-stretch gap-4 mb-6 flex-wrap">
+          {portfolioGreeks && portfolioGreeks.net && (
+            <div className="flex-1 min-w-[320px] bg-white border rounded-xl overflow-hidden shadow-sm" style={{ borderColor: C.border2 }}>
+              <div className="px-5 py-3.5 flex items-center gap-6 flex-wrap">
+                <h3 className="text-xs font-semibold uppercase tracking-wide text-gray-500 flex items-center gap-2 shrink-0">
+                  <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse" /> Portfolio Greeks
+                </h3>
+                <div className="flex items-center gap-5 flex-wrap">
+                  {([
+                    ["Delta", portfolioGreeks.net.delta],
+                    ["Gamma", portfolioGreeks.net.gamma],
+                    ["Theta", portfolioGreeks.net.theta],
+                    ["Vega", portfolioGreeks.net.vega],
+                  ] as [string, number][]).map(([label, val]) => (
+                    <div key={label} className="text-xs">
+                      <span className="text-gray-400">Net {label}</span>{" "}
+                      <span className="font-semibold" style={{ color: val > 0 ? C.green : val < 0 ? C.red : C.text }}>{val}</span>
+                    </div>
+                  ))}
                 </div>
-              ))}
+                <div className="text-[11px] text-gray-400 ml-auto shrink-0">
+                  {portfolioGreeks.open_legs_count} open leg{portfolioGreeks.open_legs_count === 1 ? "" : "s"} across {portfolioGreeks.by_strategy.length} strateg{portfolioGreeks.by_strategy.length === 1 ? "y" : "ies"}
+                </div>
+              </div>
             </div>
-            <div className="text-[11px] text-gray-400 ml-auto shrink-0">
-              {portfolioGreeks.open_legs_count} open leg{portfolioGreeks.open_legs_count === 1 ? "" : "s"} across {portfolioGreeks.by_strategy.length} strateg{portfolioGreeks.by_strategy.length === 1 ? "y" : "ies"}
-            </div>
-          </div>
-        </div>
-      )}
+          )}
 
-      {portfolioMargin && (portfolioMargin.paper.open_legs > 0 || portfolioMargin.live.open_legs > 0) && (
-        <div className="bg-white border rounded-xl overflow-hidden shadow-sm mb-6" style={{ borderColor: C.border2 }}>
-          <div className="px-5 py-3.5 flex items-center gap-6 flex-wrap">
-            <h3 className="text-xs font-semibold uppercase tracking-wide text-gray-500 flex items-center gap-2 shrink-0">
-              <Wallet size={12} /> Portfolio Margin
-            </h3>
-            <div className="flex items-center gap-5 flex-wrap">
-              {([["Paper", portfolioMargin.paper], ["Live", portfolioMargin.live]] as [string, { margin_required: number | null; open_legs: number }][])
-                .filter(([, pool]) => pool.open_legs > 0)
-                .map(([label, pool]) => (
-                  <div key={label} className="text-xs">
-                    <span className="text-gray-400">{label}</span>{" "}
-                    <span className="font-semibold" style={{ color: C.text }}>
-                      {pool.margin_required != null ? `₹${inr(pool.margin_required, 0)}` : "—"}
-                    </span>
-                    <span className="text-gray-400"> ({pool.open_legs} leg{pool.open_legs === 1 ? "" : "s"})</span>
-                  </div>
-                ))}
+          {portfolioMargin && (portfolioMargin.paper.open_legs > 0 || portfolioMargin.live.open_legs > 0) && (
+            <div className="flex-1 min-w-[320px] bg-white border rounded-xl overflow-hidden shadow-sm" style={{ borderColor: C.border2 }}>
+              <div className="px-5 py-3.5 flex items-center gap-6 flex-wrap">
+                <h3 className="text-xs font-semibold uppercase tracking-wide text-gray-500 flex items-center gap-2 shrink-0">
+                  <Wallet size={12} /> Portfolio Margin
+                </h3>
+                <div className="flex items-center gap-5 flex-wrap">
+                  {([["Paper", portfolioMargin.paper], ["Live", portfolioMargin.live]] as [string, { margin_required: number | null; open_legs: number }][])
+                    .filter(([, pool]) => pool.open_legs > 0)
+                    .map(([label, pool]) => (
+                      <div key={label} className="text-xs">
+                        <span className="text-gray-400">{label}</span>{" "}
+                        <span className="font-semibold" style={{ color: C.text }}>
+                          {pool.margin_required != null ? `₹${inr(pool.margin_required, 0)}` : "—"}
+                        </span>
+                        <span className="text-gray-400"> ({pool.open_legs} leg{pool.open_legs === 1 ? "" : "s"})</span>
+                      </div>
+                    ))}
+                </div>
+              </div>
             </div>
-          </div>
+          )}
         </div>
       )}
 
@@ -1293,6 +1337,7 @@ export default function StrategiesView({
                       <h2 className="text-xl font-semibold text-gray-800">{selectedStrategy.name}</h2>
                       <StatusPill status={selectedStrategy.status} big />
                       <CadenceBadge strategy={selectedStrategy} />
+                      <BiasBadge strategy={selectedStrategy} />
                     </div>
                     <p className="text-sm text-gray-500 mt-1.5">{selectedStrategy.description || "No description"}</p>
                     <div className="flex items-center gap-1.5 mt-2.5">
@@ -1601,14 +1646,8 @@ export default function StrategiesView({
                                 <>
                                 {r.payoff_curve && r.payoff_curve.length >= 2 && r.spot_price != null && (
                                   <div className="mb-4">
-                                    <div className="flex items-center justify-between mb-2">
-                                      <div className="text-[11px] text-gray-400">{symbol} · Payoff Diagram</div>
-                                      <div className="flex items-center gap-1.5 text-[10px] text-gray-400">
-                                        <span className="w-2.5 h-1.5 inline-block bg-gray-700 rounded" /> Expiry
-                                        <span className="w-2.5 h-1.5 inline-block bg-blue-500 rounded ml-2" style={{ borderStyle: "dashed" }} /> Pre-Expiry (T+0)
-                                      </div>
-                                    </div>
                                     <PayoffDiagramChart
+                                      symbol={symbol}
                                       curve={r.payoff_curve}
                                       spotPrice={r.spot_price}
                                       breakevens={r.breakevens_detail?.map((b) => b.price) ?? r.breakevens}

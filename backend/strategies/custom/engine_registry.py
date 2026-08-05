@@ -20,9 +20,17 @@ smaller table since the scheduler only ever needs to route TWO of these
 three fields' worth of behavior (entry/exit), not description/backtest.
 """
 from strategies.custom.combo_schema import describe_combo_rules, validate_combo_rules
+from strategies.custom.gravity_schema import describe_gravity_rules, validate_gravity_rules
 from strategies.custom.intraday_schema import describe_intraday_rules, validate_intraday_rules
-from strategies.custom.otm_put_roll_schema import describe_otm_put_roll_rules, validate_otm_put_roll_rules
+from strategies.custom.otm_put_roll_schema import (
+    describe_otm_put_roll_rules,
+    validate_otm_put_roll_rules,
+)
 from strategies.custom.rule_schema import describe_rules, validate_rules
+from strategies.custom.smart_condor_schema import (
+    describe_smart_condor_rules,
+    validate_smart_condor_rules,
+)
 
 _DEFAULT_ENGINE = {
     "validate": validate_rules,
@@ -60,6 +68,27 @@ _ENGINE_REGISTRY: dict[str, dict] = {
             "Backtesting isn't available for this strategy yet — it needs a multi-roll simulation "
             "(replacing one leg with another mid-cycle, potentially several times) the backtest engine "
             "doesn't have. Paper trading works today and is the way to validate it for now."
+        ),
+    },
+    "SMART_CONDOR": {
+        "validate": validate_smart_condor_rules,
+        "describe": describe_smart_condor_rules,
+        "backtest_supported": False,
+        "backtest_unavailable_reason": (
+            "Backtesting isn't available for this strategy yet — it needs a live cross-leg premium-ratio "
+            "simulation (swapping a side's short+hedge legs mid-cycle, up to twice) the backtest engine "
+            "doesn't have. Paper trading works today and is the way to validate it for now."
+        ),
+    },
+    "GRAVITY": {
+        "validate": validate_gravity_rules,
+        "describe": describe_gravity_rules,
+        "backtest_supported": False,
+        "backtest_unavailable_reason": (
+            "Backtesting isn't available for this strategy yet — it needs a stateful daily-close signal "
+            "(a Camarilla level breach, then a later close back inside it) plus a live-tracked strike "
+            "extreme the backtest engine doesn't simulate. Paper trading works today and is the way to "
+            "validate it for now."
         ),
     },
 }

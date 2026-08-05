@@ -385,7 +385,15 @@ sudo cp backend/deploy/automate-nginx.conf /etc/nginx/sites-available/automate
 sudo ln -s /etc/nginx/sites-available/automate /etc/nginx/sites-enabled/automate
 sudo nginx -t && sudo systemctl reload nginx
 ```
-Open **http://127.0.0.1:8090** (or whatever port `deploy/automate-nginx.conf` was set to). Redeploying after a code change: `git pull` (or edit), then `cd frontend && npm run build` for frontend-only changes, or `sudo systemctl restart automate-api` for backend changes — the daemon is unaffected by either, per the `KillMode=process` fix above.
+Open **http://127.0.0.1:8090** (or whatever port `backend/deploy/automate-nginx.conf` was set to). Redeploying after a code change: `git pull` (or edit), then `cd frontend && npm run build` for frontend-only changes, or `sudo systemctl restart automate-api` for backend changes — the daemon is unaffected by either, per the `KillMode=process` fix above.
+
+If `backend/deploy/automate-api.service` itself changed (e.g. after moving where the checkout lives, or after a layout change like the `backend/` restructure), the installed unit at `/etc/systemd/system/` doesn't auto-update — re-copy it in and reload:
+```bash
+sudo cp backend/deploy/automate-api.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl restart automate-api
+sudo systemctl status automate-api --no-pager   # confirm it's not crash-looping (nginx returns 504 Gateway Timeout until it is)
+```
 
 Bound to `127.0.0.1` only, by design, both in nginx's `listen` directive and uvicorn's `--host` — this is meant to be reached over SSH port-forwarding or from the same machine, never exposed on a public interface. No login/auth layer exists; don't put this behind a public IP without adding one.
 

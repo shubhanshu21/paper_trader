@@ -190,6 +190,58 @@ def find_monthly_expiries(
     return [d.isoformat() for d in sorted(d for d in by_month.values() if d >= today)]
 
 
+def find_weekly_expiries(
+    expiries: list[str], fmt: str = "%Y-%m-%d", reference_date: date | None = None,
+) -> list[str]:
+    """
+    Every upcoming expiry (weekly OR monthly — on an index like NIFTY every
+    monthly expiry is also that week's weekly one, so no separate filtering
+    is needed), sorted ascending — index 0 is "this week's" (nearest),
+    index 1 is "next week's", etc. Mirrors find_monthly_expiries()'s
+    index-addressable shape, for strategies that deliberately skip the
+    nearest weekly for a further-out one (e.g. a fixed days-to-expiry
+    target rather than always trading the soonest contract).
+
+    Returns [] if there are no upcoming expiries at all.
+    """
+    today = reference_date if reference_date is not None else date.today()
+    parsed: list[date] = []
+    for exp_str in expiries:
+        try:
+            parsed.append(datetime.strptime(exp_str, fmt).date())
+        except ValueError:
+            log.warning("Skipping unparseable expiry string: '%s'", exp_str)
+    return sorted({d.isoformat() for d in parsed if d >= today})
+
+
+def find_expiry_by_type_offset(
+    expiries: list[str], mode: str, offset: int = 0, fmt: str = "%Y-%m-%d", reference_date: date | None = None,
+) -> str | None:
+    """
+    Like find_nearest_expiry_by_type(), but with an optional `offset` to
+    deliberately skip the nearest N expiries of this type (0 = nearest,
+    same result as find_nearest_expiry_by_type; 1 = the one after that,
+    etc.) — for strategies that always trade a specific week/month out
+    rather than whatever's soonest (e.g. "next week's" contract entered
+    every Monday, to avoid an unintentionally short-DTE entry on a Monday
+    that happens to fall right before this week's own expiry).
+
+    Delegates to find_weekly_expiries/find_monthly_expiries (both already
+    index-addressable ascending lists) rather than reimplementing the
+    grouping logic — offset=0 against either list is exactly what
+    find_nearest_expiry_by_type already returns for that mode.
+    """
+    if mode == "WEEKLY":
+        candidates = find_weekly_expiries(expiries, fmt=fmt, reference_date=reference_date)
+    elif mode == "MONTHLY":
+        candidates = find_monthly_expiries(expiries, fmt=fmt, reference_date=reference_date)
+    else:
+        return None
+    if offset >= len(candidates):
+        return None
+    return candidates[offset]
+
+
 # ---------------------------------------------------------------------------
 # Option chain parser
 # ---------------------------------------------------------------------------

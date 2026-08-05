@@ -26,21 +26,24 @@ net and periodic P&L push every CUSTOM strategy already had.
 import asyncio
 import time
 
-from compliance.sebi_rules import assert_market_is_open
-from db.engine import SessionLocal
-from db.models import CustomStrategy
-from utils.logger import get_logger
-
 # Reused as-is — NOT reimplemented — from each engine's own module.
 from api.custom_strategy_scheduler import (
     _get_brokers,
     _reconcile_live_positions,
     _send_pnl_updates,
+)
+from api.custom_strategy_scheduler import (
     _tick_one_strategy as _tick_custom,
 )
+from api.gravity_engine import _tick_one_strategy as _tick_gravity
 from api.intraday_indicator_scheduler import _tick_one_strategy as _tick_intraday
 from api.otm_put_roll_engine import _tick_one_strategy as _tick_otm_put_roll
+from api.smart_condor_engine import _tick_one_strategy as _tick_smart_condor
 from api.weekend_combo_scheduler import _tick_one_strategy as _tick_combo
+from compliance.sebi_rules import assert_market_is_open
+from db.engine import SessionLocal
+from db.models import CustomStrategy
+from utils.logger import get_logger
 
 log = get_logger(__name__)
 
@@ -66,6 +69,8 @@ _TICK_FUNCS = {
     "SUPERTREND_INTRADAY": _tick_intraday,
     "WEEKEND_GAP_COMBO": _tick_combo,
     "OTM_PUT_ROLL": _tick_otm_put_roll,
+    "SMART_CONDOR": _tick_smart_condor,
+    "GRAVITY": _tick_gravity,
 }
 
 

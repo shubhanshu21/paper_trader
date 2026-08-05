@@ -297,7 +297,7 @@ def _set_last_entered_expiry(strategy: CustomStrategy, symbol: str, mode: str, e
     strategy.last_entry_date = json.dumps(data)
 
 
-def _resolve_current_expiry(broker, symbol: str, mode: str) -> str | None:
+def _resolve_current_expiry(broker, symbol: str, mode: str, offset: int = 0) -> str | None:
     """
     Lightweight pre-flight expiry resolution for ONE expiry mode — used
     ONLY to decide whether this symbol's `mode`-cycle has already been
@@ -317,7 +317,7 @@ def _resolve_current_expiry(broker, symbol: str, mode: str) -> str | None:
     if mode == "EQUITY":
         return date.today().isoformat()
 
-    from utils.option_utils import find_nearest_expiry_by_type
+    from utils.option_utils import find_expiry_by_type_offset, find_nearest_expiry_by_type
 
     try:
         instrument_key = broker.resolve_instrument_key(symbol)
@@ -325,7 +325,10 @@ def _resolve_current_expiry(broker, symbol: str, mode: str) -> str | None:
         if not expiries:
             return None
         now = broker.get_current_time()
-        return find_nearest_expiry_by_type(expiries, mode, reference_date=now.date() if now else None)
+        reference_date = now.date() if now else None
+        if offset:
+            return find_expiry_by_type_offset(expiries, mode, offset, reference_date=reference_date)
+        return find_nearest_expiry_by_type(expiries, mode, reference_date=reference_date)
     except Exception as exc:
         log.warning("custom_strategy_scheduler: could not pre-resolve %s expiry for %s: %s", mode, symbol, exc)
         return None
@@ -448,8 +451,11 @@ def _try_entry(db, strategy: CustomStrategy, broker) -> None:
 
     if entry_mode == "AT_TIME":
         target = entry_rule.get("time")
-        now_hhmm = datetime.now(_IST).strftime("%H:%M")
-        if now_hhmm < target:
+        now = datetime.now(_IST)
+        if now.strftime("%H:%M") < target:
+            return
+        entry_weekday = entry_rule.get("weekday")
+        if entry_weekday and _WEEKDAY_NUMS.get(entry_weekday) != now.weekday():
             return
 
     # Fetch all open positions for this strategy
@@ -461,6 +467,15 @@ def _try_entry(db, strategy: CustomStrategy, broker) -> None:
     # {expiry_mode: [leg_index, ...]} — one group for a normal (single-
     # expiry) strategy, 2+ for a calendar spread. See _leg_groups().
     groups = _leg_groups(rules)
+
+    # expiry_offset only applies to the strategy's own default expiry mode
+    # — a calendar-spread override group always resolves its nearest (0).
+    # Mirrors rule_strategy.py::_resolve_expiries_and_chains exactly, so
+    # this pre-flight "already traded this cycle?" check and the real
+    # order-placing run always agree on which expiry is "current".
+    default_expiry_rule = rules.get("expiry") or {}
+    default_mode = default_expiry_rule.get("mode", "WEEKLY")
+    default_offset = default_expiry_rule.get("expiry_offset") or 0
 
     for symbol in symbols:
         # CONDITIONAL entry is per-SYMBOL (an MA crossover or IV rank is
@@ -486,7 +501,8 @@ def _try_entry(db, strategy: CustomStrategy, broker) -> None:
             # early exit (TP/SL hit) must not trigger a same-cycle
             # re-entry on the same soon-to-expire contract; wait for the
             # resolved nearest expiry to actually roll over to the next one.
-            current_expiry = _resolve_current_expiry(broker, symbol, mode)
+            offset = default_offset if mode == default_mode else 0
+            current_expiry = _resolve_current_expiry(broker, symbol, mode, offset)
             if current_expiry is None:
                 continue  # Couldn't resolve (broker hiccup) — retry next tick, don't mark anything.
             if _get_last_entered_expiry(strategy, symbol, mode) == current_expiry:
@@ -786,6 +802,7 @@ def _try_exit(db, strategy: CustomStrategy, broker) -> None:
     stop_loss_mode = exit_rule.get("stop_loss_mode") or "PCT"
     stop_loss_pct = exit_rule.get("stop_loss_pct")
     exit_time = exit_rule.get("exit_time")
+    exit_weekday = exit_rule.get("exit_weekday")
     exit_days_before_expiry = exit_rule.get("exit_days_before_expiry", 0)
     # Real broker margin at entry — the denominator for take_profit_capital_pct/
     # stop_loss_capital_pct (see rule_schema.py). Only meaningful for the
@@ -868,7 +885,8 @@ def _try_exit(db, strategy: CustomStrategy, broker) -> None:
         #    (a leg with its own trailing stop shouldn't stay open past
         #    the strategy's own expiry cutoff).
         hard_stop = None
-        if exit_time and datetime.now(_IST).strftime("%H:%M") >= exit_time:
+        now = datetime.now(_IST)
+        if exit_time and now.strftime("%H:%M") >= exit_time and (not exit_weekday or _WEEKDAY_NUMS.get(exit_weekday) == now.weekday()):
             hard_stop = "TIME_EXIT"
         # exit_days_before_expiry=0 is a real, documented, DELIBERATE
         # value (rule_schema.py: "exit exactly on expiry day, not

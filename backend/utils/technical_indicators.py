@@ -135,3 +135,29 @@ def pivot_points(prev_high: float, prev_low: float, prev_close: float) -> dict:
     r3 = prev_high + 2 * (pp - prev_low)
     s3 = prev_low - 2 * (prev_high - pp)
     return {"pp": pp, "r1": r1, "s1": s1, "r2": r2, "s2": s2, "r3": r3, "s3": s3}
+
+
+def camarilla_pivot_points(prev_high: float, prev_low: float, prev_close: float) -> dict:
+    """
+    Camarilla pivot points — a DIFFERENT formula from the classic
+    pivot_points() above (both take the same prev_high/prev_low/prev_close
+    inputs, but R3/S3 mean different price levels under each). Used by the
+    Gravity strategy's (strategies/custom/gravity_schema.py) fakeout-
+    reversal signal, which trades price breaching R3/S3 and closing back
+    inside — Camarilla's R3/S3 sit noticeably tighter around `prev_close`
+    than the classic formula's, which is the whole point of using this
+    variant for a mean-reversion/fakeout read rather than a breakout one.
+    Only r3/s3 are used by that strategy; r1/r2/s1/s2 are returned for
+    completeness (the standard Camarilla set), same convention as
+    pivot_points() above.
+    """
+    rng = prev_high - prev_low
+    r1 = prev_close + rng * 1.1 / 12
+    r2 = prev_close + rng * 1.1 / 6
+    r3 = prev_close + rng * 1.1 / 4
+    r4 = prev_close + rng * 1.1 / 2
+    s1 = prev_close - rng * 1.1 / 12
+    s2 = prev_close - rng * 1.1 / 6
+    s3 = prev_close - rng * 1.1 / 4
+    s4 = prev_close - rng * 1.1 / 2
+    return {"r1": r1, "r2": r2, "r3": r3, "r4": r4, "s1": s1, "s2": s2, "s3": s3, "s4": s4}

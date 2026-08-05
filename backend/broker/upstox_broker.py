@@ -323,28 +323,6 @@ class UpstoxBroker(BaseBroker):
 
     def get_historical_candles(self, instrument_key: str, unit: str, interval: int, to_date: str) -> list[dict] | None:
         """
-        Real historical OHLC candles via Upstox's expanded-interval v3
-        history API (GET /v3/historical-candle/{instrumentKey}/{unit}/
-        {interval}/{toDate}) — see BaseBroker.get_historical_candles for
-        the None-means-unavailable contract. Each candle row from the SDK
-        is [timestamp, open, high, low, close, volume, oi]; oi is dropped
-        (irrelevant for an index/underlying's own price action).
-        """
-        try:
-            response = self._history_v3_api.get_historical_candle_data(instrument_key, unit, interval, to_date)
-            if response.status != "success" or response.data is None:
-                log.warning("UpstoxBroker: historical candle API returned no data for %s.", instrument_key)
-                return None
-            return [
-                {"timestamp": row[0], "open": row[1], "high": row[2], "low": row[3], "close": row[4], "volume": row[5]}
-                for row in response.data.candles
-            ]
-        except Exception as exc:
-            log.warning("UpstoxBroker: could not fetch historical candles for %s: %s", instrument_key, exc)
-            return None
-
-    def get_historical_candles(self, instrument_key: str, unit: str, interval: int, to_date: str) -> list[dict] | None:
-        """
         Real historical OHLC candles via Upstox's v3 History API (GET
         /v3/historical-candle/{instrumentKey}/{unit}/{interval}/{toDate})
         — "expanded interval options" is what lets `unit="minutes",
