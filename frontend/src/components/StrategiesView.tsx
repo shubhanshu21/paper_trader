@@ -1819,6 +1819,26 @@ export default function StrategiesView({
                         );
                       })}
                     </tbody>
+                    <tfoot>
+                      {(() => {
+                        const totalPnl =
+                          liveOpenLegs.reduce((sum, leg) => sum + (leg.pnl ?? 0), 0) +
+                          closedLegs.reduce((sum, leg) => {
+                            const sign = leg.transaction_type === "SELL" ? 1 : -1;
+                            const pnl = leg.exit_price != null ? (leg.entry_price - leg.exit_price) * leg.quantity * sign : 0;
+                            return sum + pnl;
+                          }, 0);
+                        return (
+                          <tr className="border-t-2 text-xs" style={{ borderColor: C.border2, background: C.tableHeaderBg }}>
+                            <td className="px-4 py-2.5 font-semibold text-gray-600" colSpan={4}>Total</td>
+                            <td className="px-4 py-2.5 text-right font-bold" style={{ color: totalPnl >= 0 ? C.green : C.red }}>
+                              {totalPnl < 0 ? "-" : ""}₹{Math.abs(totalPnl).toFixed(2)}
+                            </td>
+                            <td className="px-4 py-2.5" colSpan={3}></td>
+                          </tr>
+                        );
+                      })()}
+                    </tfoot>
                   </table>
                 </div>
               </div>
