@@ -103,16 +103,29 @@ function StatusPill({ status, big = false }: { status: string; big?: boolean }) 
   );
 }
 
-/** "Intraday" for SUPERTREND_INTRADAY (see strategies/custom/intraday_schema.py — no expiry.mode concept at all, it's same-day only); otherwise the leg-based builder's own expiry cadence (defaults to Weekly, same convention as rule_schema.py/describe_rules). */
+// strategy_types with their OWN schema/executor/scheduler (see e.g.
+// strategies/custom/intraday_schema.py / combo_schema.py's module
+// docstrings for why) — no legs/entry/exit rules shape, no payoff/margin
+// preview, no backtest support. Every "hide this for non-leg-based
+// strategies" spot below checks membership here instead of repeating a
+// strategy_type string each time, so a future new engine only needs
+// adding to this one set.
+const NON_LEG_STRATEGY_TYPES = new Set(["SUPERTREND_INTRADAY", "WEEKEND_GAP_COMBO", "OTM_PUT_ROLL"]);
+const isLegBased = (strategy: Pick<CustomStrategy, "strategy_type">): boolean => !NON_LEG_STRATEGY_TYPES.has(strategy.strategy_type);
+
+/** "Intraday"/"Weekend Combo"/"Roll" for the non-leg-based engines (see NON_LEG_STRATEGY_TYPES); otherwise the leg-based builder's own expiry cadence (defaults to Weekly, same convention as rule_schema.py/describe_rules). */
 function cadenceLabel(strategy: Pick<CustomStrategy, "strategy_type" | "rules">): string {
   if (strategy.strategy_type === "SUPERTREND_INTRADAY") return "Intraday";
+  if (strategy.strategy_type === "WEEKEND_GAP_COMBO") return "Weekend Combo";
+  if (strategy.strategy_type === "OTM_PUT_ROLL") return "Roll";
   return (strategy.rules?.expiry?.mode || "WEEKLY") === "MONTHLY" ? "Monthly" : "Weekly";
 }
 
 function CadenceBadge({ strategy }: { strategy: Pick<CustomStrategy, "strategy_type" | "rules"> }) {
   const label = cadenceLabel(strategy);
-  const color = label === "Intraday" ? "#7c3aed" : C.muted;
-  const bg = label === "Intraday" ? "#f3ecfe" : "#f1f2f4";
+  const isCustomEngine = !isLegBased(strategy);
+  const color = isCustomEngine ? "#7c3aed" : C.muted;
+  const bg = isCustomEngine ? "#f3ecfe" : "#f1f2f4";
   return (
     <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold" style={{ backgroundColor: bg, color }}>
       {label}
@@ -688,7 +701,7 @@ export default function StrategiesView({
   const [backtestRuns, setBacktestRuns] = useState<BacktestRunSummary[]>([]);
   const [compareRunIds, setCompareRunIds] = useState<number[]>([]);
   const [strategiesPage, setStrategiesPage] = useState(1);
-  const STRATEGIES_PER_PAGE = 5;
+  const STRATEGIES_PER_PAGE = 10;
   const [liveGreeks, setLiveGreeks] = useState<LiveGreeksResponse | null>(null);
   const [expiryDatePreview, setExpiryDatePreview] = useState<string | null>(null);
   const [portfolioGreeks, setPortfolioGreeks] = useState<PortfolioGreeksResponse | null>(null);
@@ -789,10 +802,10 @@ export default function StrategiesView({
     setPayoff(null);
     setIvShift(0);
     setDaysRemaining(null);
-    // SUPERTREND_INTRADAY strategies have a completely different rules
-    // shape (no legs/entry/exit — see strategies/custom/intraday_schema.py)
-    // that this payoff calculator doesn't apply to at all.
-    if (selectedStrategy && selectedStrategy.rules && selectedStrategy.strategy_type !== "SUPERTREND_INTRADAY") fetchPayoff(selectedStrategy);
+    // Non-leg-based strategies (see NON_LEG_STRATEGY_TYPES) have a
+    // completely different rules shape (no legs/entry/exit) that this
+    // payoff calculator doesn't apply to at all.
+    if (selectedStrategy && selectedStrategy.rules && isLegBased(selectedStrategy)) fetchPayoff(selectedStrategy);
   }, [selectedStrategy]);
 
   const [margin, setMargin] = useState<MarginResponse | null>(null);
@@ -812,7 +825,7 @@ export default function StrategiesView({
 
   useEffect(() => {
     setMargin(null);
-    if (selectedStrategy && selectedStrategy.rules && selectedStrategy.strategy_type !== "SUPERTREND_INTRADAY") fetchMargin(selectedStrategy);
+    if (selectedStrategy && selectedStrategy.rules && isLegBased(selectedStrategy)) fetchMargin(selectedStrategy);
   }, [selectedStrategy]);
 
   useEffect(() => {
@@ -1162,7 +1175,7 @@ export default function StrategiesView({
               <Layers size={14} style={{ color: C.muted }} />
               <h2 className="text-xs font-semibold uppercase tracking-wide text-gray-500">My Strategies</h2>
             </div>
-            <div className="divide-y" style={{ borderColor: C.border }}>
+            <div className="divide-y overflow-y-auto" style={{ borderColor: C.border, maxHeight: 640 }}>
               {strategies.length === 0 ? (
                 <div className="px-5 py-10 text-center">
                   <Layers size={28} className="mx-auto mb-3" style={{ color: C.border2 }} />
@@ -1294,10 +1307,10 @@ export default function StrategiesView({
                 <div className="flex items-center gap-2 flex-wrap mt-4 pt-4 border-t" style={{ borderColor: C.border }}>
                   {/* Backtest button — visible on DRAFT (first run), BACKTESTING (re-run),
                       PAPER_TRADING, and PAUSED (re-run without stopping the strategy).
-                      Hidden entirely for SUPERTREND_INTRADAY/COMMODITY — POST /{id}/backtest
+                      Hidden entirely for non-leg-based strategies/COMMODITY — POST /{id}/backtest
                       always rejects those (see routes_custom_strategies.py), so showing a
                       button that can only ever error isn't useful. */}
-                  {selectedStrategy.strategy_type !== "SUPERTREND_INTRADAY" && selectedStrategy.instrument_type !== "COMMODITY" &&
+                  {isLegBased(selectedStrategy) && selectedStrategy.instrument_type !== "COMMODITY" &&
                     (canTransitionTo(selectedStrategy.status, "BACKTESTING") ||
                     ["PAPER_TRADING", "PAUSED"].includes(selectedStrategy.status)) && (
                     <button onClick={() => setBacktestRangeTarget(selectedStrategy)} disabled={backtesting}
@@ -1326,10 +1339,10 @@ export default function StrategiesView({
                   )}
                   {canTransitionTo(selectedStrategy.status, "PAPER_TRADING") &&
                     // Backtest-first only applies where backtesting is actually
-                    // possible — SUPERTREND_INTRADAY/COMMODITY skip it, same
+                    // possible — non-leg-based strategies/COMMODITY skip it, same
                     // exception routes_custom_strategies.py's PATCH /status enforces.
                     (selectedStrategy.status !== "DRAFT" || selectedStrategy.backtest_return_pct != null ||
-                      selectedStrategy.strategy_type === "SUPERTREND_INTRADAY" || selectedStrategy.instrument_type === "COMMODITY") && (
+                      !isLegBased(selectedStrategy) || selectedStrategy.instrument_type === "COMMODITY") && (
                     <button onClick={() => handleStatusChange(selectedStrategy, "PAPER_TRADING")}
                       className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-semibold transition-colors focus:outline-none hover:opacity-80"
                       style={{ backgroundColor: "#e6f4ea", color: C.green }}>
@@ -1497,7 +1510,7 @@ export default function StrategiesView({
                   />
                 )}
 
-                {selectedStrategy.rules && selectedStrategy.strategy_type !== "SUPERTREND_INTRADAY" && (
+                {selectedStrategy.rules && isLegBased(selectedStrategy) && (
                   <div>
                     <div className="flex items-center gap-2 mb-3">
                       <FileText size={14} style={{ color: C.muted }} />

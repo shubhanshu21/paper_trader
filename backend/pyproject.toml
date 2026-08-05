@@ -1,0 +1,46 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "backend"
+version = "0.1.0"
+description = "Multi-broker SEBI-compliant options trading bot — backtest, paper, and live."
+requires-python = ">=3.11"
+# Actual runtime dependencies are pinned in requirements.txt (pip install
+# -r requirements.txt), not duplicated here — this file exists only to
+# make every top-level directory below (api/, db/, strategies/, utils/,
+# broker/, compliance/, config/, cli/, auth/, backtest/) importable as
+# real packages via `pip install -e .`, matching how every internal
+# module now imports (`from config import ...`, `from db.engine import
+# ...` etc. — bare, no wrapping package name) instead of relying on
+# sys.path hacks or always running from the exact repo-root directory.
+#
+# Flat layout, not src-layout: pyproject.toml and the package
+# directories are SIBLINGS, both directly inside backend/ (no further
+# automate/src wrapper) — `where = ["."]` discovers each of those 10
+# directories as its own top-level package (every non-package directory
+# here — tests/, scripts/, data/, cache/, logs/, docs/, deploy/ — has no
+# __init__.py, so find() skips them automatically).
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["api*", "auth*", "backtest*", "broker*", "cli*", "compliance*", "config*", "db*", "strategies*", "utils*"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I", "UP", "B", "C4", "SIM", "RUF"]
+ignore = [
+    "B008",    # FastAPI's Depends()-in-default-argument pattern
+    "E402",    # deferred/local imports are a deliberate pattern here (circular-import avoidance)
+    "RUF001",  # intentional prose typography (₹, – en-dash) — not typos
+    "RUF002",
+    "RUF003",
+    "RUF012",  # these are all static, never-instantiated config/lookup classes
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["api", "auth", "backtest", "broker", "cli", "compliance", "config", "db", "strategies", "utils"]

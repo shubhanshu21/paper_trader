@@ -1,0 +1,5 @@
+Metadata-Version: 2.4
+Name: backend
+Version: 0.1.0
+Summary: Multi-broker SEBI-compliant options trading bot — backtest, paper, and live.
+Requires-Python: >=3.11

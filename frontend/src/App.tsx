@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { Outlet, useNavigate } from 'react-router-dom';
+import { Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { useDispatch, useSelector } from 'react-redux';
 import { api, wsUrl } from './api';
 import { loginSuccess, logout } from './store/slices/authSlice';
@@ -21,6 +21,12 @@ interface ActiveOrder {
 export default function App() {
   const dispatch = useDispatch<AppDispatch>();
   const navigate = useNavigate();
+  const location = useLocation();
+  // Strategies has its own left column (the strategy list — see
+  // StrategiesView.tsx) that takes over this same left-edge position once
+  // the watchlist is out of the way, rather than a third column competing
+  // for space with it.
+  const showWatchlist = !location.pathname.startsWith('/strategies');
   const { isAuthenticated, currentUser } = useSelector((state: RootState) => state.auth);
   const [authEnabled, setAuthEnabled] = useState<boolean | null>(null);
   const [loading, setLoading] = useState(true);
@@ -129,7 +135,7 @@ export default function App() {
     <div className="flex flex-col h-screen overflow-hidden bg-white" style={{ color: C.text }}>
       <TopNav currentUser={currentUser} onLogout={handleLogout} />
       <div className="flex flex-1 min-h-0">
-        <Watchlist onTrade={setActiveOrder} />
+        {showWatchlist && <Watchlist onTrade={setActiveOrder} />}
         <main className="flex-1 overflow-y-auto px-4 py-4 md:px-8 md:py-8 bg-white">
           <Outlet />
         </main>
