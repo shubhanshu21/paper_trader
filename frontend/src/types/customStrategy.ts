@@ -58,6 +58,11 @@ export interface CustomStrategy {
   name: string;
   description: string;
   instrument_type: string;
+  // 'CUSTOM' (the leg-based builder shape, rules: CustomStrategyRules) |
+  // 'SUPERTREND_INTRADAY' (strategies/custom/intraday_schema.py's totally
+  // different shape — no legs/entry/exit, see that module) | legacy
+  // pre-builder values ('STRADDLE'/'STRANGLE'/'IRON_CONDOR'/'BUTTERFLY').
+  strategy_type: string;
   symbols: string[];
   rules: CustomStrategyRules | null;
   status: string;

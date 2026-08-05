@@ -115,11 +115,21 @@ def create_strategy(strategy: CustomStrategyCreate, db: Session = Depends(get_db
         raise HTTPException(status_code=422, detail="At least one symbol is required.")
     if strategy.instrument_type not in ("INDEX", "STOCK", "COMMODITY"):
         raise HTTPException(status_code=422, detail="This strategy builder only supports INDEX, STOCK, and COMMODITY.")
-    errors = validate_rules(strategy.rules)
-    if errors:
-        raise HTTPException(status_code=422, detail=errors)
 
-    description = strategy.description or describe_rules(strategy.rules, strategy.symbols[0])
+    # SUPERTREND_INTRADAY is a genuinely different rules shape (see
+    # strategies/custom/intraday_schema.py's module docstring for why) —
+    # validated/described by its own module, not rule_schema.py's leg-based one.
+    if strategy.strategy_type == "SUPERTREND_INTRADAY":
+        from automate.strategies.custom.intraday_schema import describe_intraday_rules, validate_intraday_rules
+        errors = validate_intraday_rules(strategy.rules)
+        if errors:
+            raise HTTPException(status_code=422, detail=errors)
+        description = strategy.description or describe_intraday_rules(strategy.rules, strategy.symbols[0])
+    else:
+        errors = validate_rules(strategy.rules)
+        if errors:
+            raise HTTPException(status_code=422, detail=errors)
+        description = strategy.description or describe_rules(strategy.rules, strategy.symbols[0])
 
     db_strategy = CustomStrategy(
         user_id=_current_user_id(user),
@@ -200,7 +210,11 @@ def update_strategy(strategy_id: int, strategy: CustomStrategyUpdate, db: Sessio
 
     if "rules" in update_data:
         rules = update_data.pop("rules")
-        errors = validate_rules(rules)
+        if db_strategy.strategy_type == "SUPERTREND_INTRADAY":
+            from automate.strategies.custom.intraday_schema import validate_intraday_rules
+            errors = validate_intraday_rules(rules)
+        else:
+            errors = validate_rules(rules)
         if errors:
             raise HTTPException(status_code=422, detail=errors)
         update_data["rules_json"] = json.dumps(rules)
@@ -280,7 +294,16 @@ def update_strategy_status(strategy_id: int, status_update: StrategyStatusUpdate
             detail=f"Invalid status transition from {current_status} to {new_status}"
         )
 
-    if current_status == "DRAFT" and new_status == "PAPER_TRADING" and db_strategy.backtest_return_pct is None:
+    # The backtest-first gate only makes sense for strategies that CAN
+    # actually be backtested — SUPERTREND_INTRADAY (no historical
+    # intraday data source yet) and COMMODITY (backtest data is NSE F&O
+    # only) are both rejected outright by POST /{id}/backtest above, so
+    # requiring backtest_return_pct here would strand them at DRAFT
+    # forever with no way to ever reach PAPER_TRADING. Skip the gate for
+    # exactly those two cases — every other strategy still needs a real
+    # backtest first.
+    backtest_unavailable = db_strategy.strategy_type == "SUPERTREND_INTRADAY" or db_strategy.instrument_type == "COMMODITY"
+    if current_status == "DRAFT" and new_status == "PAPER_TRADING" and db_strategy.backtest_return_pct is None and not backtest_unavailable:
         raise HTTPException(
             status_code=400,
             detail="This strategy hasn't been backtested yet — run a backtest before paper trading."
@@ -577,6 +600,13 @@ async def backtest_strategy(strategy_id: int, request: BacktestRequest, db: Sess
     db_strategy = _get_owned_strategy(db, strategy_id, _current_user_id(user))
     if not db_strategy.rules_json:
         raise HTTPException(status_code=400, detail="This strategy has no rules configured.")
+    if db_strategy.strategy_type == "SUPERTREND_INTRADAY":
+        raise HTTPException(
+            status_code=400,
+            detail="Backtesting isn't available for this strategy yet — the backtest engine only has daily "
+                   "(end-of-day) historical data, but this strategy trades off 5-minute candles intraday. "
+                   "Paper trading works today and is the way to validate it for now.",
+        )
     if db_strategy.instrument_type == "COMMODITY":
         raise HTTPException(
             status_code=400,

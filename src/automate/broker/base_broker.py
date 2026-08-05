@@ -95,6 +95,32 @@ class BaseBroker(ABC):
         """
         return None
 
+    def get_historical_candles(self, instrument_key: str, unit: str, interval: int, to_date: str) -> list[dict] | None:
+        """
+        Real historical OHLC candles for `instrument_key`, via the
+        broker's own historical-data API — used by the Supertrend+Pivot
+        intraday strategy (strategies/custom/intraday_indicator_strategy.py)
+        to compute its indicators off REAL closed candles, never a
+        locally-aggregated approximation from polled LTP ticks.
+
+        Args:
+            unit:     Broker-specific granularity unit, e.g. "minutes" or
+                      "days" (UpstoxBroker's HistoryV3Api vocabulary).
+            interval: The multiplier for `unit` (e.g. 5 for 5-minute bars,
+                      1 for daily bars).
+            to_date:  'YYYY-MM-DD' — the most recent date to include; the
+                      broker decides how far back the response goes.
+
+        Returns a list of {"timestamp", "open", "high", "low", "close",
+        "volume"} dicts, most-recent-first (caller's responsibility to
+        reorder if it needs chronological order — see
+        utils/technical_indicators.py, which expects oldest-first), or
+        None if this broker doesn't support historical candles at all
+        (MockBroker/backtest — a historical intraday strategy needs its
+        own dedicated backtest data path, not this).
+        """
+        return None
+
     def get_available_funds(self) -> float | None:
         """
         Real available-to-trade balance (₹) on the actual broker account —

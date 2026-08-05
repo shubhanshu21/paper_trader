@@ -81,6 +81,7 @@ async def _lifespan(application: FastAPI):
 
     from automate.api.custom_strategy_scheduler import custom_strategy_scheduler
     from automate.api.instrument_sync_scheduler import instrument_sync_scheduler
+    from automate.api.intraday_indicator_scheduler import intraday_indicator_scheduler
     from automate.api.iv_history_scheduler import iv_history_scheduler
     from automate.api.market_broadcaster import market_price_broadcaster
     from automate.api.token_refresh_scheduler import token_refresh_scheduler
@@ -100,6 +101,7 @@ async def _lifespan(application: FastAPI):
     tasks = [
         asyncio.create_task(market_price_broadcaster()),
         asyncio.create_task(custom_strategy_scheduler()),
+        asyncio.create_task(intraday_indicator_scheduler()),
         asyncio.create_task(token_refresh_scheduler()),
         asyncio.create_task(iv_history_scheduler()),
         asyncio.create_task(instrument_sync_scheduler()),

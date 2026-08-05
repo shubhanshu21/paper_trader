@@ -1172,7 +1172,15 @@ async def custom_strategy_scheduler() -> None:
                     db = SessionLocal()
                     try:
                         strategies = db.query(CustomStrategy).filter(
-                            CustomStrategy.status.in_(["PAPER_TRADING", "LIVE", "PAUSED"])
+                            CustomStrategy.status.in_(["PAPER_TRADING", "LIVE", "PAUSED"]),
+                            # SUPERTREND_INTRADAY rows are owned entirely by
+                            # api/intraday_indicator_scheduler.py instead — that
+                            # strategy shape (multiple independent entries/exits
+                            # per day, direction decided live by a signal) breaks
+                            # this loop's "one basket per expiry cycle" model, so
+                            # excluding them here is what keeps the two schedulers
+                            # from double-processing the same row.
+                            CustomStrategy.strategy_type != "SUPERTREND_INTRADAY",
                         ).all()
                         for strategy in strategies:
                             _tick_one_strategy(db, strategy, brokers)

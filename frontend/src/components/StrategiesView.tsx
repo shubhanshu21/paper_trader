@@ -103,6 +103,23 @@ function StatusPill({ status, big = false }: { status: string; big?: boolean }) 
   );
 }
 
+/** "Intraday" for SUPERTREND_INTRADAY (see strategies/custom/intraday_schema.py — no expiry.mode concept at all, it's same-day only); otherwise the leg-based builder's own expiry cadence (defaults to Weekly, same convention as rule_schema.py/describe_rules). */
+function cadenceLabel(strategy: Pick<CustomStrategy, "strategy_type" | "rules">): string {
+  if (strategy.strategy_type === "SUPERTREND_INTRADAY") return "Intraday";
+  return (strategy.rules?.expiry?.mode || "WEEKLY") === "MONTHLY" ? "Monthly" : "Weekly";
+}
+
+function CadenceBadge({ strategy }: { strategy: Pick<CustomStrategy, "strategy_type" | "rules"> }) {
+  const label = cadenceLabel(strategy);
+  const color = label === "Intraday" ? "#7c3aed" : C.muted;
+  const bg = label === "Intraday" ? "#f3ecfe" : "#f1f2f4";
+  return (
+    <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold" style={{ backgroundColor: bg, color }}>
+      {label}
+    </span>
+  );
+}
+
 function StatCard({
   icon: Icon, label, value, accent,
 }: { icon: LucideIcon; label: string; value: number | null; accent: string }) {
@@ -772,7 +789,10 @@ export default function StrategiesView({
     setPayoff(null);
     setIvShift(0);
     setDaysRemaining(null);
-    if (selectedStrategy && selectedStrategy.rules) fetchPayoff(selectedStrategy);
+    // SUPERTREND_INTRADAY strategies have a completely different rules
+    // shape (no legs/entry/exit — see strategies/custom/intraday_schema.py)
+    // that this payoff calculator doesn't apply to at all.
+    if (selectedStrategy && selectedStrategy.rules && selectedStrategy.strategy_type !== "SUPERTREND_INTRADAY") fetchPayoff(selectedStrategy);
   }, [selectedStrategy]);
 
   const [margin, setMargin] = useState<MarginResponse | null>(null);
@@ -792,7 +812,7 @@ export default function StrategiesView({
 
   useEffect(() => {
     setMargin(null);
-    if (selectedStrategy && selectedStrategy.rules) fetchMargin(selectedStrategy);
+    if (selectedStrategy && selectedStrategy.rules && selectedStrategy.strategy_type !== "SUPERTREND_INTRADAY") fetchMargin(selectedStrategy);
   }, [selectedStrategy]);
 
   useEffect(() => {
@@ -1212,6 +1232,7 @@ export default function StrategiesView({
                         </div>
                         <div className="flex items-center gap-2 mt-1.5 flex-wrap">
                           <StatusPill status={strategy.status} />
+                          <CadenceBadge strategy={strategy} />
                           <span className="text-[11px] text-gray-400 truncate">{strategy.symbols.join(", ")}</span>
                         </div>
                         {perf != null && (
@@ -1258,6 +1279,7 @@ export default function StrategiesView({
                     <div className="flex items-center gap-3 flex-wrap">
                       <h2 className="text-xl font-semibold text-gray-800">{selectedStrategy.name}</h2>
                       <StatusPill status={selectedStrategy.status} big />
+                      <CadenceBadge strategy={selectedStrategy} />
                     </div>
                     <p className="text-sm text-gray-500 mt-1.5">{selectedStrategy.description || "No description"}</p>
                     <div className="flex items-center gap-1.5 mt-2.5">
@@ -1271,8 +1293,12 @@ export default function StrategiesView({
 
                 <div className="flex items-center gap-2 flex-wrap mt-4 pt-4 border-t" style={{ borderColor: C.border }}>
                   {/* Backtest button — visible on DRAFT (first run), BACKTESTING (re-run),
-                      PAPER_TRADING, and PAUSED (re-run without stopping the strategy) */}
-                  {(canTransitionTo(selectedStrategy.status, "BACKTESTING") ||
+                      PAPER_TRADING, and PAUSED (re-run without stopping the strategy).
+                      Hidden entirely for SUPERTREND_INTRADAY/COMMODITY — POST /{id}/backtest
+                      always rejects those (see routes_custom_strategies.py), so showing a
+                      button that can only ever error isn't useful. */}
+                  {selectedStrategy.strategy_type !== "SUPERTREND_INTRADAY" && selectedStrategy.instrument_type !== "COMMODITY" &&
+                    (canTransitionTo(selectedStrategy.status, "BACKTESTING") ||
                     ["PAPER_TRADING", "PAUSED"].includes(selectedStrategy.status)) && (
                     <button onClick={() => setBacktestRangeTarget(selectedStrategy)} disabled={backtesting}
                       className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-semibold transition-colors focus:outline-none hover:opacity-80"
@@ -1299,7 +1325,11 @@ export default function StrategiesView({
                     </button>
                   )}
                   {canTransitionTo(selectedStrategy.status, "PAPER_TRADING") &&
-                    (selectedStrategy.status !== "DRAFT" || selectedStrategy.backtest_return_pct != null) && (
+                    // Backtest-first only applies where backtesting is actually
+                    // possible — SUPERTREND_INTRADAY/COMMODITY skip it, same
+                    // exception routes_custom_strategies.py's PATCH /status enforces.
+                    (selectedStrategy.status !== "DRAFT" || selectedStrategy.backtest_return_pct != null ||
+                      selectedStrategy.strategy_type === "SUPERTREND_INTRADAY" || selectedStrategy.instrument_type === "COMMODITY") && (
                     <button onClick={() => handleStatusChange(selectedStrategy, "PAPER_TRADING")}
                       className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-semibold transition-colors focus:outline-none hover:opacity-80"
                       style={{ backgroundColor: "#e6f4ea", color: C.green }}>
@@ -1467,7 +1497,7 @@ export default function StrategiesView({
                   />
                 )}
 
-                {selectedStrategy.rules && (
+                {selectedStrategy.rules && selectedStrategy.strategy_type !== "SUPERTREND_INTRADAY" && (
                   <div>
                     <div className="flex items-center gap-2 mb-3">
                       <FileText size={14} style={{ color: C.muted }} />

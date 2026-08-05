@@ -155,6 +155,10 @@ class UpstoxBroker(BaseBroker):
         self._portfolio_api = upstox_client.PortfolioApi(self._api_client)
         # Real account funds — see get_available_funds().
         self._user_api = upstox_client.UserApi(self._api_client)
+        # Real historical OHLC candles — see get_historical_candles().
+        self._history_v3_api = upstox_client.HistoryV3Api(self._api_client)
+        # Real historical OHLC candles — see get_historical_candles().
+        self._history_v3_api = upstox_client.HistoryV3Api(self._api_client)
 
         # Instrument master cache (downloaded daily before market open)
         self._cache = InstrumentCache()
@@ -315,6 +319,52 @@ class UpstoxBroker(BaseBroker):
             return float(response.data.available_to_trade.total)
         except Exception as exc:
             log.warning("UpstoxBroker: could not fetch account funds: %s", exc)
+            return None
+
+    def get_historical_candles(self, instrument_key: str, unit: str, interval: int, to_date: str) -> list[dict] | None:
+        """
+        Real historical OHLC candles via Upstox's expanded-interval v3
+        history API (GET /v3/historical-candle/{instrumentKey}/{unit}/
+        {interval}/{toDate}) — see BaseBroker.get_historical_candles for
+        the None-means-unavailable contract. Each candle row from the SDK
+        is [timestamp, open, high, low, close, volume, oi]; oi is dropped
+        (irrelevant for an index/underlying's own price action).
+        """
+        try:
+            response = self._history_v3_api.get_historical_candle_data(instrument_key, unit, interval, to_date)
+            if response.status != "success" or response.data is None:
+                log.warning("UpstoxBroker: historical candle API returned no data for %s.", instrument_key)
+                return None
+            return [
+                {"timestamp": row[0], "open": row[1], "high": row[2], "low": row[3], "close": row[4], "volume": row[5]}
+                for row in response.data.candles
+            ]
+        except Exception as exc:
+            log.warning("UpstoxBroker: could not fetch historical candles for %s: %s", instrument_key, exc)
+            return None
+
+    def get_historical_candles(self, instrument_key: str, unit: str, interval: int, to_date: str) -> list[dict] | None:
+        """
+        Real historical OHLC candles via Upstox's v3 History API (GET
+        /v3/historical-candle/{instrumentKey}/{unit}/{interval}/{toDate})
+        — "expanded interval options" is what lets `unit="minutes",
+        interval=5` return real 5-minute bars (the older v2 endpoint only
+        offers a fixed set of interval strings, no plain 5-minute). See
+        BaseBroker.get_historical_candles for the return shape/contract.
+        Each Upstox candle row is [timestamp, open, high, low, close,
+        volume, oi], most-recent-first.
+        """
+        try:
+            response = self._history_v3_api.get_historical_candle_data(instrument_key, unit, interval, to_date)
+            if response.status != "success" or response.data is None:
+                log.warning("UpstoxBroker: historical candle API returned no data for %s (%s %s).", instrument_key, unit, interval)
+                return None
+            return [
+                {"timestamp": row[0], "open": row[1], "high": row[2], "low": row[3], "close": row[4], "volume": row[5]}
+                for row in response.data.candles
+            ]
+        except Exception as exc:
+            log.warning("UpstoxBroker: could not fetch historical candles for %s: %s", instrument_key, exc)
             return None
 
     def get_broker_positions(self) -> dict[str, int] | None:

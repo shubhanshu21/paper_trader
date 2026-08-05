@@ -79,6 +79,12 @@ class PaperBroker(BaseBroker):
     def get_basket_required_margin(self, instruments: list[dict]) -> float | None:
         return self.real_broker.get_basket_required_margin(instruments)
 
+    def get_historical_candles(self, instrument_key: str, unit: str, interval: int, to_date: str) -> list[dict] | None:
+        # Paper trading still needs REAL market data to compute an
+        # indicator signal off — only order placement/fills are
+        # simulated, same split as get_ltp()/get_option_chain() above.
+        return self.real_broker.get_historical_candles(instrument_key, unit, interval, to_date)
+
     def _place_order(
         self,
         transaction_type: str,
