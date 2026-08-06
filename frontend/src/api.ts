@@ -432,7 +432,103 @@ export interface ChainReplayResponse {
   date: string;
   expiry: string;
   underlying_close: number | null;
+  lot_size: number | null;
   chain: ChainReplayRow[];
+}
+
+// --- Options simulator (live + EOD-replay halves) -------------------------
+
+export interface SimLegInput {
+  strike: number;
+  option_type: "CE" | "PE";
+  action: "BUY" | "SELL";
+  quantity: number;
+}
+
+export interface PayoffCurvePoint {
+  price: number;
+  pnl: number;
+}
+
+export interface BreakevenDetail {
+  price: number;
+  pct_from_spot: number | null;
+}
+
+export interface SimChainLeg {
+  instrument_key: string;
+  ltp: number | null;
+  iv: number | null;    // %, e.g. 18.5 — null if the solve failed (common for deep ITM, see backend docstring)
+  delta: number | null;
+}
+
+export interface SimChainRow {
+  strike: number;
+  ce: SimChainLeg | null;
+  pe: SimChainLeg | null;
+}
+
+export interface SimulatorChainResponse {
+  symbol: string;
+  expiry: string;
+  spot_price: number | null;
+  forward_price: number | null;
+  lot_size: number | null;
+  chain: SimChainRow[];
+}
+
+export interface SimulatorEvaluateRequest {
+  symbol: string;
+  expiry: string;
+  instrument_type: "INDEX" | "STOCK" | "COMMODITY";
+  legs: (SimLegInput & { instrument_key: string; fallback_premium?: number | null })[];
+}
+
+export interface SimulatorEvaluateResponse {
+  max_profit: number | null;
+  max_loss: number | null;
+  breakevens: number[];
+  net_premium: number;
+  spot_price: number | null;
+  forward_price: number | null;
+  payoff_curve: PayoffCurvePoint[];
+  greeks: { delta: number; gamma: number; theta: number; vega: number };
+  margin_required: number | null;
+  margin_is_real: boolean;
+  probability_of_profit_pct: number | null;
+  risk_reward_ratio: number | null;
+  breakevens_detail: BreakevenDetail[];
+  stale_legs: string[];  // e.g. "22450CE" — legs priced off the last-seen chain quote, not a fresh live one
+}
+
+export interface ReplayEvaluateRequest {
+  symbol: string;
+  expiry: string;
+  entry_date: string;
+  eval_date: string;
+  legs: SimLegInput[];
+}
+
+export interface ReplayLegDetail extends SimLegInput {
+  entry_price: number;
+  eval_price: number;
+  pnl: number;
+}
+
+export interface ReplayEvaluateResponse {
+  symbol: string;
+  expiry: string;
+  entry_date: string;
+  eval_date: string;
+  legs: ReplayLegDetail[];
+  mtm: number;
+  max_profit: number | null;
+  max_loss: number | null;
+  breakevens: number[];
+  net_premium: number;
+  payoff_curve: PayoffCurvePoint[];
+  entry_underlying_close: number | null;
+  eval_underlying_close: number | null;
 }
 
 export interface BacktestRequest {
@@ -742,6 +838,22 @@ export const api = {
     request<{ symbol: string; date: string; expiries: string[] }>(`/api/chain-replay/expiries?symbol=${encodeURIComponent(symbol)}&date=${encodeURIComponent(date)}`),
   getChainReplay: (symbol: string, date: string, expiry: string) =>
     request<ChainReplayResponse>(`/api/chain-replay?symbol=${encodeURIComponent(symbol)}&date=${encodeURIComponent(date)}&expiry=${encodeURIComponent(expiry)}`),
+  evaluateChainReplay: (req: ReplayEvaluateRequest) =>
+    request<ReplayEvaluateResponse>('/api/chain-replay/evaluate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(req),
+    }),
+
+  // Live options simulator (see api/routes_simulator.py)
+  getSimulatorChain: (symbol: string, expiry: string) =>
+    request<SimulatorChainResponse>(`/api/simulator/chain?symbol=${encodeURIComponent(symbol)}&expiry=${encodeURIComponent(expiry)}`),
+  evaluateSimulator: (req: SimulatorEvaluateRequest) =>
+    request<SimulatorEvaluateResponse>('/api/simulator/evaluate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(req),
+    }),
 
   // Custom strategies (the strategy builder) — list/create/update/delete/status
   // only; everything per-selected-strategy and ephemeral (payoff, live greeks,
@@ -781,6 +893,8 @@ export const api = {
     request<BacktestRunDetail>(`/api/custom-strategies/${strategyId}/backtest/runs/${runId}`, options),
   getCustomStrategyTemplateExpiries: (symbol: string) =>
     request<ExpiriesResponse>(`/api/custom-strategies/templates/expiries?symbol=${encodeURIComponent(symbol)}`),
+  getTradableSymbols: () =>
+    request<{ stocks: string[]; indices: string[]; commodities: string[] }>('/api/custom-strategies/templates/symbols'),
   getCustomStrategyBacktestStatus: (id: number) =>
     request<BacktestResult>(`/api/custom-strategies/${id}/backtest`),
   getCustomStrategyBacktestRuns: (id: number) =>

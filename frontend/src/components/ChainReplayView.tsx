@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Search, History, RefreshCw } from "lucide-react";
+import { History, RefreshCw } from "lucide-react";
 import { api, ApiError, ChainReplayResponse } from "../api";
 import { C, FONT, fmtDate } from "../lib/format";
 import { Select } from "./Common";
+import SymbolSearchInput from "./SymbolSearchInput";
 
 function fmtNum(n: number | null | undefined): string {
   return n == null ? "—" : n.toLocaleString("en-IN");
@@ -103,16 +104,12 @@ export default function ChainReplayView() {
       <div className="flex flex-wrap items-end gap-3 mb-6">
         <div>
           <label className="block text-[11px] font-semibold text-gray-500 mb-1.5">Symbol</label>
-          <div className="relative">
-            <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
-            <input
-              value={symbolInput}
-              onChange={(e) => setSymbolInput(e.target.value.toUpperCase())}
-              onKeyDown={(e) => { if (e.key === "Enter") { setSymbol(symbolInput); loadDates(symbolInput); } }}
-              className="pl-8 pr-3 py-2 border rounded-lg text-sm w-40 focus:outline-none focus:ring-2 focus:ring-orange-500"
-              style={{ borderColor: C.border2 }}
-            />
-          </div>
+          <SymbolSearchInput
+            value={symbolInput}
+            onChange={(s) => { setSymbolInput(s); setSymbol(s); loadDates(s); }}
+            className="w-40"
+            scope="NSE_FO"
+          />
         </div>
         <button
           onClick={() => { setSymbol(symbolInput); loadDates(symbolInput); }}

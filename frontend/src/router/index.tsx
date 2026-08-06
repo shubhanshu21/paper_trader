@@ -13,6 +13,7 @@ import LeaderboardRoute from './routes/LeaderboardRoute';
 import IvScreenerRoute from './routes/IvScreenerRoute';
 import OiScannerRoute from './routes/OiScannerRoute';
 import ChainReplayRoute from './routes/ChainReplayRoute';
+import SimulatorRoute from './routes/SimulatorRoute';
 
 export const router = createBrowserRouter([
   {
@@ -36,6 +37,7 @@ export const router = createBrowserRouter([
       { path: 'iv-screener', element: <IvScreenerRoute /> },
       { path: 'oi-scanner', element: <OiScannerRoute /> },
       { path: 'chain-replay', element: <ChainReplayRoute /> },
+      { path: 'simulator', element: <SimulatorRoute /> },
     ],
   },
 ]);

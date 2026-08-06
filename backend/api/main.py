@@ -43,6 +43,7 @@ from api import (
     routes_oi_scanner,
     routes_performance,
     routes_positions,
+    routes_simulator,
     routes_strategies,
     routes_terminal,
     routes_upstox_token,
@@ -286,6 +287,7 @@ app.include_router(routes_leaderboard.router)
 app.include_router(routes_iv_screener.router)
 app.include_router(routes_oi_scanner.router)
 app.include_router(routes_chain_replay.router)
+app.include_router(routes_simulator.router)
 app.include_router(routes_wallet.router)
 app.include_router(routes_wallet.orders_router)
 app.include_router(routes_equity.router)

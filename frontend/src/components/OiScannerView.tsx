@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
-import { Search, TrendingUp, TrendingDown, RefreshCw, Layers } from "lucide-react";
+import { TrendingUp, TrendingDown, RefreshCw, Layers } from "lucide-react";
 import { api, ApiError, OiScannerResponse, OiSignal } from "../api";
 import { C, FONT, fmtDate } from "../lib/format";
+import SymbolSearchInput from "./SymbolSearchInput";
 
 const SIGNAL_LABELS: Record<OiSignal, string> = {
   LONG_BUILDUP: "Long Build-up",
@@ -74,17 +75,13 @@ export default function OiScannerView() {
       </div>
 
       <div className="flex items-center gap-2 mb-6">
-        <div className="relative flex-1 max-w-xs">
-          <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
-          <input
-            value={symbolInput}
-            onChange={(e) => setSymbolInput(e.target.value.toUpperCase())}
-            onKeyDown={(e) => { if (e.key === "Enter") scan(symbolInput); }}
-            placeholder="Symbol (e.g. NIFTY)"
-            className="w-full pl-9 pr-3 py-2 border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-orange-500"
-            style={{ borderColor: C.border2 }}
-          />
-        </div>
+        <SymbolSearchInput
+          value={symbolInput}
+          onChange={(s) => { setSymbolInput(s); scan(s); }}
+          placeholder="Symbol (e.g. NIFTY)"
+          className="flex-1 max-w-xs"
+          scope="NSE_FO"
+        />
         <button
           onClick={() => scan(symbolInput)}
           disabled={loading}

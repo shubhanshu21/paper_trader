@@ -7,7 +7,7 @@ import NotificationBell from "./NotificationBell";
 import MarketStatusBadge from "./MarketStatusBadge";
 import UpstoxTokenBadge from "./UpstoxTokenBadge";
 
-const NAV = ["Dashboard", "Strategies", "Orders", "Holdings", "Positions", "Leaderboard", "IV Screener", "OI Scanner", "Chain Replay"];
+const NAV = ["Dashboard", "Strategies", "Orders", "Holdings", "Positions", "Leaderboard", "IV Screener", "OI Scanner", "Chain Replay", "Simulator"];
 
 const navSlug = (navItem: string) => navItem.toLowerCase().replace(/\s+/g, "-");
 
