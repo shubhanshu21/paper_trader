@@ -13,7 +13,7 @@ import type {
   BacktestCycle, BacktestResult, BacktestRunSummary, BacktestRunDetail,
   PayoffResponse, PositionLeg, MarginResponse, PortfolioMarginResponse,
 } from "../api";
-import type { CustomStrategy, CustomStrategyRules, PortfolioGreeksResponse } from "../types/customStrategy";
+import type { CustomStrategy, CustomStrategyRules, EngineRules, PortfolioGreeksResponse } from "../types/customStrategy";
 import { useCustomStrategyPositions } from "../hooks/useCustomStrategyPositions";
 import StrategyBuilderModal from "./StrategyBuilderModal";
 import BacktestEquityChart from "./BacktestEquityChart";
@@ -25,8 +25,8 @@ interface StrategiesViewProps {
   statusUpdatingId: number | null;
   deletingId: number | null;
   onRefresh: () => void;
-  onCreate: (payload: { name: string; instrument_type: string; symbols: string[]; rules: CustomStrategyRules }) => Promise<CustomStrategy>;
-  onUpdate: (id: number, payload: { name: string; symbols: string[]; rules: CustomStrategyRules }) => Promise<CustomStrategy>;
+  onCreate: (payload: { name: string; instrument_type: string; symbols: string[]; rules: CustomStrategyRules | EngineRules; strategy_type?: string }) => Promise<CustomStrategy>;
+  onUpdate: (id: number, payload: { name: string; symbols: string[]; rules: CustomStrategyRules | EngineRules }) => Promise<CustomStrategy>;
   onStatusChange: (id: number, status: string) => Promise<CustomStrategy>;
   onDelete: (id: number) => Promise<number>;
 }
@@ -110,16 +110,19 @@ function StatusPill({ status, big = false }: { status: string; big?: boolean }) 
 // strategies" spot below checks membership here instead of repeating a
 // strategy_type string each time, so a future new engine only needs
 // adding to this one set.
-const NON_LEG_STRATEGY_TYPES = new Set(["SUPERTREND_INTRADAY", "WEEKEND_GAP_COMBO", "OTM_PUT_ROLL", "SMART_CONDOR", "GRAVITY"]);
+const NON_LEG_STRATEGY_TYPES = new Set(["SUPERTREND_INTRADAY", "WEEKEND_GAP_COMBO", "OTM_PUT_ROLL", "SMART_CONDOR", "GRAVITY", "SESSION_SELLER", "MACD_CREDIT_SPREAD", "DELTA_NEUTRAL_STRANGLE"]);
 const isLegBased = (strategy: Pick<CustomStrategy, "strategy_type">): boolean => !NON_LEG_STRATEGY_TYPES.has(strategy.strategy_type);
 
-/** "Intraday"/"Weekend Combo"/"Roll"/"Condor"/"Signal" for the non-leg-based engines (see NON_LEG_STRATEGY_TYPES); otherwise the leg-based builder's own expiry cadence (defaults to Weekly, same convention as rule_schema.py/describe_rules). */
+/** "Intraday"/"Weekend Combo"/"Roll"/"Condor"/"Signal"/"Sessions"/"Stop & Reverse"/"Delta-Neutral" for the non-leg-based engines (see NON_LEG_STRATEGY_TYPES); otherwise the leg-based builder's own expiry cadence (defaults to Weekly, same convention as rule_schema.py/describe_rules). */
 function cadenceLabel(strategy: Pick<CustomStrategy, "strategy_type" | "rules">): string {
   if (strategy.strategy_type === "SUPERTREND_INTRADAY") return "Intraday";
   if (strategy.strategy_type === "WEEKEND_GAP_COMBO") return "Weekend Combo";
   if (strategy.strategy_type === "OTM_PUT_ROLL") return "Roll";
   if (strategy.strategy_type === "SMART_CONDOR") return "Condor";
   if (strategy.strategy_type === "GRAVITY") return "Signal";
+  if (strategy.strategy_type === "SESSION_SELLER") return "Sessions";
+  if (strategy.strategy_type === "MACD_CREDIT_SPREAD") return "Stop & Reverse";
+  if (strategy.strategy_type === "DELTA_NEUTRAL_STRANGLE") return "Delta-Neutral";
   return (strategy.rules?.expiry?.mode || "WEEKLY") === "MONTHLY" ? "Monthly" : "Weekly";
 }
 
@@ -512,7 +515,7 @@ function BacktestResultsModal({
               {result.run_at && <span className="text-[11px] text-gray-400">Run {fmtDateTime(result.run_at)}</span>}
             </div>
           </div>
-          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 focus:outline-none shrink-0"><X size={20} /></button>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 focus:outline-none shrink-0" aria-label="Close"><X size={20} /></button>
         </div>
         <div className="overflow-y-auto flex-1">
           <BacktestStatsPanel result={result} />
@@ -697,7 +700,7 @@ function BacktestCompareModal({
       <div className="bg-white rounded-2xl w-full max-w-4xl max-h-[85vh] flex flex-col border shadow-2xl" style={{ borderColor: C.border }}>
         <div className="px-6 py-4 border-b flex items-center justify-between shrink-0" style={{ borderColor: C.border2 }}>
           <h3 className="text-base font-bold text-gray-800 flex items-center gap-2"><GitCompare size={16} style={{ color: C.blue }} /> Compare Backtest Runs</h3>
-          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 focus:outline-none"><X size={20} /></button>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 focus:outline-none" aria-label="Close"><X size={20} /></button>
         </div>
         <div className="overflow-y-auto flex-1 p-6">
           {loading ? (
@@ -841,15 +844,22 @@ export default function StrategiesView({
   const [ivShift, setIvShift] = useState(0);
   const [daysRemaining, setDaysRemaining] = useState<number | null>(null);
 
+  // Bumped on every call (useEffect-triggered OR the manual Refresh button
+  // below) — a response only gets applied if it's still the MOST RECENT
+  // request when it resolves, so switching strategies quickly (or hitting
+  // Refresh mid-flight) can never let a stale, late response overwrite
+  // what's currently selected.
+  const payoffRequestIdRef = useRef(0);
   const fetchPayoff = async (strategy: CustomStrategy) => {
+    const requestId = ++payoffRequestIdRef.current;
     setPayoffLoading(true);
     try {
       const data = await api.getCustomStrategyPayoff(strategy.id);
-      setPayoff(data);
+      if (payoffRequestIdRef.current === requestId) setPayoff(data);
     } catch {
-      setPayoff(null);
+      if (payoffRequestIdRef.current === requestId) setPayoff(null);
     } finally {
-      setPayoffLoading(false);
+      if (payoffRequestIdRef.current === requestId) setPayoffLoading(false);
     }
   };
 
@@ -866,15 +876,18 @@ export default function StrategiesView({
   const [margin, setMargin] = useState<MarginResponse | null>(null);
   const [marginLoading, setMarginLoading] = useState(false);
 
+  // Same stale-response guard as fetchPayoff above.
+  const marginRequestIdRef = useRef(0);
   const fetchMargin = async (strategy: CustomStrategy) => {
+    const requestId = ++marginRequestIdRef.current;
     setMarginLoading(true);
     try {
       const data = await api.getCustomStrategyMargin(strategy.id);
-      setMargin(data);
+      if (marginRequestIdRef.current === requestId) setMargin(data);
     } catch {
-      setMargin(null);
+      if (marginRequestIdRef.current === requestId) setMargin(null);
     } finally {
-      setMarginLoading(false);
+      if (marginRequestIdRef.current === requestId) setMarginLoading(false);
     }
   };
 
@@ -901,15 +914,18 @@ export default function StrategiesView({
   const [closedLegs, setClosedLegs] = useState<PositionLeg[]>([]);
   const [positionsLoading, setPositionsLoading] = useState(false);
 
+  // Same stale-response guard as fetchPayoff above.
+  const closedLegsRequestIdRef = useRef(0);
   const fetchClosedLegs = async (strategy: CustomStrategy) => {
+    const requestId = ++closedLegsRequestIdRef.current;
     setPositionsLoading(true);
     try {
       const data = await api.getCustomStrategyPositions(strategy.id);
-      setClosedLegs(data.closed || []);
+      if (closedLegsRequestIdRef.current === requestId) setClosedLegs(data.closed || []);
     } catch {
-      setClosedLegs([]);
+      if (closedLegsRequestIdRef.current === requestId) setClosedLegs([]);
     } finally {
-      setPositionsLoading(false);
+      if (closedLegsRequestIdRef.current === requestId) setPositionsLoading(false);
     }
   };
 
@@ -985,8 +1001,13 @@ export default function StrategiesView({
       const ws = new WebSocket(wsUrl(`/ws/custom-strategy-greeks/${selectedStrategy.id}`));
       greeksWsRef.current = ws;
       ws.onmessage = (event) => {
-        const data = JSON.parse(event.data);
-        if (data.type === "greeks") setLiveGreeks(data);
+        try {
+          const data = JSON.parse(event.data);
+          if (data.type === "greeks") setLiveGreeks(data);
+        } catch {
+          // A malformed/partial push shouldn't take down the whole handler — the
+          // server pushes a fresh snapshot on its own timer regardless.
+        }
       };
       ws.onclose = () => {
         if (!cancelled) reconnectTimer = setTimeout(connect, 3000);
@@ -1040,7 +1061,7 @@ export default function StrategiesView({
         continue; // transient network hiccup — keep polling rather than giving up
       }
 
-      if (run.progress_total) setBacktestProgress({ current: run.progress_current, total: run.progress_total });
+      if (run.progress_total != null) setBacktestProgress({ current: run.progress_current, total: run.progress_total });
 
       if (run.status === "COMPLETED" && run.result) {
         setBacktestResult(run.result);
@@ -1251,7 +1272,15 @@ export default function StrategiesView({
                   return (
                     <div key={strategy.id} role="button" tabIndex={0}
                       onClick={() => { setSelectedStrategy(strategy); setBacktestResult(null); setBacktestError(""); }}
-                      onKeyDown={(e) => { if (e.key === "Enter") { setSelectedStrategy(strategy); setBacktestResult(null); setBacktestError(""); } }}
+                      onKeyDown={(e) => {
+                        // Native interactive elements activate on BOTH Enter and Space —
+                        // Space additionally needs preventDefault() or the browser scrolls
+                        // the page instead of (or as well as) selecting the row.
+                        if (e.key === "Enter" || e.key === " ") {
+                          if (e.key === " ") e.preventDefault();
+                          setSelectedStrategy(strategy); setBacktestResult(null); setBacktestError("");
+                        }
+                      }}
                       className="w-full pl-3 pr-4 py-3.5 text-left text-sm transition-colors flex items-start gap-3 cursor-pointer"
                       style={{ backgroundColor: selected ? "#fff7f2" : "transparent" }}
                       onMouseEnter={(e) => { if (!selected) e.currentTarget.style.backgroundColor = C.hover; }}
@@ -1276,7 +1305,7 @@ export default function StrategiesView({
                                 }}
                                 disabled={statusUpdatingId === strategy.id}
                                 className="flex items-center justify-center w-6 h-6 rounded-md transition-colors focus:outline-none hover:opacity-80 disabled:opacity-40 disabled:cursor-not-allowed"
-                                style={{ backgroundColor: C.sellBg, color: C.red }} title="Stop strategy">
+                                style={{ backgroundColor: C.sellBg, color: C.red }} title="Stop strategy" aria-label={`Stop strategy "${strategy.name}"`}>
                                 {statusUpdatingId === strategy.id ? <RefreshCw size={12} className="animate-spin" /> : <AlertCircle size={12} />}
                               </button>
                             )}
@@ -1827,10 +1856,10 @@ export default function StrategiesView({
                             </td>
                             <td className="px-4 py-2.5 text-right font-medium text-gray-700">{leg.current_price != null ? leg.current_price.toFixed(2) : "—"}</td>
                             <td className="px-4 py-2.5 text-right">{leg.greeks ? `${leg.greeks.iv.toFixed(1)}%` : "—"}</td>
-                            <td className="px-4 py-2.5 text-right">{leg.greeks?.delta ?? "—"}</td>
-                            <td className="px-4 py-2.5 text-right">{leg.greeks?.gamma ?? "—"}</td>
-                            <td className="px-4 py-2.5 text-right">{leg.greeks?.theta ?? "—"}</td>
-                            <td className="px-4 py-2.5 text-right">{leg.greeks?.vega ?? "—"}</td>
+                            <td className="px-4 py-2.5 text-right">{leg.greeks ? leg.greeks.delta.toFixed(2) : "—"}</td>
+                            <td className="px-4 py-2.5 text-right">{leg.greeks ? leg.greeks.gamma.toFixed(4) : "—"}</td>
+                            <td className="px-4 py-2.5 text-right">{leg.greeks ? leg.greeks.theta.toFixed(2) : "—"}</td>
+                            <td className="px-4 py-2.5 text-right">{leg.greeks ? leg.greeks.vega.toFixed(2) : "—"}</td>
                           </tr>
                         ))}
                       </tbody>
@@ -1942,7 +1971,7 @@ export default function StrategiesView({
             )}
 
             {backtestError && (
-              <div className="px-4 py-3 rounded-xl bg-red-50 border border-red-200 text-red-600 text-sm">{backtestError}</div>
+              <div className="px-4 py-3 rounded-xl border text-sm" style={{ backgroundColor: C.sellBg, borderColor: C.red, color: C.red }}>{backtestError}</div>
             )}
           </div>
         ) : (
@@ -1968,6 +1997,7 @@ export default function StrategiesView({
             instrument_type: selectedStrategy.instrument_type,
             symbols: selectedStrategy.symbols,
             rules: selectedStrategy.rules,
+            strategy_type: selectedStrategy.strategy_type,
           } : null}
         />
       )}

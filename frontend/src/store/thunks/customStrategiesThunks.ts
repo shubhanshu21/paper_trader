@@ -1,6 +1,6 @@
 import { createAsyncThunk } from '@reduxjs/toolkit';
 import { api, ApiError } from '../../api';
-import type { CustomStrategyRules } from '../../types/customStrategy';
+import type { CustomStrategyRules, EngineRules } from '../../types/customStrategy';
 
 // Redux Toolkit serializes a thrown Error down to {name, message, stack}
 // before it reaches `.rejected`/`.unwrap()` — that would silently drop
@@ -21,7 +21,7 @@ export const fetchCustomStrategies = createAsyncThunk(
 
 export const createCustomStrategy = createAsyncThunk(
   'customStrategies/create',
-  async (payload: { name: string; instrument_type: string; symbols: string[]; rules: CustomStrategyRules }, { rejectWithValue }) => {
+  async (payload: { name: string; instrument_type: string; symbols: string[]; rules: CustomStrategyRules | EngineRules; strategy_type?: string }, { rejectWithValue }) => {
     try {
       return await api.createCustomStrategy(payload);
     } catch (err) {
@@ -32,7 +32,7 @@ export const createCustomStrategy = createAsyncThunk(
 
 export const updateCustomStrategy = createAsyncThunk(
   'customStrategies/update',
-  async ({ id, payload }: { id: number; payload: { name: string; symbols: string[]; rules: CustomStrategyRules } }, { rejectWithValue }) => {
+  async ({ id, payload }: { id: number; payload: { name: string; symbols: string[]; rules: CustomStrategyRules | EngineRules } }, { rejectWithValue }) => {
     try {
       return await api.updateCustomStrategy(id, payload);
     } catch (err) {
@@ -43,15 +43,23 @@ export const updateCustomStrategy = createAsyncThunk(
 
 export const updateCustomStrategyStatus = createAsyncThunk(
   'customStrategies/updateStatus',
-  async ({ id, status }: { id: number; status: string }) => {
-    return await api.updateCustomStrategyStatus(id, status);
+  async ({ id, status }: { id: number; status: string }, { rejectWithValue }) => {
+    try {
+      return await api.updateCustomStrategyStatus(id, status);
+    } catch (err) {
+      return rejectWithValue(detailOrMessage(err, 'Failed to update status'));
+    }
   }
 );
 
 export const deleteCustomStrategy = createAsyncThunk(
   'customStrategies/delete',
-  async (id: number) => {
-    await api.deleteCustomStrategy(id);
-    return id;
+  async (id: number, { rejectWithValue }) => {
+    try {
+      await api.deleteCustomStrategy(id);
+      return id;
+    } catch (err) {
+      return rejectWithValue(detailOrMessage(err, 'Failed to delete strategy'));
+    }
   }
 );

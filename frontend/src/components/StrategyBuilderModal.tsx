@@ -2,11 +2,13 @@ import { useState, useEffect, useRef, lazy, Suspense } from "react";
 import { X, ChevronRight, Check, Search, LayoutTemplate, AlertTriangle, RefreshCw, Trash2, Zap, Plus, GitBranch, Table2 } from "lucide-react";
 import { Select } from "./Common";
 import { C, FONT, formatTime12h, fmtDate } from "../lib/format";
-import type { CustomStrategy, CustomStrategyRules } from "../types/customStrategy";
+import type { CustomStrategy, CustomStrategyRules, EngineRules } from "../types/customStrategy";
 import {
   type LegForm, newLeg, type ConditionForm, newCondition, type EntryMode, type StrikeMode, strikeLabel,
   type ExpiryModeOverride, type ConditionType, type BeforeExpiryForm, newBeforeExpiry, type Weekday,
 } from "../types/strategyBuilder";
+import { ENGINE_SPECS, getEngineSpec } from "../lib/engineSpecs";
+import EngineSettingsForm from "./EngineSettingsForm";
 
 // @xyflow/react (the node canvas) is a sizeable dependency only needed
 // once a user actually reaches Step 2 of the builder — code-split so it's
@@ -16,7 +18,7 @@ import {
 // doesn't have to wait on the chunk loading.
 const StrategyFlowCanvas = lazy(() => import("./StrategyFlowCanvas"));
 
-type EditableStrategy = Pick<CustomStrategy, "id" | "name" | "instrument_type" | "symbols" | "rules">;
+type EditableStrategy = Pick<CustomStrategy, "id" | "name" | "instrument_type" | "symbols" | "rules" | "strategy_type">;
 
 interface StrategyBuilderModalProps {
   onClose: () => void;
@@ -26,8 +28,8 @@ interface StrategyBuilderModalProps {
   // this modal never touches fetch()/the store directly.
   // Rejects with the server's per-field validation messages (string[]) via
   // ApiError.detail — see store/thunks/customStrategiesThunks.ts.
-  onCreate: (payload: { name: string; instrument_type: string; symbols: string[]; rules: CustomStrategyRules }) => Promise<CustomStrategy>;
-  onUpdate: (id: number, payload: { name: string; symbols: string[]; rules: CustomStrategyRules }) => Promise<CustomStrategy>;
+  onCreate: (payload: { name: string; instrument_type: string; symbols: string[]; rules: CustomStrategyRules | EngineRules; strategy_type?: string }) => Promise<CustomStrategy>;
+  onUpdate: (id: number, payload: { name: string; symbols: string[]; rules: CustomStrategyRules | EngineRules }) => Promise<CustomStrategy>;
 }
 
 function legFromEditable(l: NonNullable<EditableStrategy["rules"]>["legs"][number]): LegForm {
@@ -166,6 +168,11 @@ function conditionPhrase(condition: ConditionForm): string {
 
 export default function StrategyBuilderModal({ onClose, onSuccess, editStrategy, onCreate, onUpdate }: StrategyBuilderModalProps) {
   const isEditing = !!editStrategy;
+  // Engine strategies (SUPERTREND_INTRADAY, GRAVITY, etc. — see
+  // lib/engineSpecs.ts) store a flat settings dict in `rules`, not the
+  // leg-based {legs, entry, expiry, exit} shape — every leg-builder-specific
+  // init below (legFromEditable, needsTableEditor, etc.) must skip these.
+  const isEditingEngine = isEditing && !!getEngineSpec(editStrategy!.strategy_type);
   const [step, setStep] = useState(1);
   const [canvasFullscreen, setCanvasFullscreen] = useState(false);
   // The canvas editor's dropdowns don't yet cover BEFORE_EXPIRY entry or
@@ -173,7 +180,7 @@ export default function StrategyBuilderModal({ onClose, onSuccess, editStrategy,
   // crash — but render as an unlabeled/blank selection) — default an
   // existing strategy using any of those straight into the Table editor,
   // which supports all of them, instead of a confusing blank canvas node.
-  const needsTableEditor = !!(
+  const needsTableEditor = !isEditingEngine && !!(
     editStrategy?.rules?.entry.mode === "BEFORE_EXPIRY" ||
     editStrategy?.rules?.legs.some((l) => l.strike_selection?.mode === "PREMIUM_OFFSET" || l.strike_selection?.mode === "PREMIUM_BAND")
   );
@@ -237,7 +244,18 @@ export default function StrategyBuilderModal({ onClose, onSuccess, editStrategy,
   const [showDropdown, setShowDropdown] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
 
-  const [legs, setLegs] = useState<LegForm[]>(editStrategy?.rules?.legs.map(legFromEditable) ?? [newLeg()]);
+  // Which engine this strategy uses — "CUSTOM" is the leg-based builder
+  // below; anything else picks one of the 8 fixed-shape engines (see
+  // lib/engineSpecs.ts) and swaps Steps 2-3 for EngineSettingsForm instead
+  // of the leg canvas/table. Immutable once created (same rule as
+  // instrument_type) — the picker is disabled while editing.
+  const [strategyType, setStrategyType] = useState<string>(isEditingEngine ? editStrategy!.strategy_type : "CUSTOM");
+  const engineSpec = getEngineSpec(strategyType);
+  const [engineRules, setEngineRules] = useState<Record<string, unknown>>(
+    isEditingEngine ? ((editStrategy!.rules as unknown as Record<string, unknown>) ?? {}) : (engineSpec?.defaultRules ?? {})
+  );
+
+  const [legs, setLegs] = useState<LegForm[]>(!isEditingEngine && editStrategy?.rules?.legs ? editStrategy.rules.legs.map(legFromEditable) : [newLeg()]);
   const [entryMode, setEntryMode] = useState<EntryMode>(editStrategy?.rules?.entry.mode ?? "IMMEDIATE");
   const [entryTime, setEntryTime] = useState(editStrategy?.rules?.entry.time ?? "09:20");
   const [condition, setCondition] = useState<ConditionForm>(conditionFromEditable(editStrategy?.rules?.entry));
@@ -279,6 +297,14 @@ export default function StrategyBuilderModal({ onClose, onSuccess, editStrategy,
         setExitDaysBeforeExpiry(template.exit.exit_days_before_expiry ?? 1);
       }
     }
+    setStrategyType("CUSTOM");
+    setShowTemplatePicker(false);
+  };
+
+  const pickEngine = (spec: (typeof ENGINE_SPECS)[number]) => {
+    setStrategyType(spec.strategyType);
+    setEngineRules(spec.defaultRules);
+    if (spec.fixedSymbols) setSelectedSymbols(spec.fixedSymbols);
     setShowTemplatePicker(false);
   };
 
@@ -430,6 +456,7 @@ export default function StrategyBuilderModal({ onClose, onSuccess, editStrategy,
     switch (step) {
       case 1: return name.trim() && instrumentType && selectedSymbols.length > 0;
       case 2:
+        if (engineSpec) return true; // every engine field has a valid default, nothing to gate on
         return legs.length > 0 && legs.every((l) =>
           (l.instrument_type === "EQUITY" || l.strike_mode === "ATM" ||
             (l.strike_mode === "PREMIUM_BAND" ? (l.band_min !== "" && l.band_max !== "") : l.strike_value !== "")) &&
@@ -445,10 +472,11 @@ export default function StrategyBuilderModal({ onClose, onSuccess, editStrategy,
     setLoading(true);
     setError([]);
     try {
+      const rules = engineSpec ? engineRules : (buildRules() as CustomStrategyRules);
       if (isEditing) {
-        await onUpdate(editStrategy!.id, { name, symbols: selectedSymbols, rules: buildRules() as CustomStrategyRules });
+        await onUpdate(editStrategy!.id, { name, symbols: selectedSymbols, rules });
       } else {
-        await onCreate({ name, instrument_type: instrumentType, symbols: selectedSymbols, rules: buildRules() as CustomStrategyRules });
+        await onCreate({ name, instrument_type: instrumentType, symbols: selectedSymbols, rules, strategy_type: strategyType });
       }
       onSuccess();
     } catch (err) {
@@ -993,12 +1021,13 @@ export default function StrategyBuilderModal({ onClose, onSuccess, editStrategy,
       !selectedSymbols.includes(s)
   ).slice(0, 10);
 
-  const canvasIsFullscreen = step === 2 && editorMode === "canvas" && canvasFullscreen;
+  const isLegCanvasStep = step === 2 && !engineSpec;
+  const canvasIsFullscreen = isLegCanvasStep && editorMode === "canvas" && canvasFullscreen;
 
   return (
     <div className={`fixed inset-0 bg-black flex items-center justify-center z-50 ${canvasIsFullscreen ? "bg-opacity-100 p-0" : "bg-opacity-50"}`}>
       <div ref={modalRef} className={`bg-white w-full overflow-hidden flex flex-col ${
-        canvasIsFullscreen ? "h-screen max-w-none rounded-none" : step === 2 ? "rounded-lg max-w-[96vw] h-[92vh]" : "rounded-lg max-w-2xl max-h-[90vh]"
+        canvasIsFullscreen ? "h-screen max-w-none rounded-none" : isLegCanvasStep ? "rounded-lg max-w-[96vw] h-[92vh]" : "rounded-lg max-w-2xl max-h-[90vh]"
       }`} style={FONT}>
         <div className="px-6 py-4 border-b flex items-center justify-between shrink-0" style={{ borderColor: C.border2 }}>
           <div>
@@ -1045,9 +1074,26 @@ export default function StrategyBuilderModal({ onClose, onSuccess, editStrategy,
               <span className="text-sm font-semibold text-gray-700">Start from scratch</span>
               <p className="text-xs text-gray-500 mt-1">Build any combination of legs yourself, one at a time.</p>
             </button>
+
+            <div className="pt-2 border-t" style={{ borderColor: C.border2 }}>
+              <p className="text-xs font-semibold text-gray-600 mt-3 mb-1">Or use a built-in signal-driven engine</p>
+              <p className="text-[11px] text-gray-400 mb-3">These have their own fixed entry/exit logic — no leg canvas, just settings. Paper trading works today for all of them; backtesting isn't available yet (see each engine's note after creating it).</p>
+              <div className="grid grid-cols-2 gap-3">
+                {ENGINE_SPECS.map((spec) => (
+                  <button key={spec.strategyType} onClick={() => pickEngine(spec)}
+                    className="text-left p-4 rounded-lg border-2 border-gray-200 hover:border-orange-300 transition-colors focus:outline-none">
+                    <div className="flex items-center gap-2 mb-1.5">
+                      <Zap size={14} style={{ color: C.orange }} />
+                      <span className="text-sm font-semibold text-gray-800">{spec.label}</span>
+                    </div>
+                    <p className="text-xs text-gray-500 leading-relaxed">{spec.tagline}</p>
+                  </button>
+                ))}
+              </div>
+            </div>
           </div>
         ) : (
-        <div className={step === 2 ? "p-4 flex-1 flex flex-col overflow-hidden min-h-0" : "p-6 overflow-y-auto flex-1"}>
+        <div className={isLegCanvasStep ? "p-4 flex-1 flex flex-col overflow-hidden min-h-0" : "p-6 overflow-y-auto flex-1"}>
           {error.length > 0 && (
             <div className="mb-4 px-4 py-3 rounded bg-red-50 border border-red-200 text-red-600 text-xs space-y-1 shrink-0">
               {error.map((e, i) => <div key={i}>{e}</div>)}
@@ -1082,6 +1128,17 @@ export default function StrategyBuilderModal({ onClose, onSuccess, editStrategy,
                 {isEditing && <p className="text-xs text-gray-500 mt-1">Instrument type can't be changed after creation — delete and rebuild if you need a different type.</p>}
               </div>
 
+              {engineSpec?.fixedSymbols ? (
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">Symbols</label>
+                  <div className="flex flex-wrap gap-1.5">
+                    {engineSpec.fixedSymbols.map((s) => (
+                      <span key={s} className="inline-flex items-center px-3 py-1 rounded-full text-xs font-bold bg-orange-50 text-orange-700 border border-orange-200">{s}</span>
+                    ))}
+                  </div>
+                  <p className="text-xs text-gray-500 mt-1.5">{engineSpec.label} always trades this fixed pair — not user-selectable.</p>
+                </div>
+              ) : (
               <div className="relative" ref={dropdownRef}>
                 <label className="block text-sm font-medium text-gray-700 mb-2">
                   Select {instrumentTypeNoun} (Multiple Allowed)
@@ -1149,10 +1206,18 @@ export default function StrategyBuilderModal({ onClose, onSuccess, editStrategy,
                   ))}
                 </div>
               </div>
+              )}
             </div>
           )}
 
-          {step === 2 && (
+          {step === 2 && engineSpec && (
+            <div className="space-y-4 overflow-y-auto">
+              <h3 className="text-sm font-semibold text-gray-700">Step 2 — {engineSpec.label} settings</h3>
+              <EngineSettingsForm spec={engineSpec} rules={engineRules} onChange={setEngineRules} />
+            </div>
+          )}
+
+          {step === 2 && !engineSpec && (
             <div className="flex flex-col h-full min-h-0">
               <div className="flex items-start justify-between gap-4 shrink-0 pb-3">
                 <div>
@@ -1241,7 +1306,22 @@ export default function StrategyBuilderModal({ onClose, onSuccess, editStrategy,
             </div>
           )}
 
-          {step === 3 && (
+          {step === 3 && engineSpec && (
+            <div className="space-y-4">
+              <h3 className="text-sm font-semibold text-gray-700">Step 3 — Review</h3>
+              <div className="bg-gray-50 rounded-lg p-6 border space-y-1.5" style={{ borderColor: C.border2 }}>
+                <div className="text-sm text-gray-800 font-semibold">{engineSpec.label} on {selectedSymbols.join(", ") || "..."}</div>
+                <div className="text-xs text-gray-500 leading-relaxed">{engineSpec.tagline}</div>
+              </div>
+              <p className="text-xs text-gray-500">
+                {isEditing
+                  ? "Saving updates this strategy's settings. Paper trading continues with the new settings from the next tick."
+                  : "This creates the strategy in DRAFT status. This engine doesn't support backtesting yet — Paper Trade it successfully before you can deploy it Live. Upstox never places a real order until you explicitly go Live."}
+              </p>
+            </div>
+          )}
+
+          {step === 3 && !engineSpec && (
             <div className="space-y-4">
               <h3 className="text-sm font-semibold text-gray-700">Step 3 — Review</h3>
               <div className="bg-gray-50 rounded-lg p-6 border" style={{ borderColor: C.border2 }}>

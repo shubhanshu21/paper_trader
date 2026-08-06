@@ -603,10 +603,10 @@ export default function ProfileView({ currentUser, ledger, onRefreshData }: Prof
                   <tr key={idx} className="hover:bg-gray-50 transition-colors" style={{ height: "40px" }}>
                     <td className="px-4 py-3 text-gray-500 font-medium font-mono">{fmtDate(item.date)}</td>
                     <td className="px-4 py-3 text-gray-800 font-medium">{item.description}</td>
-                    <td className="px-4 py-3 text-right text-red-600 font-normal tabular-nums">
+                    <td className="px-4 py-3 text-right font-normal tabular-nums" style={{ color: C.red }}>
                       {item.debit > 0 ? `-${inr(item.debit)}` : "—"}
                     </td>
-                    <td className="px-4 py-3 text-right text-green-600 font-normal tabular-nums">
+                    <td className="px-4 py-3 text-right font-normal tabular-nums" style={{ color: C.green }}>
                       {item.credit > 0 ? `+${inr(item.credit)}` : "—"}
                     </td>
                     <td className="px-4 py-3 text-right font-medium text-gray-700 tabular-nums">

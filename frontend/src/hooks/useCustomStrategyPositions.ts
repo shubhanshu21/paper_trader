@@ -39,8 +39,14 @@ export function useCustomStrategyPositions(): CustomPositionRow[] {
       const ws = new WebSocket(wsUrl("/ws/custom-strategy-positions"));
       ws.onmessage = (event) => {
         if (cancelled) return;
-        const msg = JSON.parse(event.data);
-        if (msg.type === "positions") setRows(msg.rows);
+        try {
+          const msg = JSON.parse(event.data);
+          if (msg.type === "positions") setRows(msg.rows);
+        } catch {
+          // A malformed/partial push shouldn't take down the whole handler — the
+          // server sends a fresh snapshot on its own timer regardless, so this
+          // one message is simply skipped rather than crashing the WS listener.
+        }
       };
       ws.onclose = () => {
         if (!cancelled) reconnectTimer = setTimeout(connect, 3000);

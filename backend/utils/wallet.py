@@ -166,7 +166,7 @@ def _custom_strategy_wallet_stats(user_id: int, mode: str = "paper") -> dict:
     from api.custom_strategy_scheduler import _is_leg_for_symbol
     from db.engine import get_session
     from db.models import CustomStrategy, CustomStrategyPosition
-    from utils.costs import calculate_options_transaction_cost_breakdown
+    from utils.costs import calculate_leg_transaction_cost_breakdown
     from utils.pnl import compute_basket_pnl
 
     rates = get_charge_rates(user_id)
@@ -246,8 +246,8 @@ def _custom_strategy_wallet_stats(user_id: int, mode: str = "paper") -> dict:
                 margin_blocked += estimate_margin_blocked(spot_proxy, short_qty, is_index, is_commodity)
 
         for leg in legs_only:
-            entry_charges_open += calculate_options_transaction_cost_breakdown(
-                float(leg.entry_price), leg.quantity, leg.transaction_type, rates
+            entry_charges_open += calculate_leg_transaction_cost_breakdown(
+                leg.instrument_type, float(leg.entry_price), leg.quantity, leg.transaction_type, rates
             )["total"]
 
     realized_pnl = 0.0
@@ -255,7 +255,8 @@ def _custom_strategy_wallet_stats(user_id: int, mode: str = "paper") -> dict:
     for basket_legs in closed_baskets.values():
         legs_only = [leg for leg, _ in basket_legs]
         result = compute_basket_pnl([
-            {"entry_price": leg.entry_price, "exit_price": leg.exit_price, "quantity": leg.quantity, "transaction_type": leg.transaction_type}
+            {"entry_price": leg.entry_price, "exit_price": leg.exit_price, "quantity": leg.quantity,
+             "transaction_type": leg.transaction_type, "instrument_type": leg.instrument_type}
             for leg in legs_only if leg.exit_price is not None
         ], rates)
         realized_pnl += result["net_pnl"]

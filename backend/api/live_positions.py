@@ -88,10 +88,10 @@ def compute_open_positions(user_id: int) -> list[dict]:
                 # custom_strategy_scheduler.py's _combined_pnl_pct (what
                 # actually decides SL/TP). Exposed as a secondary field,
                 # not the primary display number.
-                from utils.costs import calculate_options_transaction_cost_breakdown
+                from utils.costs import calculate_leg_transaction_cost_breakdown
                 exit_side = "BUY" if leg.transaction_type == "SELL" else "SELL"
-                entry_costs = calculate_options_transaction_cost_breakdown(entry, leg.quantity, leg.transaction_type, rates)
-                exit_costs = calculate_options_transaction_cost_breakdown(ltp, leg.quantity, exit_side, rates)
+                entry_costs = calculate_leg_transaction_cost_breakdown(leg.instrument_type, entry, leg.quantity, leg.transaction_type, rates)
+                exit_costs = calculate_leg_transaction_cost_breakdown(leg.instrument_type, ltp, leg.quantity, exit_side, rates)
                 net_pnl = pnl - entry_costs["total"] - exit_costs["total"]
             chg_pct = round((ltp - entry) / entry * 100, 2) if ltp is not None and entry else None
             rows.append({

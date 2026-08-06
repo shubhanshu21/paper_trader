@@ -35,9 +35,12 @@ from api.custom_strategy_scheduler import (
 from api.custom_strategy_scheduler import (
     _tick_one_strategy as _tick_custom,
 )
+from api.delta_neutral_engine import _tick_one_strategy as _tick_delta_neutral
 from api.gravity_engine import _tick_one_strategy as _tick_gravity
 from api.intraday_indicator_scheduler import _tick_one_strategy as _tick_intraday
+from api.macd_credit_engine import _tick_one_strategy as _tick_macd_credit
 from api.otm_put_roll_engine import _tick_one_strategy as _tick_otm_put_roll
+from api.session_seller_engine import _tick_one_strategy as _tick_session_seller
 from api.smart_condor_engine import _tick_one_strategy as _tick_smart_condor
 from api.weekend_combo_scheduler import _tick_one_strategy as _tick_combo
 from compliance.sebi_rules import assert_market_is_open
@@ -71,6 +74,9 @@ _TICK_FUNCS = {
     "OTM_PUT_ROLL": _tick_otm_put_roll,
     "SMART_CONDOR": _tick_smart_condor,
     "GRAVITY": _tick_gravity,
+    "SESSION_SELLER": _tick_session_seller,
+    "MACD_CREDIT_SPREAD": _tick_macd_credit,
+    "DELTA_NEUTRAL_STRANGLE": _tick_delta_neutral,
 }
 
 
@@ -108,7 +114,25 @@ async def strategy_scheduler() -> None:
                         ).all()
                         for strategy in strategies:
                             tick_fn = _TICK_FUNCS.get(strategy.strategy_type, _tick_custom)
-                            tick_fn(db, strategy, brokers)
+                            try:
+                                tick_fn(db, strategy, brokers)
+                            except Exception as exc:
+                                # Every engine's own _tick_one_strategy is documented to "never
+                                # raise" for its OWN known failure modes (a bad order, an
+                                # unresolvable strike, etc — each catches those internally and
+                                # logs/notifies). This is the backstop for anything that slips
+                                # past that discipline — e.g. broker.get_ltp() raising
+                                # RuntimeError after exhausting its retries (its own docstring
+                                # says it returns None on failure; the real implementation does
+                                # not) — a real gap no engine's get_ltp() call sites guard
+                                # against. Without this, one strategy's transient failure (a
+                                # rate-limit burst right after startup, in practice) would skip
+                                # EVERY strategy queried after it this tick, not just itself.
+                                db.rollback()
+                                log.error(
+                                    "strategy_scheduler: strategy %s (%s, %s) failed this tick: %s",
+                                    strategy.id, strategy.name, strategy.strategy_type, exc, exc_info=True,
+                                )
 
                         global _last_reconcile_at, _last_pnl_update_at
                         now_monotonic = time.monotonic()

@@ -109,6 +109,7 @@ def leaderboard(user: dict = Depends(get_current_user)):
                 {
                     "entry_price": leg.entry_price, "exit_price": leg.exit_price,
                     "quantity": leg.quantity, "transaction_type": leg.transaction_type,
+                    "instrument_type": leg.instrument_type,
                 }
                 for leg in legs
             ], rates)

@@ -354,11 +354,16 @@ class InstrumentCache:
 
     def resolve_nearest_future_key(self, symbol: str) -> tuple | None:
         """
-        Return (instrument_key, expiry) of the nearest-dated NSE_FO future
-        for `symbol`, or None if it has no listed futures contract.
+        Return (instrument_key, expiry) of the nearest-dated future for
+        `symbol` (NSE_FO/BSE_FO/MCX_FO — same exchange set resolve_lot_size/
+        resolve_strike_step already search), or None if it has no listed
+        futures contract. Was NSE_FO-only until this fix, which silently
+        broke Black-76 Greeks for every SENSEX leg (SENSEX futures list
+        under BSE_FO, not NSE_FO) — same class of gap as the earlier
+        NSE_FO-only bug in resolve_lot_size/resolve_strike_step.
 
         Used to get the FUTURES price for Black-76 Greeks (utils/black76.py)
-        — NSE options are priced against the futures leg, not raw spot, and
+        — options are priced against the futures leg, not raw spot, and
         substituting spot here would silently make every Greek slightly
         wrong (the whole reason Black-76 exists instead of plain
         Black-Scholes — see that module's docstring).
@@ -366,7 +371,7 @@ class InstrumentCache:
         import re
         df = self.get_or_refresh()
         symbol = symbol.upper().strip()
-        fut = df[(df["exchange"] == "NSE_FO") & (df["instrument_type"].isin(["FUTSTK", "FUTIDX"]))]
+        fut = df[(df["exchange"].isin(("NSE_FO", "BSE_FO", "MCX_FO"))) & (df["instrument_type"].isin(["FUTSTK", "FUTIDX"]))]
         pattern = re.compile(rf"^{re.escape(symbol)}\d{{2}}[A-Z]{{3}}FUT$")
         matches = fut[fut["symbol"].astype(str).str.match(pattern)]
         if matches.empty:

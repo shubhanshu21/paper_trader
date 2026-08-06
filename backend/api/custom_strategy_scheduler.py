@@ -146,6 +146,11 @@ def _mode_for_status(status: str) -> str:
     return "paper" if status == "PAPER_TRADING" else "live"
 
 
+def _resolve_product(rules: dict) -> str:
+    """rules.product (rule_schema.py: "DELIVERY" | "INTRADAY", defaults to DELIVERY) -> the broker product code. Used at BOTH entry (RuleBasedStrategy construction) and close (_close_leg) — an MIS-entered leg MUST be closed with product="MIS" too, never the NRML default, or the broker has no matching intraday position to net the closing order against."""
+    return "MIS" if rules.get("product") == "INTRADAY" else "NRML"
+
+
 import re
 from collections import defaultdict
 
@@ -409,6 +414,12 @@ def _entry_condition_met(broker, symbol: str, condition: dict, instrument_type: 
 
 
 _WEEKDAY_NUMS = {"MON": 0, "TUE": 1, "WED": 2, "THU": 3, "FRI": 4, "SAT": 5, "SUN": 6}
+# Unconditional hard exit for rules.product == "INTRADAY" (rule_schema.py) —
+# a few minutes ahead of NSE's 15:30 close, same buffer-before-close
+# convention as the other intraday-only engines in this app (e.g. Supertrend's
+# own exit_time default). Fires regardless of exit_time/take_profit/
+# stop_loss state — this product choice NEVER holds a position overnight.
+INTRADAY_SQUAREOFF_TIME = "15:20"
 # If the preferred weekday never lands inside the window (a holiday, or a
 # short month), force entry once we're down to this many days before
 # expiry rather than silently skip the WHOLE monthly cycle waiting for a
@@ -518,7 +529,7 @@ def _try_entry(db, strategy: CustomStrategy, broker) -> None:
             try:
                 rule_strategy = RuleBasedStrategy(
                     broker=broker, audit=_audit, kill_switch=_kill_switch, rate_limiter=_rate_limiter,
-                    symbol=symbol, rules=rules, user_id=strategy.user_id,
+                    symbol=symbol, rules=rules, product=_resolve_product(rules), user_id=strategy.user_id,
                 )
                 result = rule_strategy.run(leg_indices=leg_indices)
             except Exception as exc:
@@ -616,7 +627,7 @@ def _combined_pnl(legs: list[CustomStrategyPosition], now_prices: dict, rates: d
     paper_return_pct/live_return_pct. Returns None if any leg's current
     price is unavailable (never guesses a partial P&L).
     """
-    from utils.costs import calculate_options_transaction_cost_breakdown
+    from utils.costs import calculate_leg_transaction_cost_breakdown
 
     pnl_amount = 0.0
     denom = 0.0
@@ -631,8 +642,8 @@ def _combined_pnl(legs: list[CustomStrategyPosition], now_prices: dict, rates: d
         denom += entry * qty
 
         exit_transaction_type = "BUY" if leg.transaction_type == "SELL" else "SELL"
-        entry_costs = calculate_options_transaction_cost_breakdown(entry, qty, leg.transaction_type, rates)
-        exit_costs = calculate_options_transaction_cost_breakdown(now, qty, exit_transaction_type, rates)
+        entry_costs = calculate_leg_transaction_cost_breakdown(leg.instrument_type, entry, qty, leg.transaction_type, rates)
+        exit_costs = calculate_leg_transaction_cost_breakdown(leg.instrument_type, now, qty, exit_transaction_type, rates)
         pnl_amount -= entry_costs.get("total", 0) + exit_costs.get("total", 0)
     pnl_pct = (pnl_amount / denom * 100.0) if denom > 0 else 0.0
     return pnl_amount, pnl_pct
@@ -673,8 +684,13 @@ def _close_leg(db, strategy: CustomStrategy, broker, leg: CustomStrategyPosition
     opposite = broker.place_buy_order if leg.transaction_type == "SELL" else broker.place_sell_order
     try:
         _rate_limiter.acquire()
+        # MUST match the product this leg was actually ENTERED with (see
+        # _resolve_product) — closing an MIS-entered leg with the NRML
+        # default has no matching intraday position for the broker to net
+        # the closing order against.
+        product = _resolve_product(json.loads(strategy.rules_json)) if strategy.rules_json else "NRML"
         exit_order_id = opposite(
-            instrument_token=leg.instrument_key, quantity=leg.quantity, order_type="MARKET",
+            instrument_token=leg.instrument_key, quantity=leg.quantity, product=product, order_type="MARKET",
             tag=f"CUSTOM_EXIT_{strategy.id}_{leg.leg_index}"[:20],
             user_id=strategy.user_id,
         )
@@ -886,7 +902,9 @@ def _try_exit(db, strategy: CustomStrategy, broker) -> None:
         #    the strategy's own expiry cutoff).
         hard_stop = None
         now = datetime.now(_IST)
-        if exit_time and now.strftime("%H:%M") >= exit_time and (not exit_weekday or _WEEKDAY_NUMS.get(exit_weekday) == now.weekday()):
+        if rules.get("product") == "INTRADAY" and now.strftime("%H:%M") >= INTRADAY_SQUAREOFF_TIME:
+            hard_stop = "INTRADAY_SQUAREOFF"
+        if hard_stop is None and exit_time and now.strftime("%H:%M") >= exit_time and (not exit_weekday or _WEEKDAY_NUMS.get(exit_weekday) == now.weekday()):
             hard_stop = "TIME_EXIT"
         # exit_days_before_expiry=0 is a real, documented, DELIBERATE
         # value (rule_schema.py: "exit exactly on expiry day, not

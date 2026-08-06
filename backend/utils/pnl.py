@@ -8,7 +8,11 @@ websocket feed, closed positions, the dashboard, the leaderboard) so they
 can't independently drift the way they did before (each one re-derived its
 own gross-only formula).
 """
-from utils.costs import calculate_options_transaction_cost_breakdown, sum_breakdowns
+from utils.costs import (
+    calculate_leg_transaction_cost_breakdown,
+    calculate_options_transaction_cost_breakdown,
+    sum_breakdowns,
+)
 
 
 def compute_strangle_pnl(
@@ -57,7 +61,11 @@ def compute_basket_pnl(legs: list, rates: dict | None = None) -> dict:
     this shape (one row per leg, entry_price/exit_price + transaction_type).
 
     Each item in `legs` needs: entry_price, exit_price (or current LTP for
-    mark-to-market), quantity, transaction_type ('BUY'|'SELL').
+    mark-to-market), quantity, transaction_type ('BUY'|'SELL'), and
+    optionally instrument_type ('OPTION' | 'EQUITY', defaults to OPTION —
+    same "or OPTION" convention rule_schema.py uses) so an EQUITY leg's
+    both-sides STT is costed correctly instead of options' sell-side-only
+    rule (see utils.costs.calculate_leg_transaction_cost_breakdown).
     """
     gross_pnl = 0.0
     charge_breakdowns = []
@@ -65,12 +73,13 @@ def compute_basket_pnl(legs: list, rates: dict | None = None) -> dict:
         entry = float(leg["entry_price"])
         exit_ = float(leg["exit_price"])
         qty = leg["quantity"]
+        instrument_type = leg.get("instrument_type") or "OPTION"
         sign = 1 if leg["transaction_type"] == "SELL" else -1  # SELL profits when price falls
         gross_pnl += (entry - exit_) * qty * sign
 
         exit_transaction_type = "BUY" if leg["transaction_type"] == "SELL" else "SELL"
-        charge_breakdowns.append(calculate_options_transaction_cost_breakdown(entry, qty, leg["transaction_type"], rates))
-        charge_breakdowns.append(calculate_options_transaction_cost_breakdown(exit_, qty, exit_transaction_type, rates))
+        charge_breakdowns.append(calculate_leg_transaction_cost_breakdown(instrument_type, entry, qty, leg["transaction_type"], rates))
+        charge_breakdowns.append(calculate_leg_transaction_cost_breakdown(instrument_type, exit_, qty, exit_transaction_type, rates))
 
     charges = sum_breakdowns(*charge_breakdowns) if charge_breakdowns else {"total": 0.0}
     return {

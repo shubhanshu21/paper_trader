@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import { createChart, IChartApi, LineSeries, AreaSeries } from "lightweight-charts";
 import { C } from "../lib/format";
 
@@ -37,7 +37,22 @@ export default function BacktestEquityChart({ equityCurve, dates, height = 260 }
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
 
+  // Callers (StrategiesView.tsx) build `dates` with an inline `.map(...)`,
+  // a fresh array reference on every render regardless of whether the
+  // underlying backtest result actually changed. Depending on the raw
+  // props directly would tear down and rebuild the whole lightweight-
+  // charts instance on every unrelated re-render (e.g. the 15s portfolio
+  // Greeks/margin poll ticking while this modal happens to be open) — a
+  // visible flicker for no reason. `dataKey` is a content-based fingerprint
+  // instead: the effect only reruns when the actual numbers/dates change.
+  // `latestProps` carries the real (possibly-fresher-reference-but-same-
+  // content) arrays into the effect without needing them in its deps.
+  const dataKey = useMemo(() => JSON.stringify({ equityCurve, dates, height }), [equityCurve, dates, height]);
+  const latestProps = useRef({ equityCurve, dates, height });
+  latestProps.current = { equityCurve, dates, height };
+
   useEffect(() => {
+    const { equityCurve, dates, height } = latestProps.current;
     if (!containerRef.current || equityCurve.length < 2) return;
 
     const chart = createChart(containerRef.current, {
@@ -82,7 +97,7 @@ export default function BacktestEquityChart({ equityCurve, dates, height = 260 }
       window.removeEventListener("resize", handleResize);
       chart.remove();
     };
-  }, [equityCurve, dates, height]);
+  }, [dataKey]);
 
   if (equityCurve.length < 2) return null;
 

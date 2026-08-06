@@ -102,6 +102,21 @@ Rules JSON shape::
                                                        #   (calendar spread) always resolves offset 0.
       },
 
+      "product": "DELIVERY" | "INTRADAY",             # optional, defaults to "DELIVERY" — applies to EVERY
+                                                       #   leg in the strategy (options AND equity), not
+                                                       #   configurable per-leg. "DELIVERY" places NRML orders
+                                                       #   (today's original behavior — holds across days/
+                                                       #   weeks, the only sensible choice for anything with a
+                                                       #   real expiry). "INTRADAY" places MIS orders (lower
+                                                       #   margin, mandatory same-day square-off) AND adds an
+                                                       #   unconditional hard exit at
+                                                       #   INTRADAY_SQUAREOFF_TIME (custom_strategy_scheduler.py)
+                                                       #   regardless of exit_time/take_profit/stop_loss state —
+                                                       #   this strategy shape NEVER holds a position overnight,
+                                                       #   same guarantee SUPERTREND_INTRADAY gives, generalized
+                                                       #   to any leg combination (most usefully EQUITY legs,
+                                                       #   which otherwise have no forced same-day exit at all).
+
       "exit": {
         "take_profit_pct": <number> | null,
         "stop_loss_pct": <number> | null,
@@ -176,6 +191,7 @@ _PREMIUM_BAND_MODE = "PREMIUM_BAND"
 _STOP_LOSS_MODES = {"PCT", "BREAKEVEN"}
 _ENTRY_MODES = {"IMMEDIATE", "AT_TIME", "CONDITIONAL", "BEFORE_EXPIRY"}
 _EXPIRY_MODES = {"WEEKLY", "MONTHLY"}
+_PRODUCT_MODES = {"DELIVERY", "INTRADAY"}
 _SIZING_MODES = {"LOTS", "RISK_PCT"}
 _TRAIL_TYPES = {"points", "percentage"}
 _CONDITION_TYPES = {"MA_CROSSOVER", "IV_RANK"}
@@ -386,8 +402,13 @@ def validate_rules(rules: dict) -> list[str]:
             errors.append(f"'entry.weekday' must be one of {sorted(_WEEKDAYS)}, or omitted.")
     elif entry["mode"] == "CONDITIONAL":
         errors.extend(_validate_entry_condition(entry))
+        condition_type = (entry.get("condition") or {}).get("type")
+        if condition_type == "IV_RANK" and isinstance(legs, list) and legs and all((leg.get("instrument_type") or "OPTION") == "EQUITY" for leg in legs if isinstance(leg, dict)):
+            errors.append("Entry condition 'IV_RANK' doesn't apply to an all-EQUITY strategy (equity has no options IV) — use MA_CROSSOVER instead.")
     elif entry["mode"] == "BEFORE_EXPIRY":
         errors.extend(_validate_before_expiry(entry))
+        if isinstance(legs, list) and legs and all((leg.get("instrument_type") or "OPTION") == "EQUITY" for leg in legs if isinstance(leg, dict)):
+            errors.append("Entry mode 'BEFORE_EXPIRY' doesn't apply to an all-EQUITY strategy (equity has no expiry) — use IMMEDIATE, AT_TIME, or CONDITIONAL instead.")
 
     expiry = rules.get("expiry")
     if expiry is not None and (not isinstance(expiry, dict) or expiry.get("mode") not in _EXPIRY_MODES):
@@ -396,6 +417,10 @@ def validate_rules(rules: dict) -> list[str]:
         offset = expiry["expiry_offset"]
         if not isinstance(offset, int) or offset < 0:
             errors.append("'expiry.expiry_offset' must be a whole number >= 0, or omitted.")
+
+    product = rules.get("product")
+    if product is not None and product not in _PRODUCT_MODES:
+        errors.append(f"'product' must be one of {sorted(_PRODUCT_MODES)}, or omitted (defaults to DELIVERY).")
 
     exit_ = rules.get("exit")
     if not isinstance(exit_, dict):
@@ -473,6 +498,8 @@ def describe_rules(rules: dict | None, symbol: str = "") -> str:
     cycle_noun = "week" if expiry_mode == "WEEKLY" else "month"
     offset_txt = f", {expiry_offset} {cycle_noun}{'s' if expiry_offset != 1 else ''} out" if expiry_offset else ""
     sentence += f" ({expiry_mode.lower()} expiry default{offset_txt})"
+    if rules.get("product") == "INTRADAY":
+        sentence += " [INTRADAY — MIS, forced square-off same day, never held overnight]"
 
     entry = rules.get("entry") or {}
     if entry.get("mode") == "AT_TIME" and entry.get("time"):

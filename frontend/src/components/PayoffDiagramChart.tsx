@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useId, useMemo, useRef, useState } from "react";
 import { C } from "../lib/format";
 
 interface PayoffCurvePoint {
@@ -88,6 +88,27 @@ function legsSummary(legs: PayoffLeg[]): string {
 export default function PayoffDiagramChart({ curve, spotPrice, breakevens, height = 300, legs, expiry, daysRemaining, ivShift = 0, symbol }: PayoffDiagramChartProps) {
   const svgRef = useRef<SVGSVGElement>(null);
   const [hoverIdx, setHoverIdx] = useState<number | null>(null);
+  // Guaranteed unique per mounted chart instance — unlike deriving an id
+  // from spotPrice/minPnl (the old approach), which could collide between
+  // two different symbols whose price/P&L ranges happened to round the same.
+  const reactId = useId();
+
+  // Each leg's IV depends only on spotPrice/expiry/the leg itself — NOT on
+  // whatever price the T+0 curve is being evaluated at — so it only needs
+  // solving ONCE per leg, not once per (curve point x mousemove). Before
+  // this memo, solveIV's 40-iteration bisection was being re-run from
+  // scratch for every leg on every curve point AND every hover event,
+  // which visibly lagged on wider curves / multi-leg strategies.
+  const legIVs = useMemo(() => {
+    if (!legs || !expiry) return [];
+    const r = 0.065;
+    const totalDays = Math.max((new Date(expiry).getTime() - new Date().getTime()) / (1000 * 3600 * 24), 1);
+    const T_initial = totalDays / 365.0;
+    return legs.map((leg) => ({
+      leg,
+      iv: Math.max(0.01, solveIV(spotPrice, leg.strike, T_initial, r, leg.current_price, leg.option_type) * (1 + ivShift)),
+    }));
+  }, [legs, expiry, spotPrice, ivShift]);
 
   if (curve.length < 2) return null;
 
@@ -108,29 +129,27 @@ export default function PayoffDiagramChart({ curve, spotPrice, breakevens, heigh
   const areaPoints = `${x(curve[0].price)},${yZero} ${linePoints} ${x(curve[curve.length - 1].price)},${yZero}`;
   const spotX = x(Math.min(Math.max(spotPrice, minPrice), maxPrice));
 
-  const uid = `payoff-${Math.round(spotPrice * 100)}-${Math.round(minPnl)}`;
+  const uid = `payoff-${reactId}`;
 
+  // Cheap per-price eval only — the expensive part (solving each leg's IV)
+  // already happened once in legIVs above, not per-call here.
   const calculateT0Pnl = (price: number) => {
-    if (!legs || !expiry) return 0;
+    if (legIVs.length === 0 || !expiry) return 0;
     const r = 0.065;
     const totalDays = Math.max((new Date(expiry).getTime() - new Date().getTime()) / (1000 * 3600 * 24), 1);
     const targetDays = daysRemaining !== undefined ? daysRemaining : totalDays;
     const T_target = Math.max(targetDays, 0.001) / 365.0;
-    const T_initial = totalDays / 365.0;
 
     let totalPnl = 0;
-    for (const leg of legs) {
-      const iv = solveIV(spotPrice, leg.strike, T_initial, r, leg.current_price, leg.option_type);
-      const adjustedIv = Math.max(0.01, iv * (1 + ivShift));
-      const theoreticalPrice = blackScholes(price, leg.strike, T_target, r, adjustedIv, leg.option_type);
+    for (const { leg, iv } of legIVs) {
+      const theoreticalPrice = blackScholes(price, leg.strike, T_target, r, iv, leg.option_type);
       const sign = leg.action === "BUY" ? 1 : -1;
-      const legPnl = (theoreticalPrice - leg.current_price) * leg.quantity * sign;
-      totalPnl += legPnl;
+      totalPnl += (theoreticalPrice - leg.current_price) * leg.quantity * sign;
     }
     return totalPnl;
   };
 
-  const hasT0 = !!(legs && expiry);
+  const hasT0 = legIVs.length > 0 && !!expiry;
   const t0Points = curve.map((p) => `${x(p.price)},${y(calculateT0Pnl(p.price))}`).join(" ");
 
   const nearestIndexForClientX = (clientX: number): number => {

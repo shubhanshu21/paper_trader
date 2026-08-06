@@ -20,13 +20,25 @@ smaller table since the scheduler only ever needs to route TWO of these
 three fields' worth of behavior (entry/exit), not description/backtest.
 """
 from strategies.custom.combo_schema import describe_combo_rules, validate_combo_rules
+from strategies.custom.delta_neutral_schema import (
+    describe_delta_neutral_rules,
+    validate_delta_neutral_rules,
+)
 from strategies.custom.gravity_schema import describe_gravity_rules, validate_gravity_rules
 from strategies.custom.intraday_schema import describe_intraday_rules, validate_intraday_rules
+from strategies.custom.macd_credit_schema import (
+    describe_macd_credit_rules,
+    validate_macd_credit_rules,
+)
 from strategies.custom.otm_put_roll_schema import (
     describe_otm_put_roll_rules,
     validate_otm_put_roll_rules,
 )
 from strategies.custom.rule_schema import describe_rules, validate_rules
+from strategies.custom.session_seller_schema import (
+    describe_session_seller_rules,
+    validate_session_seller_rules,
+)
 from strategies.custom.smart_condor_schema import (
     describe_smart_condor_rules,
     validate_smart_condor_rules,
@@ -88,6 +100,37 @@ _ENGINE_REGISTRY: dict[str, dict] = {
             "Backtesting isn't available for this strategy yet — it needs a stateful daily-close signal "
             "(a Camarilla level breach, then a later close back inside it) plus a live-tracked strike "
             "extreme the backtest engine doesn't simulate. Paper trading works today and is the way to "
+            "validate it for now."
+        ),
+    },
+    "SESSION_SELLER": {
+        "validate": validate_session_seller_rules,
+        "describe": describe_session_seller_rules,
+        "backtest_supported": False,
+        "backtest_unavailable_reason": (
+            "Backtesting isn't available for this strategy yet — the backtest engine only has daily "
+            "(end-of-day) historical data, but this strategy needs two intraday sessions a day of live "
+            "option premiums. Paper trading works today and is the way to validate it for now."
+        ),
+    },
+    "MACD_CREDIT_SPREAD": {
+        "validate": validate_macd_credit_rules,
+        "describe": describe_macd_credit_rules,
+        "backtest_supported": False,
+        "backtest_unavailable_reason": (
+            "Backtesting isn't available for this strategy yet — the backtest engine only has daily "
+            "(end-of-day) historical data, but this strategy's signal is read off hourly candles. "
+            "Paper trading works today and is the way to validate it for now."
+        ),
+    },
+    "DELTA_NEUTRAL_STRANGLE": {
+        "validate": validate_delta_neutral_rules,
+        "describe": describe_delta_neutral_rules,
+        "backtest_supported": False,
+        "backtest_unavailable_reason": (
+            "Backtesting isn't available for this strategy yet — it needs a live-delta-driven, "
+            "two-stage adjustment simulation (a premium-ratio rebalance and a separate delta-threshold "
+            "full reset) the backtest engine doesn't have. Paper trading works today and is the way to "
             "validate it for now."
         ),
     },

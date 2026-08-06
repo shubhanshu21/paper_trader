@@ -449,19 +449,19 @@ export function DatePicker({ value, onChange, placeholder = "Select date", allow
         <div className="absolute z-50 mt-1.5 bg-white border rounded-xl shadow-lg p-3" style={{ borderColor: C.border2, width: 260 }}>
           <div className="flex items-center justify-between mb-2">
             <div className="flex items-center gap-0.5">
-              <button type="button" onClick={() => shiftYear(-1)} className="p-1 rounded hover:bg-gray-100 focus:outline-none" title="Previous year">
+              <button type="button" onClick={() => shiftYear(-1)} className="p-1 rounded hover:bg-gray-100 focus:outline-none" title="Previous year" aria-label="Previous year">
                 <ChevronsLeft size={14} style={{ color: C.muted }} />
               </button>
-              <button type="button" onClick={() => shiftMonth(-1)} className="p-1 rounded hover:bg-gray-100 focus:outline-none" title="Previous month">
+              <button type="button" onClick={() => shiftMonth(-1)} className="p-1 rounded hover:bg-gray-100 focus:outline-none" title="Previous month" aria-label="Previous month">
                 <ChevronLeft size={14} style={{ color: C.muted }} />
               </button>
             </div>
             <span className="text-sm font-semibold text-gray-700">{MONTH_LABELS[viewMonth]} {viewYear}</span>
             <div className="flex items-center gap-0.5">
-              <button type="button" onClick={() => shiftMonth(1)} className="p-1 rounded hover:bg-gray-100 focus:outline-none" title="Next month">
+              <button type="button" onClick={() => shiftMonth(1)} className="p-1 rounded hover:bg-gray-100 focus:outline-none" title="Next month" aria-label="Next month">
                 <ChevronRightIcon size={14} style={{ color: C.muted }} />
               </button>
-              <button type="button" onClick={() => shiftYear(1)} className="p-1 rounded hover:bg-gray-100 focus:outline-none" title="Next year">
+              <button type="button" onClick={() => shiftYear(1)} className="p-1 rounded hover:bg-gray-100 focus:outline-none" title="Next year" aria-label="Next year">
                 <ChevronsRight size={14} style={{ color: C.muted }} />
               </button>
             </div>

@@ -1,5 +1,5 @@
 // api.ts — API client for paper trading application
-import type { CustomStrategy, CustomStrategyRules, PortfolioGreeksResponse } from './types/customStrategy';
+import type { CustomStrategy, CustomStrategyRules, EngineRules, PortfolioGreeksResponse } from './types/customStrategy';
 
 // Builds a same-origin WebSocket URL (nginx proxies /ws/ to the API, see
 // deploy/automate-nginx.conf) so this works unmodified in dev and prod.
@@ -393,7 +393,13 @@ export interface BacktestStats {
   charges: ChargesBreakdown;
 }
 
-export interface BacktestResult {
+// Distinct from BacktestResult above (the Custom Strategy Builder's
+// backtest shape) — this is the OLD legacy hand-written-strategy /api/backtest
+// endpoint's shape (a subprocess-wrapped CLI run: mode/meta/trades/stdout/
+// stderr). These two were previously both named `BacktestResult`, which
+// TypeScript silently merged via declaration merging instead of erroring —
+// neither shape's fields actually apply to the other endpoint's response.
+export interface LegacyBacktestResult {
   mode: string;
   meta: {
     symbol: string;
@@ -636,7 +642,7 @@ export const api = {
 
   // Backtesting
   runBacktest: (req: BacktestRequest) =>
-    request<BacktestResult>('/api/backtest', {
+    request<LegacyBacktestResult>('/api/backtest', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(req),
@@ -651,13 +657,13 @@ export const api = {
   // StrategiesView.tsx — shared/mutating list state (redux) stays separate
   // from view-local queries.
   listCustomStrategies: () => request<{ strategies: CustomStrategy[] }>('/api/custom-strategies'),
-  createCustomStrategy: (payload: { name: string; instrument_type: string; symbols: string[]; rules: CustomStrategyRules }) =>
+  createCustomStrategy: (payload: { name: string; instrument_type: string; symbols: string[]; rules: CustomStrategyRules | EngineRules; strategy_type?: string }) =>
     request<CustomStrategy>('/api/custom-strategies', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
     }),
-  updateCustomStrategy: (id: number, payload: { name: string; symbols: string[]; rules: CustomStrategyRules }) =>
+  updateCustomStrategy: (id: number, payload: { name: string; symbols: string[]; rules: CustomStrategyRules | EngineRules }) =>
     request<CustomStrategy>(`/api/custom-strategies/${id}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },

@@ -21,6 +21,17 @@ this is the entry point users actually hit from the strategy builder's
     `liquid` in each cycle result.
   - Equity/future legs use the daily future close as a spot proxy (no
     cash-equity close in this dataset).
+
+An all-EQUITY strategy (every leg instrument_type == "EQUITY") does NOT
+go through discover_cycles()/_run_one_cycle() at all — see run_equity()
+below. Equity has no expiry to discover a "cycle" from, so that whole
+per-expiry-cycle shape doesn't apply; instead it's a continuous walk-
+forward over every real trading day in range, re-entering as soon as no
+position is open and the entry condition is met, holding until
+take_profit_pct/stop_loss_pct fires. A strategy that mixes EQUITY and
+OPTION legs together still uses the OPTION-cycle path (that's the more
+restrictive, safer default — equity's own semantics only kick in for a
+strategy with NOTHING but equity legs).
 """
 from collections.abc import Callable
 from datetime import date, datetime
@@ -34,7 +45,11 @@ from compliance.sebi_rules import AuditTrail, KillSwitch, OrderRateLimiter
 from db.engine import SessionLocal
 from strategies.custom.rule_strategy import RuleBasedStrategy
 from utils import black76
-from utils.costs import calculate_options_transaction_cost_breakdown, sum_breakdowns
+from utils.costs import (
+    calculate_equity_transaction_cost_breakdown,
+    calculate_options_transaction_cost_breakdown,
+    sum_breakdowns,
+)
 from utils.instrument_cache import InstrumentCache
 from utils.logger import get_logger
 from utils.option_utils import check_exit_trigger, is_within_pre_expiry_buffer
@@ -238,6 +253,10 @@ class CustomRuleBacktestEngine:
             cycles.append({"entry_date": entry_date, "expiry": expiry, "exit_date": exit_date})
         return cycles
 
+    def _is_all_equity(self) -> bool:
+        """True iff every leg is instrument_type EQUITY — an OPTION-cycle strategy (or a mixed EQUITY+OPTION one) always uses discover_cycles()/_run_one_cycle() instead, see run()."""
+        return all((leg.get("instrument_type") or "OPTION") == "EQUITY" for leg in self.rules["legs"])
+
     def run(
         self,
         from_date: str | None = None,
@@ -252,6 +271,8 @@ class CustomRuleBacktestEngine:
         """
         results = []
         try:
+            if self._is_all_equity():
+                return self.run_equity(from_date, to_date, on_progress)
             cycles = self.discover_cycles(from_date, to_date)
             total = len(cycles)
             for i, cycle in enumerate(cycles):
@@ -262,6 +283,144 @@ class CustomRuleBacktestEngine:
                     on_progress(i + 1, total)
         finally:
             self.session.close()
+        return results
+
+    def _equity_trading_days(self, from_date: str | None, to_date: str | None) -> list[str]:
+        """Every real trading day in range, off the SAME future_instrument table discover_cycles() uses for its own calendar — no separate equity-cash calendar exists in this dataset (see module docstring)."""
+        query = "SELECT DISTINCT trade_date FROM fno_bhavcopy WHERE symbol=:symbol AND instrument=:instrument"
+        params: dict = {"symbol": self.symbol, "instrument": self.future_instrument}
+        if from_date:
+            query += " AND trade_date >= :from_date"
+            params["from_date"] = from_date
+        if to_date:
+            query += " AND trade_date <= :to_date"
+            params["to_date"] = to_date
+        query += " ORDER BY trade_date ASC"
+        return [r[0] for r in self.session.execute(text(query), params).fetchall()]
+
+    def _equity_ma_condition_met(self, closes_before_today: list[float], period: int, direction: str, today_price: float) -> bool:
+        """Mirrors api/custom_strategy_scheduler.py's _ma_crossover_met() EXACTLY: today's price vs the trailing N-day average of the closes BEFORE today (today's own price is never in its own average) — same live/backtest parity every other entry condition in this app keeps."""
+        if not isinstance(period, int) or period < 2 or len(closes_before_today) < period:
+            return False
+        moving_average = sum(closes_before_today[-period:]) / period
+        return today_price > moving_average if direction == "ABOVE" else today_price < moving_average
+
+    def run_equity(
+        self,
+        from_date: str | None,
+        to_date: str | None,
+        on_progress: Callable[[int, int], None] | None = None,
+    ) -> list[dict]:
+        """
+        Walk-forward backtest for an all-EQUITY strategy — genuinely
+        different shape from _run_one_cycle()'s per-expiry-cycle walk
+        (equity has no expiry to discover cycles from at all). Re-enters
+        as soon as no position is open and the entry condition is met
+        (IMMEDIATE/AT_TIME = any day; CONDITIONAL/MA_CROSSOVER computed
+        for real off this symbol's own historical closes), holds until
+        take_profit_pct/stop_loss_pct fires. AT_TIME's clock-time and
+        BEFORE_EXPIRY are meaningless at this daily-EOD-bhavcopy
+        granularity (equity has no expiry) — both are treated as
+        IMMEDIATE-equivalent (any day eligible) here; rule_schema.py's
+        own validation already rejects BEFORE_EXPIRY for an all-equity
+        strategy, so that case can't reach this method in practice.
+        """
+        trading_days = self._equity_trading_days(from_date, to_date)
+        if len(trading_days) < 2:
+            return []
+
+        entry_rule = self.rules.get("entry") or {}
+        condition = entry_rule.get("condition") or {}
+        exit_ = self.rules.get("exit") or {}
+        take_profit_pct = exit_.get("take_profit_pct")
+        stop_loss_pct = exit_.get("stop_loss_pct")
+
+        results: list[dict] = []
+        open_legs: list[dict] | None = None
+        open_entry_date: str | None = None
+        closes_so_far: list[float] = []
+        total = len(trading_days)
+
+        for i, day in enumerate(trading_days):
+            self.feed.set_time(datetime.combine(date.fromisoformat(day), _MARKET_OPEN))
+            price = self.feed.get_ltp(self.equity_key)
+            if price is None:
+                continue
+
+            if open_legs is None:
+                eligible = entry_rule.get("mode") != "CONDITIONAL"
+                if entry_rule.get("mode") == "CONDITIONAL" and condition.get("type") == "MA_CROSSOVER":
+                    eligible = self._equity_ma_condition_met(closes_so_far, condition.get("period_days"), condition.get("direction"), price)
+                if eligible:
+                    try:
+                        strategy = RuleBasedStrategy(
+                            broker=self.broker, audit=self.audit, kill_switch=KillSwitch(), rate_limiter=self.rate_limiter,
+                            symbol=self.symbol, rules=self.rules, strike_step=self.strike_step, product=self.product,
+                        )
+                        result = strategy.run()
+                    except Exception as exc:
+                        log.warning("Equity entry=%s failed: %s", day, exc)
+                        result = {"status": "failed", "error": str(exc)}
+                    if result.get("status") == "success":
+                        legs = result["legs"]
+                        orders_by_id = {o["order_id"]: o for o in self.broker.orders}
+                        for leg in legs:
+                            order = orders_by_id.get(leg.get("order_id"))
+                            if order is not None:
+                                leg["entry_price"] = order["execution_price"]
+                        open_legs, open_entry_date = legs, day
+            else:
+                now_prices = {leg["instrument_token"]: price for leg in open_legs}
+                pnl_pct = self._combined_pnl_pct(open_legs, now_prices)
+                trigger = check_exit_trigger(pnl_pct, take_profit_pct, stop_loss_pct) if pnl_pct is not None else None
+                if trigger:
+                    leg_charges = []
+                    gross_pnl = 0.0
+                    for leg in open_legs:
+                        opposite = self.broker.place_buy_order if leg["transaction_type"] == "SELL" else self.broker.place_sell_order
+                        exit_side = "BUY" if leg["transaction_type"] == "SELL" else "SELL"
+                        order_id = opposite(instrument_token=leg["instrument_token"], quantity=leg["quantity"], product=self.product, order_type="MARKET", tag="BT_EQUITY_EXIT")
+                        fill_price = self.broker.orders[-1]["execution_price"] if order_id and self.broker.orders else price
+                        leg["exit_price"], leg["exit_date"], leg["exit_reason"] = fill_price, day, trigger
+                        sign = -1 if leg["transaction_type"] == "SELL" else 1
+                        gross_pnl += (leg["entry_price"] - fill_price) * leg["quantity"] * (-sign)
+                        leg_charges.append(calculate_equity_transaction_cost_breakdown(leg["entry_price"], leg["quantity"], leg["transaction_type"], self.charge_rates))
+                        leg_charges.append(calculate_equity_transaction_cost_breakdown(fill_price, leg["quantity"], exit_side, self.charge_rates))
+
+                    charges_total = sum_breakdowns(*leg_charges).get("total", 0)
+                    net_pnl = gross_pnl - charges_total
+                    entry_premium_total = sum(leg["entry_price"] * leg["quantity"] for leg in open_legs)
+                    pnl_pct_of_premium = (net_pnl / entry_premium_total * 100.0) if entry_premium_total > 0 else 0.0
+
+                    results.append({
+                        "entry_date": open_entry_date,
+                        "expiry": None,
+                        "exit_date": day,
+                        "exit_reason": trigger,
+                        "spot_at_entry": None,
+                        "legs": [
+                            {"instrument_type": "EQUITY", "option_type": None, "strike": None,
+                             "transaction_type": leg["transaction_type"], "quantity": leg["quantity"], "entry_price": leg["entry_price"],
+                             "expiry": None, "exit_date": leg["exit_date"], "exit_reason": leg["exit_reason"],
+                             "exit_price": leg["exit_price"], "exit_order_id": None, "greeks_at_entry": None}
+                            for leg in open_legs
+                        ],
+                        "gross_pnl": round(gross_pnl, 2),
+                        "charges": round(charges_total, 2),
+                        "net_pnl": round(net_pnl, 2),
+                        "pnl_pct_of_premium": round(pnl_pct_of_premium, 2),
+                        "won": net_pnl > 0,
+                        # No per-day traded-volume figure exists for cash equity in this
+                        # dataset (only the derivative contract's own `contracts` column
+                        # does — see module docstring) — always True rather than a guess.
+                        "liquid": True,
+                    })
+                    open_legs, open_entry_date = None, None
+
+            closes_so_far.append(price)
+            if on_progress:
+                on_progress(i + 1, total)
+
         return results
 
     def _combined_pnl_pct(self, legs: list[dict], now_prices: dict[str, float | None]) -> float | None:

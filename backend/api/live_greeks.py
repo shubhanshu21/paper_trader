@@ -23,6 +23,10 @@ from db.models import CustomStrategy, CustomStrategyPosition
 from utils import black76
 from utils.instrument_cache import InstrumentCache
 
+# Upstox's Margin Calculator API's own documented per-request cap — see
+# compute_portfolio_margin()'s basket-chunking below.
+_MARGIN_BASKET_CHUNK_SIZE = 20
+
 
 def compute_live_greeks(strategy_id: int, owner_user_id: int | None = None) -> dict | None:
     """
@@ -290,12 +294,50 @@ def compute_portfolio_margin(owner_user_id: int) -> dict:
             broker = brokers.get(mode)
             if broker is None:
                 continue
+
+            # Upstox's margin API rejects a basket with the same instrument_key
+            # listed more than once (HTTP 400 "Instrument key cannot be
+            # duplicated") — a real collision here, not just theoretical: two
+            # DIFFERENT strategies can independently land a leg on the exact
+            # same contract (e.g. one strategy's short and another's hedge on
+            # the same strike/expiry). Net every leg sharing an instrument_key
+            # into ONE basket row (signed quantity: SELL negative, BUY
+            # positive) before calling the broker, same as how a real combined
+            # account position would net — a net-zero pair (fully offsetting)
+            # is dropped entirely rather than sent as a zero-quantity row.
+            net_qty_by_key: dict[str, int] = defaultdict(int)
+            for leg in mode_legs:
+                signed = leg.quantity if leg.transaction_type == "BUY" else -leg.quantity
+                net_qty_by_key[leg.instrument_key] += signed
             basket = [
-                {"instrument_key": leg.instrument_key, "quantity": leg.quantity, "transaction_type": leg.transaction_type, "product": "D"}
-                for leg in mode_legs
+                {"instrument_key": key, "quantity": abs(qty), "transaction_type": "BUY" if qty > 0 else "SELL", "product": "D"}
+                for key, qty in net_qty_by_key.items() if qty != 0
             ]
-            margin = broker.get_basket_required_margin(basket)
-            result[mode]["margin_required"] = round(margin, 2) if margin is not None else None
+            if not basket:
+                result[mode]["margin_required"] = 0.0
+                continue
+
+            # Upstox's Margin Calculator API caps a single request at 20
+            # instruments (documented limit — HTTP 400 "UDAPI1102: The
+            # instrument limit has been exceeded" past that, confirmed
+            # against this account's own real portfolio). Above that, split
+            # into <=20-instrument chunks and sum each chunk's required
+            # margin. This is an approximation, not the exact same number a
+            # single all-in-one call would give: Upstox's own hedge-benefit
+            # netting only applies WITHIN each chunk, not across chunk
+            # boundaries, so the summed total is >= what one combined call
+            # would return. Still real, broker-computed margin for every
+            # leg — never a locally-guessed number — just not maximally
+            # netted once the portfolio is large enough to need chunking.
+            chunks = [basket[i:i + _MARGIN_BASKET_CHUNK_SIZE] for i in range(0, len(basket), _MARGIN_BASKET_CHUNK_SIZE)]
+            total_margin = 0.0
+            for chunk in chunks:
+                chunk_margin = broker.get_basket_required_margin(chunk)
+                if chunk_margin is None:
+                    total_margin = None
+                    break
+                total_margin += chunk_margin
+            result[mode]["margin_required"] = round(total_margin, 2) if total_margin is not None else None
 
         return result
     finally:

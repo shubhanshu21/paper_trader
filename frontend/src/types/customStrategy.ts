@@ -53,17 +53,29 @@ export interface CustomStrategyRules {
   };
 }
 
+// A flat settings dict for one of the 8 non-leg-based engines (each engine's
+// own backend *_schema.py `_DEFAULTS` shape — SUPERTREND_INTRADAY,
+// WEEKEND_GAP_COMBO, OTM_PUT_ROLL, SMART_CONDOR, GRAVITY, SESSION_SELLER,
+// MACD_CREDIT_SPREAD, DELTA_NEUTRAL_STRANGLE). No legs/entry/exit — see
+// lib/engineSpecs.ts for the per-engine field list consumed by
+// EngineSettingsForm.tsx.
+export type EngineRules = Record<string, unknown>;
+
 export interface CustomStrategy {
   id: number;
   name: string;
   description: string;
   instrument_type: string;
   // 'CUSTOM' (the leg-based builder shape, rules: CustomStrategyRules) |
-  // 'SUPERTREND_INTRADAY' (strategies/custom/intraday_schema.py's totally
-  // different shape — no legs/entry/exit, see that module) | legacy
-  // pre-builder values ('STRADDLE'/'STRANGLE'/'IRON_CONDOR'/'BUTTERFLY').
+  // one of the 8 engine strategy_type strings above (rules: EngineRules) |
+  // legacy pre-builder values ('STRADDLE'/'STRANGLE'/'IRON_CONDOR'/'BUTTERFLY').
   strategy_type: string;
   symbols: string[];
+  // Typed as the leg-based shape even though engine strategies actually
+  // store EngineRules here — every read site that touches .rules already
+  // gates on isLegBased()/NON_LEG_STRATEGY_TYPES first (see
+  // StrategiesView.tsx), so this stays the CUSTOM-shape type for those call
+  // sites' sake rather than forcing a cast at each one.
   rules: CustomStrategyRules | null;
   status: string;
   backtest_return_pct: number | null;

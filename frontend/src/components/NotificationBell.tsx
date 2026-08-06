@@ -93,18 +93,22 @@ export default function NotificationBell() {
       lastMessageAt = Date.now();
       ws.onmessage = (event) => {
         lastMessageAt = Date.now();
-        const data = JSON.parse(event.data);
-        if (data.type === "snapshot") {
-          setNotifications(data.notifications || []);
-          setUnreadCount(data.unread_count || 0);
-        } else if (data.type === "update") {
-          setUnreadCount(data.unread_count || 0);
-          if (data.notifications?.length) {
-            setNotifications((prev) => {
-              const merged = [...data.notifications].reverse().concat(prev);
-              return merged.slice(0, 50);
-            });
+        try {
+          const data = JSON.parse(event.data);
+          if (data.type === "snapshot") {
+            setNotifications(data.notifications || []);
+            setUnreadCount(data.unread_count || 0);
+          } else if (data.type === "update") {
+            setUnreadCount(data.unread_count || 0);
+            if (data.notifications?.length) {
+              setNotifications((prev) => {
+                const merged = [...data.notifications].reverse().concat(prev);
+                return merged.slice(0, 50);
+              });
+            }
           }
+        } catch (err) {
+          console.error("Failed to parse /ws/notifications message", err);
         }
       };
       ws.onclose = () => {

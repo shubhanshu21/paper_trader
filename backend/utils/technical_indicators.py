@@ -161,3 +161,53 @@ def camarilla_pivot_points(prev_high: float, prev_low: float, prev_close: float)
     s3 = prev_close - rng * 1.1 / 4
     s4 = prev_close - rng * 1.1 / 2
     return {"r1": r1, "r2": r2, "r3": r3, "r4": r4, "s1": s1, "s2": s2, "s3": s3, "s4": s4}
+
+
+def ema(values: list[float], period: int) -> list[float | None]:
+    """
+    Standard exponential moving average, seeded with a plain SMA of the
+    first `period` values (the conventional way every charting platform
+    seeds an EMA) — None for every index before that seed exists.
+    """
+    if period < 1:
+        raise ValueError(f"EMA period must be >= 1, got {period}.")
+    if len(values) < period:
+        return [None] * len(values)
+    k = 2.0 / (period + 1)
+    out: list[float | None] = [None] * (period - 1)
+    seed = sum(values[:period]) / period
+    out.append(seed)
+    prev = seed
+    for v in values[period:]:
+        prev = v * k + prev * (1 - k)
+        out.append(prev)
+    return out
+
+
+def macd(candles: list[CandleLike], fast: int = 12, slow: int = 26, signal: int = 9) -> list[dict | None]:
+    """
+    Standard MACD (fast EMA - slow EMA, with a signal-line EMA of that
+    difference) — used by the MACD credit-spread strategy's stop-and-
+    reverse trend read (strategies/custom/macd_credit_schema.py). Returns
+    one {"macd": float, "signal": float, "histogram": float} dict per
+    candle, or None wherever the slow EMA (or, after that, the signal
+    EMA of the MACD line itself) doesn't have enough history yet —
+    signal only becomes available `signal` candles after the MACD line
+    itself first does, so the None-padding is deeper than just `slow`.
+    """
+    closes = [c["close"] for c in candles]
+    fast_ema = ema(closes, fast)
+    slow_ema = ema(closes, slow)
+    macd_line = [None if (f is None or s is None) else f - s for f, s in zip(fast_ema, slow_ema, strict=True)]
+
+    first_valid = next((i for i, v in enumerate(macd_line) if v is not None), None)
+    if first_valid is None:
+        return [None] * len(candles)
+    macd_values = [v for v in macd_line[first_valid:] if v is not None]
+    signal_ema = ema(macd_values, signal)
+
+    result: list[dict | None] = [None] * first_valid
+    for i, s in enumerate(signal_ema):
+        m = macd_values[i]
+        result.append(None if s is None else {"macd": m, "signal": s, "histogram": m - s})
+    return result

@@ -23,9 +23,13 @@ export default function MarketDepthModal({ instrument, mode, onClose, onTrade }:
       const ws = new WebSocket(wsUrl(`/ws/market-depth/${key}?mode=${mode}`));
       ws.onmessage = (event) => {
         if (cancelled) return;
-        const msg = JSON.parse(event.data);
-        if (msg.type === "depth") { setDepth(msg); setError(""); }
-        else if (msg.type === "error") setError(msg.detail || "Failed to load market depth.");
+        try {
+          const msg = JSON.parse(event.data);
+          if (msg.type === "depth") { setDepth(msg); setError(""); }
+          else if (msg.type === "error") setError(msg.detail || "Failed to load market depth.");
+        } catch (err) {
+          console.error("Failed to parse /ws/market-depth message", err);
+        }
       };
       ws.onclose = () => {
         if (!cancelled) reconnectTimer = setTimeout(connect, 3000);
