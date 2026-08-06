@@ -233,6 +233,52 @@ export const ENGINE_SPECS: EngineSpec[] = [
       target_capital_pct: 5, third_weekly_exit_time: "15:15",
     },
   },
+  {
+    strategyType: "WEEKLY_DIRECTIONAL",
+    label: "Weekly Directional",
+    tagline: "An asymmetric Reverse Iron Fly: a bought ATM straddle funded by an asymmetric OTM sell (2x lots on whichever side an EMA crossover favors), plus a delta-targeted tail hedge on the heavier-sold side.",
+    fields: [
+      { key: "lots", label: "Lots", type: "number", min: 1, step: 1 },
+      { key: "ema_fast", label: "Fast EMA period", type: "number", min: 1, step: 1 },
+      { key: "ema_slow", label: "Slow EMA period", type: "number", min: 1, step: 1, hint: "Must be greater than the fast period." },
+      { key: "expiry_offset", label: "Weekly expiry offset", type: "number", min: 0, step: 1, hint: "0 = nearest weekly." },
+      { key: "short_otm_points", label: "Short strike OTM distance (pts)", type: "number", min: 1, step: 1 },
+      { key: "tail_hedge_target_delta", label: "Tail hedge target |delta|", type: "number", min: 0.01, max: 0.99, step: 0.01 },
+      { key: "entry_weekday", label: "Entry day", type: "select", options: WEEKDAY_OPTIONS },
+      { key: "entry_time", label: "Entry time", type: "time" },
+      { key: "target_capital_pct", label: "Close-all target (% of margin)", type: "number", min: 0.1, step: 0.1 },
+      { key: "stop_loss_capital_pct", label: "Close-all stop (% of margin)", type: "number", min: 0.1, step: 0.1 },
+      { key: "exit_days_before_expiry", label: "Hard exit (days before expiry)", type: "number", min: 0, step: 1, hint: "0 = hold through the traded expiry itself." },
+    ],
+    defaultRules: {
+      lots: 1, ema_fast: 20, ema_slow: 50, expiry_offset: 0, short_otm_points: 250,
+      tail_hedge_target_delta: 0.05, entry_weekday: "MON", entry_time: "09:20",
+      target_capital_pct: 10, stop_loss_capital_pct: 5, exit_days_before_expiry: 0,
+    },
+  },
+  {
+    strategyType: "MATRIX_CALENDAR",
+    label: "Matrix Calendar",
+    tagline: "A zero-adjustment hybrid Ratio Calendar / Iron Condor: a delta-targeted weekly short strangle, weekly outer hedges, plus same-strike MONTHLY calendar hedges for a Vega-positive profile against IV spikes and gaps.",
+    fields: [
+      { key: "lots", label: "Lots", type: "number", min: 1, step: 1, hint: "Short legs trade 2x this; every hedge leg trades 1x." },
+      { key: "short_target_delta", label: "Short strike target |delta|", type: "number", min: 0.01, max: 0.99, step: 0.01 },
+      { key: "strike_grid", label: "Strike grid for delta search (pts)", type: "number", min: 1, step: 1, hint: "100pt increments for liquidity, not the raw 50pt exchange step." },
+      { key: "weekly_hedge_points", label: "Weekly outer hedge distance (pts)", type: "number", min: 1, step: 1 },
+      { key: "weekly_expiry_offset", label: "Weekly expiry offset", type: "number", min: 0, step: 1, hint: "0 = nearest weekly, 1 = the one after (~8 DTE off a Monday entry)." },
+      { key: "entry_weekday", label: "Entry day", type: "select", options: WEEKDAY_OPTIONS },
+      { key: "entry_time", label: "Entry time", type: "time" },
+      { key: "max_hold_days", label: "Max hold (days)", type: "number", min: 1, step: 1, hint: "Forced exit this many calendar days after entry, regardless of P&L." },
+      { key: "target_capital_pct", label: "Close-all target (% of margin)", type: "number", min: 0.1, step: 0.1 },
+      { key: "stop_loss_capital_pct", label: "Close-all stop (% of margin)", type: "number", min: 0.1, step: 0.1 },
+      { key: "exit_days_before_expiry", label: "Safety-net hard exit (days before weekly expiry)", type: "number", min: 0, step: 1 },
+    ],
+    defaultRules: {
+      lots: 1, short_target_delta: 0.23, strike_grid: 100, weekly_hedge_points: 500,
+      weekly_expiry_offset: 1, entry_weekday: "MON", entry_time: "15:16", max_hold_days: 2,
+      target_capital_pct: 1.5, stop_loss_capital_pct: 2, exit_days_before_expiry: 1,
+    },
+  },
 ];
 
 export function getEngineSpec(strategyType: string): EngineSpec | undefined {

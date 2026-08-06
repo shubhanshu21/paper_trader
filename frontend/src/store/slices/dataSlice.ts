@@ -25,7 +25,11 @@ interface DataState {
   openEquity: EquityPosition[];
   closedEquity: EquityPosition[];
   ltps: { [key: string]: number };
-  closingId: number | null;
+  // Prefixed by source table ('option-7'/'equity-7'/'custom-7') — ids are
+  // NOT unique across these three independent tables/sequences, so a bare
+  // number here would make an equity position and an options position
+  // that happen to share an id both show as "closing" at once.
+  closingId: string | null;
   loading: {
     wallet: boolean;
     ledger: boolean;
@@ -171,7 +175,7 @@ const dataSlice = createSlice({
     builder
       .addCase(closeOptionPosition.pending, (state, action) => {
         state.loading.options = true;
-        state.closingId = action.meta.arg;
+        state.closingId = `option-${action.meta.arg}`;
       })
       .addCase(closeOptionPosition.fulfilled, (state, action) => {
         state.loading.options = false;
@@ -188,7 +192,7 @@ const dataSlice = createSlice({
     builder
       .addCase(closeEquityPosition.pending, (state, action) => {
         state.loading.equity = true;
-        state.closingId = action.meta.arg;
+        state.closingId = `equity-${action.meta.arg}`;
       })
       .addCase(closeEquityPosition.fulfilled, (state, action) => {
         state.loading.equity = false;
@@ -204,7 +208,7 @@ const dataSlice = createSlice({
     // Close Custom Position
     builder
       .addCase(closeCustomPosition.pending, (state, action) => {
-        state.closingId = action.meta.arg;
+        state.closingId = `custom-${action.meta.arg}`;
       })
       .addCase(closeCustomPosition.fulfilled, (state) => {
         state.closingId = null;

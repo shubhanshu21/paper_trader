@@ -356,6 +356,7 @@ class CustomRuleBacktestEngine:
                         strategy = RuleBasedStrategy(
                             broker=self.broker, audit=self.audit, kill_switch=KillSwitch(), rate_limiter=self.rate_limiter,
                             symbol=self.symbol, rules=self.rules, strike_step=self.strike_step, product=self.product,
+                            notify_on_failure=False,
                         )
                         result = strategy.run()
                     except Exception as exc:
@@ -490,6 +491,7 @@ class CustomRuleBacktestEngine:
             rules=self.rules,
             strike_step=self.strike_step,
             product=self.product,
+            notify_on_failure=False,
         )
         result = strategy.run()
         if result.get("status") != "success":

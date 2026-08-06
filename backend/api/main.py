@@ -25,18 +25,22 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
 from api import (
+    routes_adjustment_preview,
     routes_auth,
     routes_backtest,
+    routes_chain_replay,
     routes_custom_strategies,
     routes_daemon,
     routes_dashboard,
     routes_equity,
     routes_health,
+    routes_iv_screener,
     routes_leaderboard,
     routes_logs,
     routes_multi_leg,
     routes_notifications,
     routes_oauth,
+    routes_oi_scanner,
     routes_performance,
     routes_positions,
     routes_strategies,
@@ -279,6 +283,9 @@ app.include_router(routes_backtest.router)
 app.include_router(routes_logs.router)
 app.include_router(routes_dashboard.router)
 app.include_router(routes_leaderboard.router)
+app.include_router(routes_iv_screener.router)
+app.include_router(routes_oi_scanner.router)
+app.include_router(routes_chain_replay.router)
 app.include_router(routes_wallet.router)
 app.include_router(routes_wallet.orders_router)
 app.include_router(routes_equity.router)
@@ -288,6 +295,7 @@ app.include_router(routes_websocket.router)
 app.include_router(routes_multi_leg.router)
 app.include_router(routes_performance.router)
 app.include_router(routes_custom_strategies.router)
+app.include_router(routes_adjustment_preview.router)
 app.include_router(routes_upstox_token.router)
 app.include_router(routes_health.router)
 app.include_router(ws_positions.router)

@@ -42,12 +42,22 @@ class BaseStrategy(ABC):
         audit: AuditTrail,
         kill_switch: KillSwitch,
         rate_limiter: OrderRateLimiter,
+        notify_on_failure: bool = True,
     ) -> None:
         self.broker = broker
         self.audit = audit
         self.kill_switch = kill_switch
         self.rate_limiter = rate_limiter
         self._name = self.__class__.__name__
+        # False for backtest cycles (see backtest/custom_engine.py) — a
+        # historical data gap (e.g. an empty option chain for some past
+        # expiry) is an ordinary "skip this cycle" outcome there, not a
+        # live-trading emergency. Without this, every such gap fired a
+        # real user-facing "FATAL — kill switch activated" Notification/
+        # Telegram alert during an ordinary backtest run, even though
+        # nothing was actually halted (the backtest's own KillSwitch is a
+        # fresh throwaway instance per cycle, never wired to anything).
+        self._notify_on_failure = notify_on_failure
 
         log.info("Strategy '%s' initialised.", self._name)
 
@@ -95,7 +105,8 @@ class BaseStrategy(ABC):
             # RuleBasedStrategy (custom strategies) carries one — legacy
             # hand-written strategies have no owning user, so this stays
             # None for them (system-wide/admin-only, same as before).
-            notify(self._name, f"Trade skipped — compliance check failed: {exc}", level="warning", user_id=getattr(self, "user_id", None))
+            if self._notify_on_failure:
+                notify(self._name, f"Trade skipped — compliance check failed: {exc}", level="warning", user_id=getattr(self, "user_id", None))
             return {"status": "failed", "error": str(exc)}
         except Exception as exc:
             log.critical(
@@ -104,7 +115,8 @@ class BaseStrategy(ABC):
             )
             # Activate kill switch on any unhandled exception
             self.kill_switch.activate(reason=f"Unhandled exception: {exc}")
-            notify(self._name, f"FATAL — kill switch activated: {exc}", level="error", user_id=getattr(self, "user_id", None))
+            if self._notify_on_failure:
+                notify(self._name, f"FATAL — kill switch activated: {exc}", level="error", user_id=getattr(self, "user_id", None))
             return {"status": "failed", "error": str(exc)}
 
         log.info("=" * 60)

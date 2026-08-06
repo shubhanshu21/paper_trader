@@ -10,8 +10,11 @@ have settled) rather than during the session, and only once per calendar
 day — checks whether TODAY already has a row for a symbol before writing
 another, so a process restart mid-day can't double-write. Symbols
 snapshotted: every symbol referenced by any CustomStrategy currently
-PAPER_TRADING or LIVE — the only symbols an IV_RANK entry condition could
-actually be evaluated against.
+PAPER_TRADING or LIVE (the only symbols an IV_RANK entry condition could
+actually be evaluated against) UNIONED with every symbol on ANY user's
+watchlist (api/routes_iv_screener.py's screener page needs history for a
+symbol whether or not it happens to have a strategy built on it yet —
+otherwise a plain watchlist symbol could never accumulate a rank).
 
 This table starts EMPTY — there's no historical options-price archive
 live to backfill an IV history from (see db/models.py's SymbolIvHistory
@@ -27,7 +30,7 @@ from datetime import time as dtime
 from zoneinfo import ZoneInfo
 
 from db.engine import SessionLocal
-from db.models import CustomStrategy, SymbolIvHistory
+from db.models import CustomStrategy, Instrument, SymbolIvHistory, UserWatchlist
 from strategies.custom.rule_strategy import resolve_leg_strike
 from utils import black76
 from utils.instrument_cache import InstrumentCache
@@ -103,6 +106,25 @@ def _snapshot_symbol_iv(broker, symbol: str) -> float | None:
         return None
 
 
+def _watchlist_symbols(db) -> set[str]:
+    """
+    Every symbol on ANY user's watchlist (this job is a single global
+    background task, not scoped to one user — same as the active-strategy
+    query below). Two separate lookups rather than a SQL-level join —
+    instruments and user_watchlists have mismatched column collations in
+    this DB, which makes a JOIN on instrument_key fail outright (same
+    reason api/routes_iv_screener.py does a per-row session.get(Instrument,
+    ...) instead of a join).
+    """
+    instrument_keys = {row[0] for row in db.query(UserWatchlist.instrument_key).distinct().all()}
+    symbols = set()
+    for key in instrument_keys:
+        inst = db.get(Instrument, key)
+        if inst is not None:
+            symbols.add(inst.symbol)
+    return symbols
+
+
 def _run_daily_snapshot() -> None:
     brokers = _get_brokers()
     if brokers is None:
@@ -116,6 +138,7 @@ def _run_daily_snapshot() -> None:
         today = date.today().isoformat()
         strategies = db.query(CustomStrategy).filter(CustomStrategy.status.in_(["PAPER_TRADING", "LIVE"])).all()
         symbols = {s for strat in strategies for s in json.loads(strat.symbols)}
+        symbols |= _watchlist_symbols(db)
         for symbol in symbols:
             if _already_snapshotted_today(db, symbol, today):
                 continue

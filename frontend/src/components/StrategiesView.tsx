@@ -16,6 +16,7 @@ import type {
 import type { CustomStrategy, CustomStrategyRules, EngineRules, PortfolioGreeksResponse } from "../types/customStrategy";
 import { useCustomStrategyPositions } from "../hooks/useCustomStrategyPositions";
 import StrategyBuilderModal from "./StrategyBuilderModal";
+import AdjustmentPreviewCard from "./AdjustmentPreviewCard";
 import BacktestEquityChart from "./BacktestEquityChart";
 import PayoffDiagramChart from "./PayoffDiagramChart";
 
@@ -110,7 +111,7 @@ function StatusPill({ status, big = false }: { status: string; big?: boolean }) 
 // strategies" spot below checks membership here instead of repeating a
 // strategy_type string each time, so a future new engine only needs
 // adding to this one set.
-const NON_LEG_STRATEGY_TYPES = new Set(["SUPERTREND_INTRADAY", "WEEKEND_GAP_COMBO", "OTM_PUT_ROLL", "SMART_CONDOR", "GRAVITY", "SESSION_SELLER", "MACD_CREDIT_SPREAD", "DELTA_NEUTRAL_STRANGLE"]);
+const NON_LEG_STRATEGY_TYPES = new Set(["SUPERTREND_INTRADAY", "WEEKEND_GAP_COMBO", "OTM_PUT_ROLL", "SMART_CONDOR", "GRAVITY", "SESSION_SELLER", "MACD_CREDIT_SPREAD", "DELTA_NEUTRAL_STRANGLE", "WEEKLY_DIRECTIONAL", "MATRIX_CALENDAR"]);
 const isLegBased = (strategy: Pick<CustomStrategy, "strategy_type">): boolean => !NON_LEG_STRATEGY_TYPES.has(strategy.strategy_type);
 
 /** "Intraday"/"Weekend Combo"/"Roll"/"Condor"/"Signal"/"Sessions"/"Stop & Reverse"/"Delta-Neutral" for the non-leg-based engines (see NON_LEG_STRATEGY_TYPES); otherwise the leg-based builder's own expiry cadence (defaults to Weekly, same convention as rule_schema.py/describe_rules). */
@@ -1795,6 +1796,10 @@ export default function StrategiesView({
                       <p className="text-[11px] text-gray-400 mt-2">Based on current live option premiums if entered right now — not a forecast, and moves as the market does.</p>
                     </div>
                   </div>
+                )}
+
+                {(selectedStrategy.strategy_type === "SMART_CONDOR" || selectedStrategy.strategy_type === "DELTA_NEUTRAL_STRANGLE") && (
+                  <AdjustmentPreviewCard strategyId={selectedStrategy.id} />
                 )}
 
                 <div className="flex items-center gap-2 text-xs pt-1">

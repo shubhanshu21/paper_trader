@@ -80,7 +80,9 @@ interface PositionsProps {
   openEquity: EquityPosition[];
   ltps: { [key: string]: number };
   onClosePosition: (id: number, type: "options" | "equity" | "custom") => void;
-  closingId: number | null;
+  // Prefixed by source table ('option-7'/'equity-7'/'custom-7') — ids
+  // aren't unique across the three underlying tables, see dataSlice.ts.
+  closingId: string | null;
 }
 
 interface PositionListItem {
@@ -123,7 +125,7 @@ const EmptyPositionsState = () => {
 
 export default function PositionsView({ openOptions, openEquity, ltps, onClosePosition, closingId }: PositionsProps) {
   const [searchQuery, setSearchQuery] = useState("");
-  const [hoveredSymbol, setHoveredSymbol] = useState<string | null>(null);
+  const [hoveredRowKey, setHoveredRowKey] = useState<string | null>(null);
   const [historyExpanded, setHistoryExpanded] = useState(false);
   const customRows = useCustomStrategyPositions();
 
@@ -258,16 +260,25 @@ export default function PositionsView({ openOptions, openEquity, ltps, onClosePo
                   </thead>
                   <tbody className="divide-y" style={{ borderColor: C.border }}>
                     {filteredPositions.map((o) => {
-                      const isClosing = closingId === o.id;
-                      const isHovered = hoveredSymbol === o.symbol;
+                      const rowKey = o.isApi ? (o.isEquity ? `equity-${o.id}` : `option-${o.id}`) : `custom-${o.id}`;
+                      const isClosing = closingId === rowKey;
+                      // Symbol is NOT a unique row identifier (two open
+                      // positions can legitimately share an underlying,
+                      // e.g. two strikes on the same index) — hovering one
+                      // row previously revealed the Square Off button on
+                      // every row sharing that symbol.
+                      const isHovered = hoveredRowKey === rowKey;
                       const isShort = o.qty < 0;
 
                       return (
-                        <tr 
-                          key={o.symbol}
-                          onMouseEnter={() => setHoveredSymbol(o.symbol)}
-                          onMouseLeave={() => setHoveredSymbol(null)}
-                          className="hover:bg-gray-50 transition-colors"
+                        <tr
+                          key={rowKey}
+                          tabIndex={0}
+                          onMouseEnter={() => setHoveredRowKey(rowKey)}
+                          onMouseLeave={() => setHoveredRowKey(null)}
+                          onFocus={() => setHoveredRowKey(rowKey)}
+                          onBlur={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setHoveredRowKey(null); }}
+                          className="hover:bg-gray-50 transition-colors focus:outline-none focus-visible:bg-gray-50"
                           style={{ height: "40px" }}
                         >
                           <td className="px-4 py-3 text-left w-12">

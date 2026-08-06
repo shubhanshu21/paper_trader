@@ -9,6 +9,7 @@ interface OrdersProps {
 }
 
 interface OrderListItem {
+  key: string;
   time: string;
   type: "BUY" | "SELL";
   symbol: string;
@@ -62,11 +63,20 @@ export default function OrdersView({ orders }: OrdersProps) {
         : o.date;
 
     return {
+      // order_id can be null (e.g. dry-run paper orders) and isn't
+      // guaranteed unique alone — combined with position/date/side this is
+      // stable across re-filters, unlike the array-index key used before.
+      key: `${o.order_id ?? "noid"}-${o.position_id ?? "nopos"}-${o.date}-${o.transaction_type}`,
       time: timePart || "12:00:00",
       type: o.transaction_type as "BUY" | "SELL",
       symbol: o.display_symbol || o.symbol.split("|")[0],
-      exch: o.symbol.includes("FUT") || o.symbol.includes("CE") || o.symbol.includes("PE") ? "NFO" : "NSE",
-      product: o.strategy_name === "manual_trade" ? "CNC" : "MIS",
+      // A real strike means this leg trades on the F&O segment; equity
+      // legs (custom-strategy EQUITY legs and the Equity/Holdings order
+      // rows) never carry one — more reliable than substring-matching the
+      // raw symbol name, which misclassifies any ticker that happens to
+      // contain "CE"/"PE"/"FUT" as a substring.
+      exch: o.strike !== null ? "NFO" : "NSE",
+      product: o.product,
       qty: `${o.quantity} / ${o.quantity}`,
       price: o.price,
       status: o.status,
@@ -155,8 +165,8 @@ export default function OrdersView({ orders }: OrdersProps) {
                     </tr>
                   </thead>
                   <tbody className="divide-y" style={{ borderColor: C.border }}>
-                    {filteredOpen.map((o, idx) => (
-                      <tr key={idx} className="hover:bg-gray-50 transition-colors" style={{ height: "40px" }}>
+                    {filteredOpen.map((o) => (
+                      <tr key={o.key} className="hover:bg-gray-50 transition-colors" style={{ height: "40px" }}>
                         <td className="px-4 py-3 text-left w-12">
                           <input type="checkbox" className="rounded border-gray-300 text-orange-500 focus:ring-orange-500" />
                         </td>
@@ -233,8 +243,8 @@ export default function OrdersView({ orders }: OrdersProps) {
                     </tr>
                   </thead>
                   <tbody className="divide-y" style={{ borderColor: C.border }}>
-                    {filteredExec.map((o, idx) => (
-                      <tr key={idx} className="hover:bg-gray-50 transition-colors" style={{ height: "40px" }}>
+                    {filteredExec.map((o) => (
+                      <tr key={o.key} className="hover:bg-gray-50 transition-colors" style={{ height: "40px" }}>
                         <Td className="text-gray-500 font-mono">{o.time}</Td>
                         <Td>
                           <TypeTag t={o.type} />

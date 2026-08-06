@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { WalletSummary, EquityPosition, OptionsPosition, User } from "../api";
 import { Banner, SectionTitle, ColorBar } from "./Common";
 import { C, FONT, withSign, sign, inrWithSignNoPlus } from "../lib/format";
+import { useCustomStrategyPositions } from "../hooks/useCustomStrategyPositions";
 
 interface DashboardProps {
   currentUser?: User | null;
@@ -13,10 +14,29 @@ interface DashboardProps {
   walletLoading?: boolean;
 }
 
+// A minimal shape both legacy options positions and custom-strategy-
+// builder legs can be flattened into for the summary panel below —
+// PositionsView.tsx merges these two sources the same way (plus equity),
+// this only needs id/symbol/quantity/pnl for its compact list.
+interface SummaryRow {
+  key: string;
+  symbol: string;
+  quantity: number;
+  pnl: number;
+}
+
 export default function DashboardView({ currentUser, wallet, openEquity, openOptions, walletLoading }: DashboardProps) {
   const navigate = useNavigate();
+  const customRows = useCustomStrategyPositions();
   const holdingsCount = openEquity.length;
-  const positionsCount = openOptions.length;
+  // Previously only openOptions — a user with ONLY custom-strategy-builder
+  // legs open (no legacy strangle positions) saw "0 active positions" here
+  // even though the Positions page correctly showed their open legs.
+  const summaryRows: SummaryRow[] = [
+    ...openOptions.map((pos) => ({ key: `opt-${pos.id}`, symbol: pos.symbol, quantity: pos.quantity, pnl: pos.mtm || 0 })),
+    ...customRows.map((r) => ({ key: `custom-${r.id}`, symbol: r.symbol, quantity: r.quantity, pnl: r.pnl || 0 })),
+  ];
+  const positionsCount = summaryRows.length;
   const displayName = currentUser?.username || "Trader";
 
   return (
@@ -141,29 +161,26 @@ export default function DashboardView({ currentUser, wallet, openEquity, openOpt
 
         <div>
           <SectionTitle icon={FileText}>Active Positions Summary ({positionsCount})</SectionTitle>
-          {openOptions.length === 0 ? (
+          {summaryRows.length === 0 ? (
             <div className="py-8 text-center text-sm text-gray-400 border border-dashed rounded-lg bg-gray-50">
-              No active options positions.
+              No active positions.
             </div>
           ) : (
             <div className="space-y-3 max-h-48 overflow-y-auto pr-2">
-              {openOptions.slice(0, 5).map((pos) => {
-                const pnl = pos.mtm || 0;
-                return (
-                  <div key={pos.id} className="flex justify-between items-center text-sm border-b pb-2">
-                    <div className="flex flex-col">
-                      <span className="font-semibold text-gray-800">{pos.symbol}</span>
-                      <span className="text-[10px] text-gray-400">Qty: {pos.quantity}</span>
-                    </div>
-                    <span className="font-semibold tabular-nums" style={{ color: sign(pnl) }}>
-                      {withSign(pnl)}
-                    </span>
+              {summaryRows.slice(0, 5).map((row) => (
+                <div key={row.key} className="flex justify-between items-center text-sm border-b pb-2">
+                  <div className="flex flex-col">
+                    <span className="font-semibold text-gray-800">{row.symbol}</span>
+                    <span className="text-[10px] text-gray-400">Qty: {row.quantity}</span>
                   </div>
-                );
-              })}
-              {openOptions.length > 5 && (
+                  <span className="font-semibold tabular-nums" style={{ color: sign(row.pnl) }}>
+                    {withSign(row.pnl)}
+                  </span>
+                </div>
+              ))}
+              {summaryRows.length > 5 && (
                 <button onClick={() => navigate("/positions")} className="text-xs text-blue-500 hover:underline font-semibold block text-center w-full py-1 focus:outline-none">
-                  View all {openOptions.length} positions
+                  View all {summaryRows.length} positions
                 </button>
               )}
             </div>

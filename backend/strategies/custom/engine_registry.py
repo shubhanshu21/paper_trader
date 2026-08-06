@@ -30,6 +30,10 @@ from strategies.custom.macd_credit_schema import (
     describe_macd_credit_rules,
     validate_macd_credit_rules,
 )
+from strategies.custom.matrix_calendar_schema import (
+    describe_matrix_calendar_rules,
+    validate_matrix_calendar_rules,
+)
 from strategies.custom.otm_put_roll_schema import (
     describe_otm_put_roll_rules,
     validate_otm_put_roll_rules,
@@ -42,6 +46,10 @@ from strategies.custom.session_seller_schema import (
 from strategies.custom.smart_condor_schema import (
     describe_smart_condor_rules,
     validate_smart_condor_rules,
+)
+from strategies.custom.weekly_directional_schema import (
+    describe_weekly_directional_rules,
+    validate_weekly_directional_rules,
 )
 
 _DEFAULT_ENGINE = {
@@ -132,6 +140,28 @@ _ENGINE_REGISTRY: dict[str, dict] = {
             "two-stage adjustment simulation (a premium-ratio rebalance and a separate delta-threshold "
             "full reset) the backtest engine doesn't have. Paper trading works today and is the way to "
             "validate it for now."
+        ),
+    },
+    "WEEKLY_DIRECTIONAL": {
+        "validate": validate_weekly_directional_rules,
+        "describe": describe_weekly_directional_rules,
+        "backtest_supported": False,
+        "backtest_unavailable_reason": (
+            "Backtesting isn't available for this strategy yet — the leg structure itself (which side "
+            "gets 2x lots, which side gets the tail hedge) depends on a live EMA-crossover read plus a "
+            "delta-targeted hedge search the backtest engine's fixed-leg cycle walk doesn't support. "
+            "Paper trading works today and is the way to validate it for now."
+        ),
+    },
+    "MATRIX_CALENDAR": {
+        "validate": validate_matrix_calendar_rules,
+        "describe": describe_matrix_calendar_rules,
+        "backtest_supported": False,
+        "backtest_unavailable_reason": (
+            "Backtesting isn't available for this strategy yet — it needs a live delta-targeted strike "
+            "search PLUS a simultaneous two-expiry (weekly + monthly) fill simulation the backtest "
+            "engine's single-expiry cycle walk doesn't have. Paper trading works today and is the way "
+            "to validate it for now."
         ),
     },
 }

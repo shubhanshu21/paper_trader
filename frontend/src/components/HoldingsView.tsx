@@ -9,7 +9,8 @@ interface HoldingsProps {
   closedEquity: EquityPosition[];
   ltps: { [key: string]: number };
   onClosePosition: (id: number, type: "options" | "equity") => void;
-  closingId: number | null;
+  // Prefixed by source table ('equity-7') — see dataSlice.ts.
+  closingId: string | null;
 }
 
 interface HoldingListItem {
@@ -56,7 +57,7 @@ const getTodayIso = () => {
 
 export default function HoldingsView({ openEquity, ltps, onClosePosition, closingId }: HoldingsProps) {
   const [searchQuery, setSearchQuery] = useState("");
-  const [hoveredSymbol, setHoveredSymbol] = useState<string | null>(null);
+  const [hoveredRowKey, setHoveredRowKey] = useState<number | null>(null);
 
   const todayStr = getTodayIso();
 
@@ -190,15 +191,22 @@ export default function HoldingsView({ openEquity, ltps, onClosePosition, closin
                     const invVal = h.avgCost * h.qty;
                     const pnl = curVal - invVal;
                     const chg = invVal > 0 ? (pnl / invVal) * 100 : 0;
-                    const isClosing = closingId === h.id;
-                    const isHovered = hoveredSymbol === h.symbol;
+                    const isClosing = closingId === `equity-${h.id}`;
+                    // Symbol is NOT a unique row identifier (e.g. two CNC
+                    // lots of the same equity bought on different days) —
+                    // hovering one row previously revealed the Exit button
+                    // on every row sharing that symbol.
+                    const isHovered = hoveredRowKey === h.id;
 
                     return (
-                      <tr 
-                        key={h.symbol} 
-                        onMouseEnter={() => setHoveredSymbol(h.symbol)}
-                        onMouseLeave={() => setHoveredSymbol(null)}
-                        className="hover:bg-gray-50 transition-colors"
+                      <tr
+                        key={h.id ?? h.symbol}
+                        tabIndex={0}
+                        onMouseEnter={() => setHoveredRowKey(h.id ?? null)}
+                        onMouseLeave={() => setHoveredRowKey(null)}
+                        onFocus={() => setHoveredRowKey(h.id ?? null)}
+                        onBlur={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setHoveredRowKey(null); }}
+                        className="hover:bg-gray-50 transition-colors focus:outline-none focus-visible:bg-gray-50"
                         style={{ height: "40px" }}
                       >
                         {/* Instrument */}

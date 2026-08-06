@@ -133,6 +133,24 @@ export interface PortfolioMarginResponse {
   live: PortfolioMarginPool;
 }
 
+export interface AdjustmentPreviewLeg {
+  option_type: "CE" | "PE";
+  strike: number | null;
+  action?: "SELL" | "BUY";
+  role?: string | null;
+  estimated_premium?: number | null;
+}
+
+export interface AdjustmentPreviewResponse {
+  triggered: boolean;
+  trigger_detail: string;
+  current_margin: number | null;
+  projected_margin: number | null;
+  margin_delta?: number | null;
+  legs_closed?: AdjustmentPreviewLeg[];
+  new_legs?: AdjustmentPreviewLeg[];
+}
+
 export interface ExpiriesResponse {
   symbol: string;
   expiries: { date: string; label: "Weekly" | "Monthly" }[];
@@ -230,6 +248,7 @@ export interface Order {
   price: number;
   charges: number;
   status: string;
+  product: string;  // real margin product ('NRML' | 'MIS' | 'CNC') — see utils/orders.py
 }
 
 export interface OptionsPosition {
@@ -354,6 +373,66 @@ export interface LeaderboardRow {
   wins: number;
   win_rate_pct: number;
   avg_pnl: number;
+}
+
+export interface IvScreenerRow {
+  symbol: string;
+  current_iv: number | null;   // % (e.g. 18.5), null if a live solve wasn't possible right now
+  iv_rank: number | null;      // 0-100, null until history_required days have accumulated
+  history_days: number;
+  history_required: number;
+  sufficient: boolean;
+}
+
+export type OiSignal = "LONG_BUILDUP" | "SHORT_BUILDUP" | "LONG_UNWINDING" | "SHORT_COVERING" | "NEUTRAL";
+
+export interface OiFuturesSignal {
+  expiry: string;
+  close: number;
+  price_change: number;
+  price_change_pct: number;
+  open_interest: number;
+  chg_in_oi: number;
+  signal: OiSignal;
+}
+
+export interface OiStrikeMove {
+  strike: number;
+  option_type: string;
+  close: number;
+  price_change: number;
+  open_interest: number;
+  chg_in_oi: number;
+  signal: OiSignal;
+}
+
+export interface OiScannerResponse {
+  symbol: string;
+  as_of: string;         // the actual bhavcopy date this reflects — NOT necessarily today, see backend docstring
+  compared_to: string | null;
+  futures: OiFuturesSignal | null;
+  top_strike_moves: OiStrikeMove[];
+}
+
+export interface ChainReplayLeg {
+  close: number | null;
+  open_interest: number;
+  chg_in_oi: number;
+  volume: number;
+}
+
+export interface ChainReplayRow {
+  strike: number;
+  ce: ChainReplayLeg | null;
+  pe: ChainReplayLeg | null;
+}
+
+export interface ChainReplayResponse {
+  symbol: string;
+  date: string;
+  expiry: string;
+  underlying_close: number | null;
+  chain: ChainReplayRow[];
 }
 
 export interface BacktestRequest {
@@ -651,6 +730,19 @@ export const api = {
   // Leaderboard
   getLeaderboard: () => request<{ rows: LeaderboardRow[] }>('/api/leaderboard'),
 
+  // IV percentile screener — across the logged-in user's watchlist symbols
+  getIvScreener: () => request<{ rows: IvScreenerRow[] }>('/api/iv-screener'),
+
+  // OI build-up/unwinding scanner — EOD bhavcopy-derived, per symbol
+  getOiScanner: (symbol: string) => request<OiScannerResponse>(`/api/oi-scanner?symbol=${encodeURIComponent(symbol)}`),
+
+  // Historical option chain replay
+  getChainReplayDates: (symbol: string) => request<{ symbol: string; dates: string[] }>(`/api/chain-replay/dates?symbol=${encodeURIComponent(symbol)}`),
+  getChainReplayExpiries: (symbol: string, date: string) =>
+    request<{ symbol: string; date: string; expiries: string[] }>(`/api/chain-replay/expiries?symbol=${encodeURIComponent(symbol)}&date=${encodeURIComponent(date)}`),
+  getChainReplay: (symbol: string, date: string, expiry: string) =>
+    request<ChainReplayResponse>(`/api/chain-replay?symbol=${encodeURIComponent(symbol)}&date=${encodeURIComponent(date)}&expiry=${encodeURIComponent(expiry)}`),
+
   // Custom strategies (the strategy builder) — list/create/update/delete/status
   // only; everything per-selected-strategy and ephemeral (payoff, live greeks,
   // positions, backtest run polling) stays a page-local fetch in
@@ -684,6 +776,7 @@ export const api = {
   getCustomStrategyPositions: (id: number) => request<{ open: PositionLeg[]; closed: PositionLeg[] }>(`/api/custom-strategies/${id}/positions`),
   getCustomStrategyPayoff: (id: number) => request<PayoffResponse>(`/api/custom-strategies/${id}/payoff`),
   getCustomStrategyMargin: (id: number) => request<MarginResponse>(`/api/custom-strategies/${id}/margin`),
+  getAdjustmentPreview: (id: number) => request<AdjustmentPreviewResponse>(`/api/custom-strategies/${id}/adjustment-preview`),
   getCustomStrategyBacktestRun: (strategyId: number, runId: number, options?: RequestInit) =>
     request<BacktestRunDetail>(`/api/custom-strategies/${strategyId}/backtest/runs/${runId}`, options),
   getCustomStrategyTemplateExpiries: (symbol: string) =>

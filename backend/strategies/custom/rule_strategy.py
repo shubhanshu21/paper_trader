@@ -97,8 +97,9 @@ class RuleBasedStrategy(BaseStrategy):
         strike_step: float | None = None,
         product: str = "NRML",
         user_id: int | None = None,
+        notify_on_failure: bool = True,
     ) -> None:
-        super().__init__(broker, audit, kill_switch, rate_limiter)
+        super().__init__(broker, audit, kill_switch, rate_limiter, notify_on_failure=notify_on_failure)
         if not rules or not rules.get("legs"):
             raise ValueError("RuleBasedStrategy requires a non-empty `rules` dict with at least one leg.")
 

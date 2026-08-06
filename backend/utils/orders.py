@@ -28,6 +28,10 @@ def _leg_order(pos: dict, leg: str, side: str, strike: int, price: float, order_
         "price": price,
         "charges": charges["total"],
         "status": "COMPLETE",
+        # Legacy strangle positions are always placed NRML — see
+        # rule_strategy.py's default (same convention PositionsView.tsx's
+        # own `product` column already hardcodes for this position type).
+        "product": "NRML",
     }
 
 
@@ -73,12 +77,26 @@ def _custom_strategy_orders(user_id: int | None, mode: str | None, rates: dict |
             ).scalars().all()
         }
 
+    from api.custom_strategy_scheduler import _resolve_product
+
+    # Real product per strategy (INTRADAY rules -> MIS, else NRML — see
+    # custom_strategy_scheduler.py's _resolve_product) instead of a
+    # fabricated per-order guess; cached per strategy_id since every leg
+    # of the same strategy shares the same product.
+    products: dict[int, str] = {}
+    for strategy in strategies.values():
+        try:
+            products[strategy.id] = _resolve_product(json.loads(strategy.rules_json)) if strategy.rules_json else "NRML"
+        except (json.JSONDecodeError, TypeError):
+            products[strategy.id] = "NRML"
+
     for leg in legs:
         strategy = strategies.get(leg.strategy_id)
         strategy_name = strategy.name if strategy else "Custom Strategy"
         underlying_symbols = json.loads(strategy.symbols) if strategy else []
         underlying = next((s for s in underlying_symbols if _is_leg_for_symbol(leg.instrument_key, s)), underlying_symbols[0] if underlying_symbols else leg.instrument_key)
         display = f"{underlying} {leg.strike} {leg.option_type}" if leg.strike is not None else underlying
+        product = products.get(leg.strategy_id, "NRML")
 
         entry_price = float(leg.entry_price)
         # Full timestamp (not just the date) — OrdersView.tsx's Orders page
@@ -101,6 +119,7 @@ def _custom_strategy_orders(user_id: int | None, mode: str | None, rates: dict |
             "price": entry_price,
             "charges": entry_charges["total"],
             "status": "COMPLETE",
+            "product": product,
         })
         if leg.status == "CLOSED" and leg.exit_price is not None:
             exit_side = "BUY" if leg.transaction_type == "SELL" else "SELL"
@@ -122,6 +141,7 @@ def _custom_strategy_orders(user_id: int | None, mode: str | None, rates: dict |
                 "price": exit_price,
                 "charges": exit_charges["total"],
                 "status": "COMPLETE",
+                "product": product,
             })
     return orders
 
@@ -194,6 +214,7 @@ def get_order_book(mode: str | None = None, limit: int = 200, user_id: int | Non
             "price": float(ep["entry_price"]),
             "charges": entry_charges,
             "status": "COMPLETE",
+            "product": ep["product"],
         })
 
         if ep["status"] == "CLOSED":
@@ -213,6 +234,7 @@ def get_order_book(mode: str | None = None, limit: int = 200, user_id: int | Non
                 "price": float(ep["exit_price"]) if ep["exit_price"] else 0.0,
                 "charges": exit_charges,
                 "status": "COMPLETE",
+                "product": ep["product"],
             })
 
     orders.sort(key=lambda o: (o["date"], o["position_id"] or 0), reverse=True)

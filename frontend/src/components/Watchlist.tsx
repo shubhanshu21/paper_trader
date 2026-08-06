@@ -49,12 +49,15 @@ export default function Watchlist({ onTrade }: WatchlistProps) {
   const [depthTarget, setDepthTarget] = useState<DepthTarget | null>(null);
 
   const searchContainerRef = useRef<HTMLDivElement>(null);
+  const searchRequestIdRef = useRef(0);
 
   // Load user watchlist from backend
   useEffect(() => {
+    let cancelled = false;
     const loadWatchlist = async () => {
       try {
         const data = await api.getWatchlist(page);
+        if (cancelled) return;
         const transformed: LocalWatchlistItem[] = (data || []).map((item) => ({
           s: item.symbol,
           tag: item.instrument_type === 'INDEX' ? 'INDEX' : undefined,
@@ -71,10 +74,11 @@ export default function Watchlist({ onTrade }: WatchlistProps) {
         setWatchlist(transformed);
       } catch (err) {
         console.error("Failed to load watchlist", err);
-        setWatchlist([]);
+        if (!cancelled) setWatchlist([]);
       }
     };
     loadWatchlist();
+    return () => { cancelled = true; };
   }, [page]);
 
   // Live LTPs via /ws/market — server polls the broker once per interval and
@@ -136,13 +140,19 @@ export default function Watchlist({ onTrade }: WatchlistProps) {
     }
     const delayDebounce = setTimeout(async () => {
       setSearching(true);
+      const requestId = ++searchRequestIdRef.current;
       try {
         const results = await api.searchInstruments(searchQuery);
-        setSearchResults(results);
+        // The debounce only guards un-fired timers — once two searches are
+        // actually in flight (a slow first query, a second fired after the
+        // debounce window), an earlier response can still land after a
+        // later one and overwrite it with stale results. Only apply the
+        // response if no newer search has started since.
+        if (searchRequestIdRef.current === requestId) setSearchResults(results);
       } catch (err) {
         console.error("Search failed", err);
       } finally {
-        setSearching(false);
+        if (searchRequestIdRef.current === requestId) setSearching(false);
       }
     }, 300);
 
@@ -299,11 +309,12 @@ export default function Watchlist({ onTrade }: WatchlistProps) {
         />
         {searching && <span className="w-3 h-3 border-2 border-orange-500 border-t-transparent rounded-full animate-spin" />}
         {(searchQuery || isFocused) && (
-          <button 
+          <button
             onClick={() => {
               setSearchQuery("");
               setIsFocused(false);
-            }} 
+            }}
+            aria-label="Clear search"
             className="text-gray-400 hover:text-gray-600 focus:outline-none"
           >
             <X size={14} />
@@ -320,9 +331,12 @@ export default function Watchlist({ onTrade }: WatchlistProps) {
           return (
             <div
               key={i}
+              tabIndex={0}
               onMouseEnter={() => setHover(i)}
               onMouseLeave={() => setHover(null)}
-              className="relative flex items-center justify-between px-4 cursor-pointer transition-colors border-b"
+              onFocus={() => setHover(i)}
+              onBlur={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setHover(null); }}
+              className="relative flex items-center justify-between px-4 cursor-pointer transition-colors border-b focus:outline-none focus-visible:ring-1"
               style={{
                 height: 40,
                 borderColor: C.border,
@@ -368,6 +382,7 @@ export default function Watchlist({ onTrade }: WatchlistProps) {
                 <div className="flex items-center gap-1">
                   <button
                     onClick={() => handleWatchlistTrade(w, "BUY")}
+                    aria-label={`Buy ${w.s}`}
                     className="w-[30px] py-0.5 text-[11px] font-bold text-white rounded focus:outline-none"
                     style={{ background: C.buyBg, color: C.buyText }}
                   >
@@ -375,6 +390,7 @@ export default function Watchlist({ onTrade }: WatchlistProps) {
                   </button>
                   <button
                     onClick={() => handleWatchlistTrade(w, "SELL")}
+                    aria-label={`Sell ${w.s}`}
                     className="w-[30px] py-0.5 text-[11px] font-bold text-white rounded focus:outline-none"
                     style={{ background: C.sellBg, color: C.sellText }}
                   >
@@ -384,19 +400,21 @@ export default function Watchlist({ onTrade }: WatchlistProps) {
                     onClick={() => w.instrument_key && setDepthTarget({ instrument_key: w.instrument_key, symbol: w.s, exchange: w.tag || "NSE" })}
                     className="p-1 rounded bg-gray-50 text-gray-400 hover:bg-gray-200 transition-colors focus:outline-none"
                     title="Market depth"
+                    aria-label={`Market depth for ${w.s}`}
                   >
                     <AlignLeft size={12} />
                   </button>
-                  <button className="p-1 rounded bg-gray-50 text-gray-400 hover:bg-gray-200 transition-colors focus:outline-none" title="Chart (coming soon)">
+                  <button className="p-1 rounded bg-gray-50 text-gray-400 hover:bg-gray-200 transition-colors focus:outline-none" title="Chart (coming soon)" aria-label={`Chart for ${w.s} (coming soon)`}>
                     <TrendingUp size={12} />
                   </button>
                   <button
                     onClick={() => w.instrument_key && handleRemoveFromWatchlist(w.instrument_key)}
+                    aria-label={`Remove ${w.s} from watchlist`}
                     className="p-1 rounded bg-gray-50 text-gray-400 hover:bg-red-100 hover:text-red-600 transition-colors focus:outline-none"
                   >
                     <Trash2 size={12} />
                   </button>
-                  <button className="p-1 rounded bg-gray-50 text-gray-400 hover:bg-gray-200 transition-colors focus:outline-none">
+                  <button className="p-1 rounded bg-gray-50 text-gray-400 hover:bg-gray-200 transition-colors focus:outline-none" aria-label={`More options for ${w.s}`}>
                     <MoreHorizontal size={12} />
                   </button>
                 </div>
@@ -526,6 +544,7 @@ export default function Watchlist({ onTrade }: WatchlistProps) {
                               : "text-green-600 hover:bg-green-50"
                           }`}
                           title={isAdded ? "Remove from watchlist" : "Pin to watchlist"}
+                          aria-label={isAdded ? `Remove ${inst.symbol} from watchlist` : `Pin ${inst.symbol} to watchlist`}
                         >
                           {isAdded ? <Check size={14} /> : <Plus size={14} />}
                         </button>
@@ -557,7 +576,7 @@ export default function Watchlist({ onTrade }: WatchlistProps) {
             {n}
           </button>
         ))}
-        <button className="flex items-center justify-center w-12 h-full hover:bg-gray-50">
+        <button className="flex items-center justify-center w-12 h-full hover:bg-gray-50" aria-label="Watchlist settings">
           <Settings size={15} style={{ color: C.muted }} />
         </button>
       </div>
