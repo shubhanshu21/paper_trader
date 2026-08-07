@@ -34,6 +34,10 @@ from strategies.custom.matrix_calendar_schema import (
     describe_matrix_calendar_rules,
     validate_matrix_calendar_rules,
 )
+from strategies.custom.nine_fifteen_schema import (
+    describe_nine_fifteen_rules,
+    validate_nine_fifteen_rules,
+)
 from strategies.custom.otm_put_roll_schema import (
     describe_otm_put_roll_rules,
     validate_otm_put_roll_rules,
@@ -50,6 +54,10 @@ from strategies.custom.smart_condor_schema import (
 from strategies.custom.weekly_directional_schema import (
     describe_weekly_directional_rules,
     validate_weekly_directional_rules,
+)
+from strategies.custom.zero_to_hero_schema import (
+    describe_zero_to_hero_rules,
+    validate_zero_to_hero_rules,
 )
 
 _DEFAULT_ENGINE = {
@@ -150,6 +158,41 @@ _ENGINE_REGISTRY: dict[str, dict] = {
             "Backtesting isn't available for this strategy yet — the leg structure itself (which side "
             "gets 2x lots, which side gets the tail hedge) depends on a live EMA-crossover read plus a "
             "delta-targeted hedge search the backtest engine's fixed-leg cycle walk doesn't support. "
+            "Paper trading works today and is the way to validate it for now."
+        ),
+    },
+    "NINE_FIFTEEN_ORB": {
+        "validate": validate_nine_fifteen_rules,
+        "describe": describe_nine_fifteen_rules,
+        "backtest_supported": False,
+        "backtest_unavailable_reason": (
+            "Backtesting isn't available for this strategy yet — it needs a live market-open scan across "
+            "every F&O stock (today's #1 gainer/loser by real price move) the backtest engine's fixed-symbol, "
+            "daily-candle simulation has no way to reproduce historically. Paper trading works today and is "
+            "the way to validate it for now."
+        ),
+    },
+    "ZERO_TO_HERO": {
+        "validate": validate_zero_to_hero_rules,
+        "describe": describe_zero_to_hero_rules,
+        # True as of the synthetic intraday backtest engine
+        # (backtest/synthetic_engine.py + backtest/synthetic_data_feed.py)
+        # — routes_custom_strategies.py's backtest_strategy() dispatches
+        # here automatically for this strategy_type (see
+        # _SYNTHETIC_BACKTEST_RUNNER_NAMES), no manual choice needed.
+        # IMPORTANT CAVEAT, surfaced in every result via "methodology_note"
+        # (see _run_backtest_sync): option prices are Black-76
+        # RECONSTRUCTIONS off real underlying candles (realized vol as an
+        # IV proxy), not real historical option quotes — see that
+        # module's own docstring for the full list of approximations.
+        # Also NIFTY/BANKNIFTY only (db.models.Index1MinCandle's only
+        # symbols) — any other symbol on this strategy_type still has
+        # nothing to backtest against.
+        "backtest_supported": True,
+        "backtest_unavailable_reason": (
+            "Backtesting isn't available for this strategy yet — it needs a live 15-minute candle-pattern "
+            "read (a counter-color pullback run followed by a confirm candle) plus a price-level partial-"
+            "booking simulation the backtest engine's daily-candle, fixed-leg cycle walk doesn't support. "
             "Paper trading works today and is the way to validate it for now."
         ),
     },

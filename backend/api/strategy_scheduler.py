@@ -40,11 +40,13 @@ from api.gravity_engine import _tick_one_strategy as _tick_gravity
 from api.intraday_indicator_scheduler import _tick_one_strategy as _tick_intraday
 from api.macd_credit_engine import _tick_one_strategy as _tick_macd_credit
 from api.matrix_calendar_engine import _tick_one_strategy as _tick_matrix_calendar
+from api.nine_fifteen_engine import _tick_one_strategy as _tick_nine_fifteen
 from api.otm_put_roll_engine import _tick_one_strategy as _tick_otm_put_roll
 from api.session_seller_engine import _tick_one_strategy as _tick_session_seller
 from api.smart_condor_engine import _tick_one_strategy as _tick_smart_condor
 from api.weekend_combo_scheduler import _tick_one_strategy as _tick_combo
 from api.weekly_directional_engine import _tick_one_strategy as _tick_weekly_directional
+from api.zero_to_hero_engine import _tick_one_strategy as _tick_zero_to_hero
 from compliance.sebi_rules import assert_market_is_open, get_global_kill_switch
 from db.engine import SessionLocal
 from db.models import CustomStrategy
@@ -83,6 +85,8 @@ _TICK_FUNCS = {
     "DELTA_NEUTRAL_STRANGLE": _tick_delta_neutral,
     "WEEKLY_DIRECTIONAL": _tick_weekly_directional,
     "MATRIX_CALENDAR": _tick_matrix_calendar,
+    "ZERO_TO_HERO": _tick_zero_to_hero,
+    "NINE_FIFTEEN_ORB": _tick_nine_fifteen,
 }
 
 

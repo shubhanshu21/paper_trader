@@ -83,6 +83,7 @@ async def _lifespan(application: FastAPI):
     import asyncio
 
     from api.bhavcopy_scheduler import bhavcopy_scheduler
+    from api.index_candle_scheduler import index_candle_scheduler
     from api.instrument_sync_scheduler import instrument_sync_scheduler
     from api.iv_history_scheduler import iv_history_scheduler
     from api.market_broadcaster import market_price_broadcaster
@@ -111,6 +112,7 @@ async def _lifespan(application: FastAPI):
         asyncio.create_task(iv_history_scheduler()),
         asyncio.create_task(instrument_sync_scheduler()),
         asyncio.create_task(bhavcopy_scheduler()),
+        asyncio.create_task(index_candle_scheduler()),
         asyncio.create_task(price_alert_scheduler()),
     ]
     _background_tasks.update(tasks)

@@ -279,6 +279,42 @@ export const ENGINE_SPECS: EngineSpec[] = [
       target_capital_pct: 1.5, stop_loss_capital_pct: 2, exit_days_before_expiry: 1,
     },
   },
+  {
+    strategyType: "NINE_FIFTEEN_ORB",
+    label: "9:15 Opening Range Breakout",
+    tagline: "Scans every F&O stock at market open for today's #1 gainer/loser, then buys the ATM CALL/PUT once each breaks back past its own opening price — squared off by 9:30.",
+    fixedSymbols: ["AUTO"],
+    fields: [
+      { key: "lots", label: "Lots (per side)", type: "number", min: 1, step: 1, hint: "Applies independently to the gainer-CALL leg and the loser-PUT leg." },
+      { key: "scan_time", label: "Scan time", type: "time", hint: "When to rank every F&O stock by live % move." },
+      { key: "observation_seconds", label: "Observation window (sec)", type: "number", min: 10, step: 5, hint: "No entry is considered before this many seconds have passed since scan time." },
+      { key: "entry_cutoff_time", label: "Entry cutoff", type: "time", hint: "A side that hasn't broken its opening price by this time is skipped for the day." },
+      { key: "exit_time", label: "Forced exit time", type: "time", hint: "Unconditional square-off — no target/stop-loss otherwise." },
+      { key: "min_pct_move", label: "Min move to qualify (%)", type: "number", min: 0, step: 0.5, hint: "0 = always trade whoever's #1, no floor." },
+    ],
+    defaultRules: {
+      lots: 1, scan_time: "09:15", observation_seconds: 45, entry_cutoff_time: "09:20",
+      exit_time: "09:30", min_pct_move: 0,
+    },
+  },
+  {
+    strategyType: "ZERO_TO_HERO",
+    label: "Zero to Hero (PDH/PDL Breakout)",
+    tagline: "Buys ATM CALL/PUT off a previous-day-high/low breakout, entering on a failed 1-2 candle pullback; books half at 1:1 risk:reward, holds the rest to a fixed exit.",
+    fields: [
+      { key: "lots", label: "Lots (must be even)", type: "number", min: 2, step: 2, hint: "Splits 50/50 into a 'book at 1:1' half and a 'hold to exit time' half." },
+      { key: "candle_interval_minutes", label: "Candle interval (min)", type: "number", min: 1, step: 1, hint: "Timeframe the PDH/PDL breakout and pullback pattern are read off." },
+      { key: "sl_buffer_points", label: "Stop-loss buffer (index pts)", type: "number", min: 0.1, step: 0.5, hint: "Added beyond the entry candle's high/low so normal wick noise doesn't trigger the stop." },
+      { key: "max_pullback_candles", label: "Max pullback candles", type: "number", min: 1, step: 1, hint: "1-2 valid; 3+ consecutive counter-color candles cancels the setup as a reversal." },
+      { key: "expiry_offset", label: "Weekly expiry offset", type: "number", min: 0, step: 1, hint: "0 = nearest weekly." },
+      { key: "exit_time", label: "Forced exit time (runner half)", type: "time" },
+      { key: "max_reentries", label: "Max re-entries/day", type: "number", min: 0, step: 1, hint: "Only allowed if stopped out BEFORE 1:1 was reached that day." },
+    ],
+    defaultRules: {
+      lots: 2, candle_interval_minutes: 15, sl_buffer_points: 5, max_pullback_candles: 2,
+      expiry_offset: 0, exit_time: "15:15", max_reentries: 1,
+    },
+  },
 ];
 
 export function getEngineSpec(strategyType: string): EngineSpec | undefined {

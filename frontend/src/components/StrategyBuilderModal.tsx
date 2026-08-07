@@ -1136,7 +1136,11 @@ export default function StrategyBuilderModal({ onClose, onSuccess, editStrategy,
                       <span key={s} className="inline-flex items-center px-3 py-1 rounded-full text-xs font-bold bg-orange-50 text-orange-700 border border-orange-200">{s}</span>
                     ))}
                   </div>
-                  <p className="text-xs text-gray-500 mt-1.5">{engineSpec.label} always trades this fixed pair — not user-selectable.</p>
+                  <p className="text-xs text-gray-500 mt-1.5">
+                    {engineSpec.fixedSymbols.length === 1 && engineSpec.fixedSymbols[0] === "AUTO"
+                      ? `${engineSpec.label} picks its own symbol live from a market scan each day — nothing to select here.`
+                      : `${engineSpec.label} always trades this fixed pair — not user-selectable.`}
+                  </p>
                 </div>
               ) : (
               <div className="relative" ref={dropdownRef}>

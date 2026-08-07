@@ -164,6 +164,50 @@ class FnoBhavcopy(Base):
     )
 
 
+class Index1MinCandle(Base):
+    """
+    1-minute OHLC candles for the UNDERLYING index only (NIFTY/BANKNIFTY
+    spot) — sourced from several free Kaggle-hosted datasets (see
+    scripts/import_kaggle_index_candles.py's own docstring for exactly
+    which file covers which date range and why), NOT from a broker.
+
+    Deliberately underlying-only, not options — this table exists to
+    backtest the SIGNAL side of intraday engines (Zero to Hero's PDH/PDL
+    breakout, Supertrend, MACD, opening-range breakouts) against real
+    candles, the one thing fno_bhavcopy's daily granularity can never do.
+    It does NOT give real option premiums for those signals to trade
+    against — that's a separate, harder sourcing problem (see this
+    table's own import script docstring for the known coverage gap and
+    the still-unsolved options-pricing side).
+
+    One row per (symbol, ts) — see the unique index below. Several of the
+    source files overlap the same symbol/minute; import_kaggle_index_
+    candles.py resolves that by picking ONE authoritative source file per
+    date range up front rather than inserting every source's copy (which
+    would silently create duplicate/conflicting OHLC for the same
+    minute), so `source` here is informational/audit-only, not a
+    disambiguator a query needs to filter on.
+    """
+    __tablename__ = "index_1min_candles"
+
+    id     = Column(BigInteger, primary_key=True, autoincrement=True)
+    symbol = Column(String(16), nullable=False)   # 'NIFTY' | 'BANKNIFTY'
+    ts     = Column(DateTime,   nullable=False)    # naive IST, minute resolution
+    open   = Column(Numeric(12, 4), nullable=False)
+    high   = Column(Numeric(12, 4), nullable=False)
+    low    = Column(Numeric(12, 4), nullable=False)
+    close  = Column(Numeric(12, 4), nullable=False)
+    volume = Column(BigInteger, nullable=True)
+    oi     = Column(BigInteger, nullable=True)
+    # Which imported file this row came from — audit trail only (see
+    # class docstring on why this isn't part of the uniqueness key).
+    source = Column(String(64), nullable=True)
+
+    __table_args__ = (
+        Index("ix_index1min_symbol_ts", "symbol", "ts", unique=True),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Runtime: paper-trading wallet settings (single row, id=1)
 # ---------------------------------------------------------------------------

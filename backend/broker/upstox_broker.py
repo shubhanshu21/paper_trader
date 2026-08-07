@@ -592,6 +592,83 @@ class UpstoxBroker(BaseBroker):
 
         return results
 
+    def get_ohlc_batch(self, instrument_keys: list[str]) -> dict[str, dict | None]:
+        """
+        {"ltp", "prev_close", "today_open", "today_high", "today_low"} for
+        many instruments in as few HTTP calls as possible — Upstox's v3
+        OHLC quote endpoint accepts a comma-separated instrument_key list
+        and returns up to 500 quotes per call (same batching shape as
+        get_ltp_batch above). This is what api/nine_fifteen_engine.py's
+        market-open gainers/losers scan relies on to rank ~150-200 F&O
+        stocks in one or two calls instead of one-per-symbol — which would
+        be both slow and rate-limit-flaky at exactly the moment (market
+        open) Upstox's API is busiest.
+
+        interval="1d" is what makes `prev_ohlc` the previous COMPLETE
+        session and `live_ohlc` today's-so-far — the same "previous day
+        close, today's real open" split this strategy needs to detect a
+        breach of the actual 9:15am opening price, not a partial one.
+
+        Returns a dict with every requested key present; value is None for
+        any instrument Upstox didn't return a quote for.
+        """
+        results: dict[str, dict | None] = dict.fromkeys(instrument_keys)
+        if not instrument_keys:
+            return results
+
+        _BATCH_SIZE = 500  # Upstox's own documented cap per call
+        for i in range(0, len(instrument_keys), _BATCH_SIZE):
+            chunk = instrument_keys[i:i + _BATCH_SIZE]
+            joined = ",".join(chunk)
+            chunk_set = set(chunk)
+            colon_to_key = {k.replace("|", ":"): k for k in chunk}
+
+            if _circuit_is_open():
+                self._resync_access_token()
+            if _circuit_is_open():
+                log.warning(
+                    "Skipping batch OHLC fetch for %d symbols: Upstox token is known-bad (circuit open).",
+                    len(chunk),
+                )
+                continue
+
+            for attempt in range(1, _MAX_RETRIES + 1):
+                try:
+                    response = self._market_quote_v3.get_market_quote_ohlc(interval="1d", instrument_key=joined)
+                    quote_map = response.data or {}
+
+                    for resp_key, q in quote_map.items():
+                        matched = getattr(q, "instrument_token", None)
+                        if matched not in chunk_set:
+                            matched = resp_key if resp_key in chunk_set else colon_to_key.get(resp_key)
+                        if not matched:
+                            continue
+                        prev_ohlc, live_ohlc = q.prev_ohlc, q.live_ohlc
+                        results[matched] = {
+                            "ltp": q.last_price,
+                            "prev_close": prev_ohlc.close if prev_ohlc else None,
+                            "today_open": live_ohlc.open if live_ohlc else None,
+                            "today_high": live_ohlc.high if live_ohlc else None,
+                            "today_low": live_ohlc.low if live_ohlc else None,
+                        }
+                    break
+                except ApiException as exc:
+                    log.warning(
+                        "ApiException on batch OHLC fetch (attempt %d/%d, %d symbols): HTTP %s — %s",
+                        attempt, _MAX_RETRIES, len(chunk), exc.status, exc.reason,
+                    )
+                    if exc.status == 401:
+                        self._resync_access_token()
+                    if attempt < _MAX_RETRIES:
+                        time.sleep(_RETRY_DELAY_SEC)
+                    elif exc.status == 401:
+                        _trip_circuit()
+                except Exception as exc:
+                    log.error("Unexpected error fetching batch OHLC: %s", exc, exc_info=True)
+                    break
+
+        return results
+
     def get_market_depth(self, instrument_key: str) -> dict | None:
         """
         Fetch the 5-level bid/offer order book plus OHLC, volume, average

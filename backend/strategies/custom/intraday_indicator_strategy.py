@@ -101,7 +101,14 @@ class IntradaySupertrendStrategy:
         interval = get_setting(self.rules, "candle_interval_minutes")
         period = get_setting(self.rules, "supertrend_period")
         multiplier = get_setting(self.rules, "supertrend_multiplier")
-        today_str = date.today().isoformat()
+        # broker.get_current_time() so a backtest replay (MockBroker,
+        # simulated current_time) reads the SIMULATED date here — a bare
+        # date.today() would silently read the real wall-clock date
+        # instead, exactly the bug found and fixed in
+        # zero_to_hero_strategy.py's own _today_str() (see that class for
+        # the full rationale — same fix, same reason, applied here).
+        now = self.broker.get_current_time()
+        today_str = (now.date() if now else date.today()).isoformat()
 
         raw = self.broker.get_historical_candles(self.instrument_key, "minutes", interval, today_str)
         if not raw:

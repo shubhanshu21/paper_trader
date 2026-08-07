@@ -57,6 +57,31 @@ class BaseBroker(ABC):
         """
         return None
 
+    def get_ohlc_batch(self, instrument_keys: list[str]) -> dict[str, dict | None]:
+        """
+        {"ltp", "prev_close", "today_open", "today_high", "today_low"} for
+        many instruments at once — default implementation is N calls to
+        get_market_depth() (correct for any broker, but too slow/rate-limit-
+        flaky for a large universe scanned all at once). Callers ranking
+        many symbols against each other (e.g. api/nine_fifteen_engine.py's
+        market-open gainers/losers scan across every F&O stock) should
+        prefer a broker that overrides this with a real batched call — see
+        UpstoxBroker.get_ohlc_batch. Not abstract, so existing broker
+        implementations don't need to change. Value is None for any
+        instrument no depth data was available for.
+        """
+        results: dict[str, dict | None] = {}
+        for key in instrument_keys:
+            depth = self.get_market_depth(key)
+            if depth is None:
+                results[key] = None
+                continue
+            results[key] = {
+                "ltp": depth["last_price"], "prev_close": depth["ohlc"]["close"],
+                "today_open": depth["ohlc"]["open"], "today_high": depth["ohlc"]["high"], "today_low": depth["ohlc"]["low"],
+            }
+        return results
+
     def get_required_margin(
         self, instrument_key: str, quantity: int, transaction_type: str, product: str = "D",
     ) -> float | None:

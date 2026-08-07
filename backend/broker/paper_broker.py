@@ -85,6 +85,12 @@ class PaperBroker(BaseBroker):
         # simulated, same split as get_ltp()/get_option_chain() above.
         return self.real_broker.get_historical_candles(instrument_key, unit, interval, to_date)
 
+    def get_ohlc_batch(self, instrument_keys: list[str]) -> dict:
+        # Paper trading still needs REAL market data to rank real gainers/
+        # losers — only order placement/fills are simulated, same split as
+        # get_ltp()/get_historical_candles() above.
+        return self.real_broker.get_ohlc_batch(instrument_keys)
+
     def _place_order(
         self,
         transaction_type: str,

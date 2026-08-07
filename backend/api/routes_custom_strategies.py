@@ -398,6 +398,20 @@ class BacktestRequest(BaseModel):
     slippage_pct: float | None = 0.1
 
 
+# strategy_type -> the NAME of a synthetic (intraday-candle-driven)
+# backtest runner in backtest.synthetic_engine, same (symbols, rules,
+# instrument_type, from_date, to_date, on_progress, charge_rates) ->
+# (cycles, per_symbol, skipped_symbols) signature _run_backtest_symbols
+# has, so either can be swapped in below with zero other changes. Only
+# strategy_types with real underlying candle history (see db.models.
+# Index1MinCandle — NIFTY/BANKNIFTY only right now) can have an entry
+# here; everything else stays on the bhavcopy engine. Looked up lazily
+# (see _run_backtest_sync) rather than imported at module level, same
+# "heavy engine imports stay inside the function that needs them"
+# convention this file already follows for CustomRuleBacktestEngine.
+_SYNTHETIC_BACKTEST_RUNNER_NAMES = {"ZERO_TO_HERO": "run_zero_to_hero_backtest"}
+
+
 def _run_backtest_symbols(
     symbols: list[str],
     rules: dict,
@@ -512,7 +526,20 @@ def _run_backtest_sync(run_id: int) -> None:
         from utils.wallet import get_charge_rates
         charge_rates = get_charge_rates(db_strategy.user_id) if db_strategy else None
 
-        cycles, per_symbol, skipped_symbols = _run_backtest_symbols(
+        # Automatic engine dispatch by strategy_type — same "one shared
+        # entry point routes to the right engine, no manual choice
+        # anywhere" pattern strategy_scheduler.py already uses for live
+        # ticking (_TICK_FUNCS) and engine_registry.py uses for validate/
+        # describe. A strategy_type NOT in this table (every leg-based
+        # one — CUSTOM, legacy STRADDLE/etc) falls through to the
+        # bhavcopy-driven engine, same "only genuinely different
+        # execution models get a registry entry" rule those two follow.
+        backtest_fn = _run_backtest_symbols
+        runner_name = _SYNTHETIC_BACKTEST_RUNNER_NAMES.get(db_strategy.strategy_type if db_strategy else None)
+        if runner_name:
+            import backtest.synthetic_engine as _synthetic_engine
+            backtest_fn = getattr(_synthetic_engine, runner_name)
+        cycles, per_symbol, skipped_symbols = backtest_fn(
             symbols, rules, db_strategy.instrument_type if db_strategy else "STOCK",
             run.from_date, run.to_date, on_progress=on_progress, charge_rates=charge_rates,
         )
@@ -543,6 +570,19 @@ def _run_backtest_sync(run_id: int) -> None:
             "skipped_symbols": skipped_symbols,
             **compute_backtest_stats(cycles, rules=rules, benchmark_return_pct=benchmark_return_pct),
         }
+        if runner_name:
+            # Load-bearing honesty: this run used RECONSTRUCTED (Black-76)
+            # option prices, not real historical quotes — see
+            # backtest/synthetic_data_feed.py's own docstring for the full
+            # list of approximations. Stored in the result itself (not
+            # just a code comment) so it survives however this JSON gets
+            # displayed, now or later.
+            result["methodology_note"] = (
+                "Option prices in this backtest are THEORETICAL — reconstructed via Black-76 from real "
+                "underlying candles, using the underlying's own realized volatility as a proxy for implied "
+                "vol (no real historical option quotes exist for this). Treat these results as directional "
+                "(does the signal/exit logic work), not as literal expected P&L."
+            )
 
         run.status = "COMPLETED"
         run.progress_current = run.progress_total or 100
@@ -765,7 +805,11 @@ def get_strategy_types():
                     "outward together (keep the 200pt and 800pt gaps fixed) until it drops back under 6%; "
                     "(2) balance the T+0 curve — raise the outer hedge lots (2 → 3 or 4) on whichever side "
                     "shows the bigger max loss, until both sides are roughly equal. Exits on ±2%/-2.5% of "
-                    "the REAL broker margin blocked for this basket at entry, or monthly expiry."
+                    "the REAL broker margin blocked for this basket at entry, OR a hard 16-DTE time stop "
+                    "(~15 calendar days after entry) regardless of P&L — by then Gamma is accelerating hard "
+                    "enough that a still-open, still-flat position is a market-abnormality signal (elevated "
+                    "IV or spot drifting toward a ratio boundary), not a trade worth holding into expiry week "
+                    "on hope alone."
                 ),
                 "risk_level": "medium",
                 "legs": [
@@ -786,7 +830,21 @@ def get_strategy_types():
                 "exit": {
                     "take_profit_pct": None, "stop_loss_pct": None, "take_profit_amount": None,
                     "take_profit_capital_pct": 2.0, "stop_loss_capital_pct": 2.5, "stop_loss_mode": "PCT",
-                    "exit_time": None, "exit_days_before_expiry": 0,
+                    "exit_time": None,
+                    # Entry is ~10 days before the traded (next) month's own
+                    # expiry, so this contract starts at ~35-40 DTE. 16 DTE
+                    # remaining lands ~15 calendar days after entry — "exit
+                    # by the 11th of the following month" in the reference
+                    # strategy's own calendar terms, expressed here as a DTE
+                    # count (which is what is_within_pre_expiry_buffer()
+                    # actually checks) rather than a fixed day-of-month,
+                    # since a day-of-month wouldn't survive a month where
+                    # entry itself lands a few days later/earlier. Below
+                    # 15-18 DTE, Gamma accelerates enough that a still-open
+                    # position is treated as a hard stop, not a target/SL
+                    # question — same "no hope-and-hold past this point"
+                    # rule as SMART_CONDOR/GRAVITY's own hard expiry buffers.
+                    "exit_days_before_expiry": 16,
                 },
             },
             {

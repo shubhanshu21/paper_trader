@@ -73,6 +73,22 @@ class MockBroker(BaseBroker):
         log.debug("MockBroker get_option_chain(%s, %s) -> %d items", instrument_key, expiry_date, len(chain))
         return chain
 
+    def get_historical_candles(self, instrument_key: str, unit: str, interval: int, to_date: str) -> list[dict] | None:
+        """
+        Delegates to the data feed if it supports historical candles (see
+        backtest/synthetic_data_feed.py's SyntheticOptionDataFeed, the
+        first data feed to need this — signal-driven strategies like
+        Zero to Hero read candles directly, unlike the older fixed-leg
+        strategies this broker was originally built for). Feeds with no
+        candle history (the CSV-based DataFeed, BhavcopyDataFeed) simply
+        don't implement this, matching BaseBroker's own "not every broker
+        can provide this" contract (see get_market_depth's default None).
+        """
+        get_candles = getattr(self.data_feed, "get_historical_candles", None)
+        if get_candles is None:
+            return None
+        return get_candles(instrument_key, unit, interval, to_date)
+
     def refresh_instrument_master(self, force: bool = False) -> None:
         """No-op for backtesting. Instruments are statically mapped or loaded in data_feed."""
         log.debug("MockBroker refresh_instrument_master() called (No-op).")

@@ -111,7 +111,7 @@ function StatusPill({ status, big = false }: { status: string; big?: boolean }) 
 // strategies" spot below checks membership here instead of repeating a
 // strategy_type string each time, so a future new engine only needs
 // adding to this one set.
-const NON_LEG_STRATEGY_TYPES = new Set(["SUPERTREND_INTRADAY", "WEEKEND_GAP_COMBO", "OTM_PUT_ROLL", "SMART_CONDOR", "GRAVITY", "SESSION_SELLER", "MACD_CREDIT_SPREAD", "DELTA_NEUTRAL_STRANGLE", "WEEKLY_DIRECTIONAL", "MATRIX_CALENDAR"]);
+const NON_LEG_STRATEGY_TYPES = new Set(["SUPERTREND_INTRADAY", "WEEKEND_GAP_COMBO", "OTM_PUT_ROLL", "SMART_CONDOR", "GRAVITY", "SESSION_SELLER", "MACD_CREDIT_SPREAD", "DELTA_NEUTRAL_STRANGLE", "WEEKLY_DIRECTIONAL", "MATRIX_CALENDAR", "ZERO_TO_HERO", "NINE_FIFTEEN_ORB"]);
 const isLegBased = (strategy: Pick<CustomStrategy, "strategy_type">): boolean => !NON_LEG_STRATEGY_TYPES.has(strategy.strategy_type);
 
 /** "Intraday"/"Weekend Combo"/"Roll"/"Condor"/"Signal"/"Sessions"/"Stop & Reverse"/"Delta-Neutral" for the non-leg-based engines (see NON_LEG_STRATEGY_TYPES); otherwise the leg-based builder's own expiry cadence (defaults to Weekly, same convention as rule_schema.py/describe_rules). */
@@ -124,6 +124,8 @@ function cadenceLabel(strategy: Pick<CustomStrategy, "strategy_type" | "rules">)
   if (strategy.strategy_type === "SESSION_SELLER") return "Sessions";
   if (strategy.strategy_type === "MACD_CREDIT_SPREAD") return "Stop & Reverse";
   if (strategy.strategy_type === "DELTA_NEUTRAL_STRANGLE") return "Delta-Neutral";
+  if (strategy.strategy_type === "ZERO_TO_HERO") return "Breakout";
+  if (strategy.strategy_type === "NINE_FIFTEEN_ORB") return "Scanner";
   return (strategy.rules?.expiry?.mode || "WEEKLY") === "MONTHLY" ? "Monthly" : "Weekly";
 }
 
