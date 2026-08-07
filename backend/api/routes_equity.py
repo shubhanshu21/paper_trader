@@ -8,7 +8,7 @@ no string SQL, parameterized access).
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from api.auth import get_current_user
 from config import EquityMACrossoverConfig
@@ -158,6 +158,20 @@ def close_equity_position(position_id: int, user: dict = Depends(get_current_use
         if pos.status != "OPEN":
             raise HTTPException(status_code=409, detail="Position is already closed")
 
+        # Atomic OPEN->CLOSING claim before mutating — same race-safety
+        # pattern as every *_engine.py's _close_position and
+        # routes_terminal.py's manual trade path. Without this, two
+        # concurrent close requests for the same position could both pass
+        # the status check above and both write exit fields, with
+        # whichever commits last silently overwriting the other's.
+        claimed = session.execute(
+            update(EquityPosition)
+            .where(EquityPosition.id == pos.id, EquityPosition.status == "OPEN")
+            .values(status="CLOSING")
+        ).rowcount
+        if claimed == 0:
+            raise HTTPException(status_code=409, detail="Position is already being closed by another request")
+
         if pos.mode == "paper":
             exit_price = _resolve_paper_exit_price(pos)
             gross_pnl = (exit_price - float(pos.entry_price)) * pos.quantity
@@ -176,6 +190,7 @@ def close_equity_position(position_id: int, user: dict = Depends(get_current_use
             result = pos.to_dict()
         else:
             # Live close — requires Upstox broker
+            pos.status = "OPEN"  # release the claim taken above — nothing was actually closed
             raise HTTPException(
                 status_code=501,
                 detail=(

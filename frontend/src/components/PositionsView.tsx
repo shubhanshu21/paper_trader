@@ -70,6 +70,7 @@ function useCustomStrategyPositions(): PositionListItem[] {
     avg: r.entry_price,
     ltp: r.ltp ?? r.entry_price,
     pnl: r.pnl ?? 0,
+    pnlUnknown: r.pnl == null,
     chg: r.chg_pct ?? 0,
     isApi: false,
   }));
@@ -95,6 +96,11 @@ interface PositionListItem {
   avg: number;
   ltp: number;
   pnl: number;
+  // True when the real P&L isn't known yet (server hasn't sent a value)
+  // rather than the position genuinely being at breakeven — lets the P&L
+  // cell show "—" instead of a misleading "₹0.00" for a split second
+  // right after load, before the live /ws/positions feed's first tick.
+  pnlUnknown?: boolean;
   chg: number;
   isApi?: boolean;
   isEquity?: boolean;
@@ -146,7 +152,8 @@ export default function PositionsView({ openOptions, openEquity, ltps, onClosePo
     ltp: (pos.call_ltp != null && pos.put_ltp != null)
       ? (pos.call_ltp + pos.put_ltp) / 2
       : (pos.call_entry_price + pos.put_entry_price) / 2,
-    pnl: pos.mtm || 0.00,
+    pnl: pos.mtm ?? 0.00,
+    pnlUnknown: pos.mtm == null,
     chg: 0.00,
     isApi: true,
     isEquity: false,
@@ -163,10 +170,17 @@ export default function PositionsView({ openOptions, openEquity, ltps, onClosePo
         product: pos.product || "CNC",
         symbol: sym,
         exch: "NSE",
-        qty: pos.quantity,
+        // Backend stores quantity as an always-positive magnitude with
+        // side tracked separately via direction ('BUY'/'LONG' vs
+        // 'SELL'/'SHORT', see routes_terminal.py) — signed here the same
+        // way the custom-strategy legs above already are, so a manually
+        // shorted equity shows as negative qty and gets the isShort
+        // (red/short) styling below instead of reading as a long position.
+        qty: (pos.direction === "SELL" || pos.direction === "SHORT") ? -pos.quantity : pos.quantity,
         avg: pos.entry_price,
         ltp: ltps[pos.symbol] || pos.current_price || pos.entry_price,
-        pnl: pos.unrealized_pnl || 0.00,
+        pnl: pos.unrealized_pnl ?? 0.00,
+        pnlUnknown: pos.unrealized_pnl == null,
         chg: 0.00,
         isApi: true,
         isEquity: true,
@@ -310,8 +324,8 @@ export default function PositionsView({ openOptions, openEquity, ltps, onClosePo
                           </Td>
                           <Td right className="text-gray-700 font-mono">{inr(o.avg)}</Td>
                           <Td right className="text-gray-700 font-mono">{inr(o.ltp)}</Td>
-                          <Td right style={{ color: sign(o.pnl) }} className="font-mono font-medium">
-                            {withSign(o.pnl)}
+                          <Td right style={{ color: o.pnlUnknown ? C.muted : sign(o.pnl) }} className="font-mono font-medium">
+                            {o.pnlUnknown ? "—" : withSign(o.pnl)}
                           </Td>
                           {/* Chg overlaid with Square Off exit on hover */}
                           <Td right className="w-28 text-right">

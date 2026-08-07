@@ -1,5 +1,6 @@
 import { createSlice } from '@reduxjs/toolkit';
 import { WalletSummary, Order, OptionsPosition, EquityPosition, LedgerItem } from '../../api';
+import { logout } from './authSlice';
 import {
   fetchWalletSummary,
   fetchWalletLedger,
@@ -236,6 +237,13 @@ const dataSlice = createSlice({
         state.wallet = null;
         state.ledger = [];
       });
+
+    // Logout — wipe every other user's wallet/positions/orders out of the
+    // store. Without this, logging out and a different user logging back
+    // in (same tab, no full page reload) would briefly render the PREVIOUS
+    // user's balance and open positions as if they belonged to the new
+    // one, since this slice is otherwise untouched by auth state changes.
+    builder.addCase(logout, () => initialState);
   },
 });
 

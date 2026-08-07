@@ -11,7 +11,9 @@ import subprocess
 import sys
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
+
+from api.auth import require_admin
 
 router = APIRouter(prefix="/api/daemon", tags=["daemon"])
 
@@ -84,7 +86,7 @@ def ensure_daemon_running() -> bool:
 
 
 @router.post("/start")
-def daemon_start():
+def daemon_start(user: dict = Depends(require_admin)):
     pid = _running_pid()
     if pid is not None:
         raise HTTPException(status_code=409, detail=f"Daemon already running (pid={pid}).")
@@ -93,7 +95,7 @@ def daemon_start():
 
 
 @router.post("/stop")
-def daemon_stop():
+def daemon_stop(user: dict = Depends(require_admin)):
     pid = _running_pid()
     if pid is None:
         raise HTTPException(status_code=409, detail="Daemon is not running.")

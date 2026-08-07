@@ -1,8 +1,9 @@
 """api/routes_strategies.py — view/edit per-strategy runtime config (MODE, SYMBOLS, NUM_LOTS, SL/TP, exit-days-before-expiry)."""
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
+from api.auth import require_admin
 from config import STRATEGY_CONFIGS
 from utils.strategy_overrides import get_effective_config, set_override
 
@@ -65,7 +66,7 @@ def known_symbols(name: str):
 
 
 @router.post("/{name}/mode")
-def update_mode(name: str, body: ModeUpdate):
+def update_mode(name: str, body: ModeUpdate, user: dict = Depends(require_admin)):
     if name not in STRATEGY_CONFIGS:
         raise HTTPException(status_code=404, detail=f"Unknown strategy: {name}")
     try:
@@ -76,7 +77,7 @@ def update_mode(name: str, body: ModeUpdate):
 
 
 @router.post("/{name}/config")
-def update_config(name: str, body: ConfigUpdate):
+def update_config(name: str, body: ConfigUpdate, user: dict = Depends(require_admin)):
     if name not in STRATEGY_CONFIGS:
         raise HTTPException(status_code=404, detail=f"Unknown strategy: {name}")
     symbols = [s.strip().upper() for s in body.symbols if s.strip()]

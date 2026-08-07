@@ -6,10 +6,16 @@ spreads, and other multi-leg combinations as single orders.
 """
 from datetime import datetime
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
+from api.auth import get_current_user
+
 router = APIRouter(prefix="/api/options/multi-leg", tags=["multi-leg"])
+
+
+def _uid(user: dict) -> int:
+    return int(user["sub"])
 
 
 class OptionLeg(BaseModel):
@@ -163,17 +169,18 @@ def calculate_strategy_premium(req: MultiLegOrderRequest):
 
 
 @router.post("/execute")
-def execute_multi_leg_order(req: MultiLegOrderRequest):
+def execute_multi_leg_order(req: MultiLegOrderRequest, user: dict = Depends(get_current_user)):
     """
     Execute a multi-leg options strategy as a single order.
-    
+
     All legs are executed simultaneously or none at all.
     """
     order_id = f"ml_{datetime.now().strftime('%Y%m%d%H%M%S')}"
-    
+    req.user_id = _uid(user)  # ignore any client-supplied user_id — always the caller
+
     # Calculate strategy metrics
     calculation = calculate_strategy_premium(req)
-    
+
     multi_leg_orders[order_id] = {
         "order_id": order_id,
         "strategy_type": req.strategy_type,
@@ -188,7 +195,7 @@ def execute_multi_leg_order(req: MultiLegOrderRequest):
         "status": "pending",
         "created_at": datetime.now().isoformat()
     }
-    
+
     return {
         "order_id": order_id,
         "status": "created",
@@ -197,36 +204,37 @@ def execute_multi_leg_order(req: MultiLegOrderRequest):
     }
 
 
-@router.get("/orders/{order_id}")
-def get_multi_leg_order(order_id: str):
-    """Get multi-leg order details."""
-    if order_id not in multi_leg_orders:
+def _get_owned_order(order_id: str, user: dict) -> dict:
+    """Fetch a multi-leg order the caller owns, or 404 — same response whether the id doesn't exist or belongs to someone else, so this can't be used to enumerate other users' orders."""
+    order = multi_leg_orders.get(order_id)
+    if not order or order.get("user_id") != _uid(user):
         raise HTTPException(status_code=404, detail="Multi-leg order not found")
-    return multi_leg_orders[order_id]
+    return order
+
+
+@router.get("/orders/{order_id}")
+def get_multi_leg_order(order_id: str, user: dict = Depends(get_current_user)):
+    """Get multi-leg order details."""
+    return _get_owned_order(order_id, user)
 
 
 @router.delete("/orders/{order_id}")
-def cancel_multi_leg_order(order_id: str):
+def cancel_multi_leg_order(order_id: str, user: dict = Depends(get_current_user)):
     """Cancel a multi-leg order."""
-    if order_id not in multi_leg_orders:
-        raise HTTPException(status_code=404, detail="Multi-leg order not found")
-    
-    multi_leg_orders[order_id]["status"] = "cancelled"
-    
+    order = _get_owned_order(order_id, user)
+    order["status"] = "cancelled"
+
     return {"status": "cancelled", "order_id": order_id}
 
 
 @router.get("/orders")
-def list_multi_leg_orders(user_id: int | None = None, strategy_type: str | None = None):
-    """List multi-leg orders, optionally filtered by user or strategy type."""
-    filtered_orders = list(multi_leg_orders.values())
-    
-    if user_id:
-        filtered_orders = [o for o in filtered_orders if o["user_id"] == user_id]
-    
+def list_multi_leg_orders(strategy_type: str | None = None, user: dict = Depends(get_current_user)):
+    """List the caller's own multi-leg orders, optionally filtered by strategy type."""
+    filtered_orders = [o for o in multi_leg_orders.values() if o["user_id"] == _uid(user)]
+
     if strategy_type:
         filtered_orders = [o for o in filtered_orders if o["strategy_type"] == strategy_type]
-    
+
     return {"orders": filtered_orders}
 
 

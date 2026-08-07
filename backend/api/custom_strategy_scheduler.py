@@ -713,10 +713,40 @@ def _close_leg(db, strategy: CustomStrategy, broker, leg: CustomStrategyPosition
     # now_prices snapshot — see RuleBasedStrategy.enter()'s matching
     # comment for why a snapshot isn't necessarily what was actually paid.
     fill_price = broker.get_fill_price(exit_order_id) if exit_order_id else None
-    leg.exit_price = fill_price if fill_price is not None else now_prices.get(leg.instrument_key)
+    if fill_price is None:
+        fill_price = now_prices.get(leg.instrument_key)
+    if fill_price is None:
+        # now_prices is a pre-order BATCH snapshot that can legitimately
+        # miss one instrument (rate limit, transient gap) even though the
+        # closing order above just filled successfully against a real,
+        # still-listed contract — one more single-instrument LTP call is
+        # cheap and often succeeds where the batch call didn't.
+        try:
+            fill_price = broker.get_ltp(leg.instrument_key)
+        except Exception:
+            fill_price = None
+    leg.exit_price = fill_price
     leg.exit_order_id = exit_order_id
     leg.exit_reason = trigger
     leg.closed_at = datetime.now()
+    if fill_price is None:
+        # A real order filled at the broker (exit_order_id is set) but no
+        # price could be captured anywhere — wallet.py/routes_leaderboard.py
+        # both null-guard exit_price so this can't crash, but it silently
+        # drops this leg's P&L from realized totals unless flagged here.
+        log.warning(
+            "custom_strategy_scheduler: leg %s for strategy %s closed (order %s) but no exit price could be "
+            "captured — P&L for this leg will be excluded from wallet/leaderboard totals until reconciled.",
+            leg.instrument_key, strategy.id, exit_order_id,
+        )
+        notify(
+            "custom_strategy",
+            f"\"{strategy.name}\" leg {leg.instrument_key} ({leg.transaction_type} {leg.option_type} {leg.strike}) "
+            f"closed ({trigger}) but no exit price could be captured. Please check your broker's order/contract "
+            f"note for order {exit_order_id} and record the fill price manually if needed — this leg's P&L is "
+            f"excluded from your totals until then.",
+            level="warning", user_id=strategy.user_id,
+        )
     return True
 
 

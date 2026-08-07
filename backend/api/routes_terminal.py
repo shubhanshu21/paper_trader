@@ -11,7 +11,7 @@ from datetime import date
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from api.auth import get_current_user
 from api.deps import get_brokers
@@ -239,6 +239,25 @@ def execute_manual_trade(req: ManualTradeRequest, user: dict = Depends(get_curre
             else:
                 action = "CLOSE" if req.quantity >= pos.quantity else "REDUCE"
 
+        # Atomic OPEN->CLOSING claim on the existing row BEFORE placing the
+        # broker order — same race-safety pattern every *_engine.py's
+        # _close_position uses (see e.g. custom_strategy_scheduler.py's
+        # _close_leg docstring). Without this, two concurrent requests for
+        # the same instrument (a double-click, two tabs, or a manual close
+        # racing this endpoint's own retry) could both read status="OPEN",
+        # both place real opposite-side broker orders, and whichever
+        # commits last would silently overwrite the other's exit fields —
+        # a real double-exit at the broker with only one recorded here.
+        if pos is not None:
+            claimed = session.execute(
+                update(EquityPosition)
+                .where(EquityPosition.id == pos.id, EquityPosition.status == "OPEN")
+                .values(status="CLOSING")
+            ).rowcount
+            session.commit()
+            if claimed == 0:
+                raise HTTPException(status_code=409, detail="This position is already being modified by another request — please retry.")
+
         # 5. Place order via broker (runs balance/margin check in PaperBroker)
         try:
             if req.direction == "BUY":
@@ -259,11 +278,20 @@ def execute_manual_trade(req: ManualTradeRequest, user: dict = Depends(get_curre
                 )
         except RuntimeError as exc:
             # Shortfall exceptions raised by PaperBroker
+            if pos is not None:
+                pos.status = "OPEN"  # release the claim — no order was placed
+                session.commit()
             raise HTTPException(status_code=402, detail=str(exc)) from exc
         except Exception as exc:
+            if pos is not None:
+                pos.status = "OPEN"  # release the claim — no order was placed
+                session.commit()
             raise HTTPException(status_code=502, detail=f"Broker order submission failed: {exc}") from exc
 
         if not order_id and not req.mode == "paper":
+            if pos is not None:
+                pos.status = "OPEN"  # release the claim — order was rejected
+                session.commit()
             raise HTTPException(status_code=502, detail="Broker rejected order placement (empty order ID).")
 
         order_id = order_id or f"PAPER-{req.direction[:1]}M-{req.instrument_key.split('|')[-1]}"
@@ -302,6 +330,7 @@ def execute_manual_trade(req: ManualTradeRequest, user: dict = Depends(get_curre
             total_qty = pos.quantity + req.quantity
             pos.entry_price = round(total_cost / total_qty, 4)
             pos.quantity = total_qty
+            pos.status = "OPEN"  # release the claim taken above — this leg stays open, just resized
             log.info("Averaged manual position for %s to qty=%d", req.instrument_key, total_qty)
         elif action == "CLOSE":
             # Full square off
@@ -359,6 +388,7 @@ def execute_manual_trade(req: ManualTradeRequest, user: dict = Depends(get_curre
 
             # Reduce remaining open position qty
             pos.quantity -= portion_qty
+            pos.status = "OPEN"  # release the claim taken above — the remainder stays open
             log.info("Reduced manual position for %s by qty=%d", req.instrument_key, portion_qty)
 
     return {"status": "success", "action": action, "order_id": order_id}

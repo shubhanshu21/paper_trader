@@ -23,6 +23,9 @@ interface SummaryRow {
   symbol: string;
   quantity: number;
   pnl: number;
+  // True when the real P&L isn't known yet rather than the position
+  // genuinely being at breakeven — see PositionsView.tsx's matching field.
+  pnlUnknown?: boolean;
 }
 
 export default function DashboardView({ currentUser, wallet, openEquity, openOptions, walletLoading }: DashboardProps) {
@@ -33,8 +36,8 @@ export default function DashboardView({ currentUser, wallet, openEquity, openOpt
   // legs open (no legacy strangle positions) saw "0 active positions" here
   // even though the Positions page correctly showed their open legs.
   const summaryRows: SummaryRow[] = [
-    ...openOptions.map((pos) => ({ key: `opt-${pos.id}`, symbol: pos.symbol, quantity: pos.quantity, pnl: pos.mtm || 0 })),
-    ...customRows.map((r) => ({ key: `custom-${r.id}`, symbol: r.symbol, quantity: r.quantity, pnl: r.pnl || 0 })),
+    ...openOptions.map((pos) => ({ key: `opt-${pos.id}`, symbol: pos.symbol, quantity: pos.quantity, pnl: pos.mtm ?? 0, pnlUnknown: pos.mtm == null })),
+    ...customRows.map((r) => ({ key: `custom-${r.id}`, symbol: r.symbol, quantity: r.quantity, pnl: r.pnl ?? 0, pnlUnknown: r.pnl == null })),
   ];
   const positionsCount = summaryRows.length;
   const displayName = currentUser?.username || "Trader";
@@ -173,8 +176,8 @@ export default function DashboardView({ currentUser, wallet, openEquity, openOpt
                     <span className="font-semibold text-gray-800">{row.symbol}</span>
                     <span className="text-[10px] text-gray-400">Qty: {row.quantity}</span>
                   </div>
-                  <span className="font-semibold tabular-nums" style={{ color: sign(row.pnl) }}>
-                    {withSign(row.pnl)}
+                  <span className="font-semibold tabular-nums" style={{ color: row.pnlUnknown ? C.muted : sign(row.pnl) }}>
+                    {row.pnlUnknown ? "—" : withSign(row.pnl)}
                   </span>
                 </div>
               ))}

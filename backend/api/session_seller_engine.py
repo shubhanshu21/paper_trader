@@ -152,8 +152,8 @@ def _close_position(db, strategy: CustomStrategy, engine: SessionSellerStrategy,
             "custom_strategy",
             f"\"{strategy.name}\" leg {position.instrument_key} ({position.transaction_type} {position.option_type} "
             f"{position.strike}) had already expired/delisted by the time {trigger} ran — no live contract left to "
-            f"close against. Settled at intrinsic value ₹{intrinsic:.2f} (spot {engine.symbol}=₹{spot:.2f} vs strike "
-            f"{position.strike}). Please cross-check against your broker's contract note if this was a live position.",
+            f"close against. Settled at intrinsic value ₹{intrinsic:.2f} ({engine.symbol} spot was ₹{spot:.2f} vs "
+            f"strike {position.strike}). Please cross-check against your broker's contract note if this was a live position.",
             level="warning", user_id=strategy.user_id,
         )
         return True

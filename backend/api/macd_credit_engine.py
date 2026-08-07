@@ -34,6 +34,7 @@ from compliance.sebi_rules import AuditTrail, ComplianceError, KillSwitch, Order
 from db.models import CustomStrategy, CustomStrategyPosition
 from strategies.custom.macd_credit_schema import get_setting
 from strategies.custom.macd_credit_strategy import MacdCreditStrategy
+from utils.instrument_cache import InstrumentCache
 from utils.logger import get_logger
 from utils.notify import notify
 from utils.option_utils import is_within_pre_expiry_buffer
@@ -84,6 +85,56 @@ def _close_position(db, strategy: CustomStrategy, engine: MacdCreditStrategy, po
     db.commit()
     if claimed == 0:
         return False
+
+    # The option contract itself may have expired and been dropped from
+    # the instrument master since this leg was opened, so there's no live
+    # price/order book to close against. Same fix as session_seller_engine.py
+    # (see that module's _close_position for the full rationale): settle at
+    # INTRINSIC value vs. the underlying's current spot (max(spot-strike,0)
+    # for CE, max(strike-spot,0) for PE — never a fabricated ₹0, an ITM leg
+    # still settles for real money) rather than leaving the leg stuck OPEN
+    # and retried forever.
+    if not InstrumentCache().instrument_exists(position.instrument_key):
+        spot = engine.broker.get_ltp(engine.instrument_key)
+        if spot is None:
+            log.critical(
+                "macd_credit_engine: leg %s for strategy %s expired/delisted and spot LTP for %s is also "
+                "unavailable — cannot settle. MANUAL INTERVENTION REQUIRED.",
+                position.instrument_key, strategy.id, engine.symbol,
+            )
+            notify(
+                "custom_strategy",
+                f"MANUAL INTERVENTION REQUIRED — \"{{strategy.name}}\" leg {{position.instrument_key}} "
+                f"({{position.transaction_type}} {{position.option_type}} {{position.strike}}) has expired/delisted, "
+                f"and this system could not fetch a spot price for {{engine.symbol}} to settle it either. Left OPEN "
+                f"so this keeps retrying — please settle manually against your broker's contract note.",
+                user_id=strategy.user_id,
+            )
+            position.status = "OPEN"
+            db.commit()
+            return False
+
+        strike = float(position.strike)
+        intrinsic = max(spot - strike, 0.0) if position.option_type == "CE" else max(strike - spot, 0.0)
+        log.warning(
+            "macd_credit_engine: leg %s for strategy %s expired/delisted — settling at intrinsic value %.2f "
+            "(spot %s=%.2f, strike=%s %s).",
+            position.instrument_key, strategy.id, intrinsic, engine.symbol, spot, position.strike, position.option_type,
+        )
+        position.status = "CLOSED"
+        position.exit_price = intrinsic
+        position.exit_reason = trigger
+        position.closed_at = datetime.now()
+        db.commit()
+        notify(
+            "custom_strategy",
+            f"\"{{strategy.name}}\" leg {{position.instrument_key}} ({{position.transaction_type}} {{position.option_type}} "
+            f"{{position.strike}}) had already expired/delisted by the time {{trigger}} ran — no live contract left to "
+            f"close against. Settled at intrinsic value ₹{{intrinsic:.2f}} ({{engine.symbol}} spot was ₹{{spot:.2f}} vs "
+            f"strike {{position.strike}}). Please cross-check against your broker's contract note if this was a live position.",
+            level="warning", user_id=strategy.user_id,
+        )
+        return True
 
     try:
         result = engine.close_leg(position.instrument_key, position.quantity, float(position.strike), position.option_type, position.transaction_type)

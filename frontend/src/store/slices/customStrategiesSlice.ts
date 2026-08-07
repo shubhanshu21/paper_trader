@@ -1,5 +1,6 @@
 import { createSlice } from '@reduxjs/toolkit';
 import type { CustomStrategy } from '../../types/customStrategy';
+import { logout } from './authSlice';
 import {
   fetchCustomStrategies, createCustomStrategy, updateCustomStrategy,
   updateCustomStrategyStatus, deleteCustomStrategy,
@@ -100,7 +101,12 @@ const customStrategiesSlice = createSlice({
       .addCase(deleteCustomStrategy.rejected, (state, action) => {
         state.deletingId = null;
         state.error = action.error.message || 'Failed to delete strategy';
-      });
+      })
+
+      // Logout — see dataSlice.ts's matching case for why this is needed:
+      // without it, a different user logging in to the same tab briefly
+      // sees the previous user's strategies.
+      .addCase(logout, () => initialState);
   },
 });
 

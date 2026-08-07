@@ -6,10 +6,16 @@ analytics for improving trading strategies and discipline.
 """
 from datetime import datetime, timedelta
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
+from api.auth import get_current_user
+
 router = APIRouter(prefix="/api/performance", tags=["performance"])
+
+
+def _uid(user: dict) -> int:
+    return int(user["sub"])
 
 
 class TradeJournalEntry(BaseModel):
@@ -50,111 +56,107 @@ performance_cache: dict = {}
 
 
 @router.post("/journal")
-def add_trade_entry(entry: TradeJournalEntry):
-    """Add a trade entry to the journal."""
+def add_trade_entry(entry: TradeJournalEntry, user: dict = Depends(get_current_user)):
+    """Add a trade entry to the journal, owned by the caller."""
     entry_id = f"trade_{datetime.now().strftime('%Y%m%d%H%M%S')}"
-    
+    entry.user_id = _uid(user)  # ignore any client-supplied user_id — always the caller
+
     # Calculate P&L if exit price is provided
     if entry.exit_price and not entry.pnl:
         if entry.side == "BUY":
             entry.pnl = (entry.exit_price - entry.entry_price) * entry.quantity
         else:
             entry.pnl = (entry.entry_price - entry.exit_price) * entry.quantity
-    
+
     trade_journal[entry_id] = {
         "entry_id": entry_id,
         **entry.dict(),
         "created_at": datetime.now().isoformat()
     }
-    
-    # Invalidate performance cache for this user
-    if entry.user_id:
-        performance_cache.pop(entry.user_id, None)
-    
+
+    performance_cache.pop(entry.user_id, None)
+
     return {"entry_id": entry_id, "status": "created"}
 
 
-@router.get("/journal/{entry_id}")
-def get_trade_entry(entry_id: str):
-    """Get a specific trade journal entry."""
-    if entry_id not in trade_journal:
+def _get_owned_entry(entry_id: str, user: dict) -> dict:
+    """Fetch a journal entry the caller owns, or 404 — same response whether the id doesn't exist or belongs to someone else, so this can't be used to enumerate other users' entries."""
+    entry = trade_journal.get(entry_id)
+    if not entry or entry.get("user_id") != _uid(user):
         raise HTTPException(status_code=404, detail="Trade entry not found")
-    return trade_journal[entry_id]
+    return entry
+
+
+@router.get("/journal/{entry_id}")
+def get_trade_entry(entry_id: str, user: dict = Depends(get_current_user)):
+    """Get a specific trade journal entry."""
+    return _get_owned_entry(entry_id, user)
 
 
 @router.put("/journal/{entry_id}")
-def update_trade_entry(entry_id: str, entry: TradeJournalEntry):
+def update_trade_entry(entry_id: str, entry: TradeJournalEntry, user: dict = Depends(get_current_user)):
     """Update a trade journal entry."""
-    if entry_id not in trade_journal:
-        raise HTTPException(status_code=404, detail="Trade entry not found")
-    
+    _get_owned_entry(entry_id, user)
+    entry.user_id = _uid(user)  # ownership can't be reassigned via the body
+
     # Recalculate P&L if exit price changed
     if entry.exit_price and not entry.pnl:
         if entry.side == "BUY":
             entry.pnl = (entry.exit_price - entry.entry_price) * entry.quantity
         else:
             entry.pnl = (entry.entry_price - entry.exit_price) * entry.quantity
-    
+
     trade_journal[entry_id].update({
         **entry.dict(),
         "updated_at": datetime.now().isoformat()
     })
-    
-    # Invalidate performance cache
-    if entry.user_id:
-        performance_cache.pop(entry.user_id, None)
-    
+
+    performance_cache.pop(entry.user_id, None)
+
     return {"entry_id": entry_id, "status": "updated"}
 
 
 @router.delete("/journal/{entry_id}")
-def delete_trade_entry(entry_id: str):
+def delete_trade_entry(entry_id: str, user: dict = Depends(get_current_user)):
     """Delete a trade journal entry."""
-    if entry_id not in trade_journal:
-        raise HTTPException(status_code=404, detail="Trade entry not found")
-    
-    user_id = trade_journal[entry_id].get("user_id")
+    _get_owned_entry(entry_id, user)
     del trade_journal[entry_id]
-    
-    # Invalidate performance cache
-    if user_id:
-        performance_cache.pop(user_id, None)
-    
+    performance_cache.pop(_uid(user), None)
+
     return {"entry_id": entry_id, "status": "deleted"}
 
 
 @router.get("/journal")
 def list_trade_entries(
-    user_id: int | None = None,
     symbol: str | None = None,
     strategy: str | None = None,
-    limit: int = 100
+    limit: int = 100,
+    user: dict = Depends(get_current_user),
 ):
-    """List trade journal entries with optional filters."""
-    entries = list(trade_journal.values())
-    
-    if user_id:
-        entries = [e for e in entries if e["user_id"] == user_id]
-    
+    """List the caller's own trade journal entries, with optional filters."""
+    entries = [e for e in trade_journal.values() if e["user_id"] == _uid(user)]
+
     if symbol:
         entries = [e for e in entries if e["symbol"] == symbol]
-    
+
     if strategy:
         entries = [e for e in entries if e["strategy"] == strategy]
-    
+
     # Sort by entry date descending
     entries.sort(key=lambda x: x["entry_date"], reverse=True)
-    
+
     return {"entries": entries[:limit]}
 
 
 @router.get("/metrics/{user_id}")
-def calculate_performance_metrics(user_id: int, period: str = "all"):
+def calculate_performance_metrics(user_id: int, period: str = "all", user: dict = Depends(get_current_user)):
     """
-    Calculate performance metrics for a user.
-    
+    Calculate performance metrics for the caller.
+
     Period can be: 'all', 'today', 'week', 'month', 'quarter', 'year'
     """
+    if user_id != _uid(user):
+        raise HTTPException(status_code=404, detail="Not found")
     # Check cache
     cache_key = f"{user_id}_{period}"
     if cache_key in performance_cache:
@@ -263,14 +265,16 @@ def calculate_performance_metrics(user_id: int, period: str = "all"):
 
 
 @router.get("/analytics/{user_id}")
-def get_performance_analytics(user_id: int):
+def get_performance_analytics(user_id: int, user: dict = Depends(get_current_user)):
     """
-    Get detailed performance analytics including:
+    Get detailed performance analytics for the caller, including:
     - Strategy breakdown
     - Symbol performance
     - Time-based analysis
     - Win/loss patterns
     """
+    if user_id != _uid(user):
+        raise HTTPException(status_code=404, detail="Not found")
     user_trades = [t for t in trade_journal.values() if t["user_id"] == user_id and t["pnl"] is not None]
     
     if not user_trades:
@@ -341,8 +345,10 @@ def get_performance_analytics(user_id: int):
 
 
 @router.get("/export/{user_id}")
-def export_trade_journal(user_id: str, format: str = "json"):
-    """Export trade journal in various formats."""
+def export_trade_journal(user_id: str, format: str = "json", user: dict = Depends(get_current_user)):
+    """Export the caller's trade journal in various formats."""
+    if int(user_id) != _uid(user):
+        raise HTTPException(status_code=404, detail="Not found")
     user_trades = [t for t in trade_journal.values() if t["user_id"] == int(user_id)]
     
     if format == "json":

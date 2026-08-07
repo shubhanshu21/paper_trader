@@ -234,7 +234,7 @@ if PanelAuthConfig.ENABLED:
         # Validate session cookie
         from jose import JWTError
 
-        from api.auth import decode_access_token
+        from api.auth import _token_version_is_current, decode_access_token
         session_cookie = request.cookies.get("__Host-session")
         if not session_cookie:
             from fastapi.responses import JSONResponse
@@ -243,8 +243,19 @@ if PanelAuthConfig.ENABLED:
                 content={"detail": "Not authenticated"},
             )
         try:
-            decode_access_token(session_cookie)
+            payload = decode_access_token(session_cookie)
         except JWTError:
+            from fastapi.responses import JSONResponse
+            return JSONResponse(
+                status_code=401,
+                content={"detail": "Session expired or invalid"},
+            )
+        # Also check the 'tv' (token_version) claim, same as
+        # get_current_user_optional() — otherwise a route with no
+        # Depends(get_current_user) of its own stays reachable with a
+        # token that "log out everywhere"/account deactivation was meant
+        # to revoke, until natural expiry.
+        if payload.get("purpose") == "mfa_pending" or not _token_version_is_current(payload):
             from fastapi.responses import JSONResponse
             return JSONResponse(
                 status_code=401,
