@@ -39,6 +39,7 @@ from compliance.sebi_rules import AuditTrail, ComplianceError, KillSwitch, Order
 from db.models import CustomStrategy, CustomStrategyPosition
 from strategies.custom.session_seller_schema import get_setting
 from strategies.custom.session_seller_strategy import SessionSellerStrategy
+from utils.instrument_cache import InstrumentCache
 from utils.logger import get_logger
 from utils.notify import notify
 from utils.telegram_alert import alert_trade_closed, alert_trade_opened
@@ -97,6 +98,43 @@ def _close_position(db, strategy: CustomStrategy, engine: SessionSellerStrategy,
     db.commit()
     if claimed == 0:
         return False
+
+    # This session's contracts are single-day (see module docstring — never
+    # held overnight), so by the time OVERNIGHT_SAFETY fires on the leg,
+    # its option may have already expired and been dropped from the
+    # instrument master entirely — there is then no live price and no order
+    # book to place a closing order against, ever. A real broker cash-
+    # settles an expired index option at the final settlement price
+    # (intrinsic value vs. the underlying's expiry close) — NOT always
+    # ₹0, an ITM contract settles for real money either way — and this
+    # system has no record of that settlement price once the contract is
+    # gone (no BSE bhavcopy archive for Sensex). Fabricating ₹0 here would
+    # silently misstate this leg's P&L, so instead: stop retrying (mark it
+    # DELISTED, not OPEN, so it's excluded from every OPEN-position query
+    # and this branch is never re-entered for it) and notify ONCE so you
+    # can settle it manually against your own broker/exchange contract
+    # note — matches the "refuse rather than guess a number" rule this
+    # codebase already applies everywhere else (see e.g. PaperBroker's
+    # instrument-resolution and margin checks).
+    if not InstrumentCache().instrument_exists(position.instrument_key):
+        log.warning(
+            "session_seller_engine: leg %s for strategy %s no longer listed (expired) — marking DELISTED, needs manual reconciliation.",
+            position.instrument_key, strategy.id,
+        )
+        position.status = "DELISTED"
+        position.exit_reason = trigger
+        position.closed_at = datetime.now()
+        db.commit()
+        notify(
+            "custom_strategy",
+            f"\"{strategy.name}\" leg {position.instrument_key} ({position.transaction_type} {position.option_type} "
+            f"{position.strike}) had already expired/delisted by the time {trigger} ran — no live contract left to "
+            f"close against, and this system has no settlement-price archive for it. Marked DELISTED (won't retry "
+            f"again). Please reconcile the real P&L for this leg manually — check your own notification history "
+            f"for its last observed price, or your broker's contract note if this was a live position.",
+            level="warning", user_id=strategy.user_id,
+        )
+        return True
 
     try:
         result = engine.close_leg(position.instrument_key, position.quantity, float(position.strike), position.option_type, position.transaction_type)

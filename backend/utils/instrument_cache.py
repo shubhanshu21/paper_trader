@@ -123,6 +123,11 @@ class InstrumentCache:
         )
         return self._df
 
+    def instrument_exists(self, instrument_key: str) -> bool:
+        """Is `instrument_key` still listed in today's instrument master? False for a contract that has expired/been delisted since it was last traded — the caller's signal to stop retrying an order against it."""
+        df = self.get_or_refresh()
+        return bool((df["instrument_key"] == instrument_key).any())
+
     def resolve_equity_key(self, symbol: str) -> str | None:
         """
         Find the Upstox instrument_key for an NSE equity, e.g.

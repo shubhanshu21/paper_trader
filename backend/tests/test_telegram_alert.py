@@ -79,18 +79,46 @@ class TestEsc:
 
 
 class TestFormatBody:
-    def test_pipe_joined_fields_become_separate_lines(self):
-        body = telegram_alert._format_body("CE 24000@120.50 | PE 24000@110.00 | qty=50")
-        assert body == "<pre>CE 24000@120.50\nPE 24000@110.00\nqty=50</pre>"
+    def test_leg_fields_become_an_aligned_grid_with_action_icons(self):
+        body = telegram_alert._format_body("SELL CE 24600.00@127.60 | BUY CE 25000.00@17.65")
+        assert "🔴 SELL CE  24600.00 @ ₹127.60" in body
+        assert "🟢 BUY  CE  25000.00 @ ₹17.65" in body
 
-    def test_space_separated_key_value_tokens_become_separate_lines(self):
-        body = telegram_alert._format_body("position_id=3 strategy=Foo symbol=NIFTY")
-        assert body == "<pre>position_id=3\nstrategy=Foo\nsymbol=NIFTY</pre>"
+    def test_recognized_key_value_fields_become_labeled_rows_below_the_grid(self):
+        body = telegram_alert._format_body("SELL CE 24600.00@127.60 | reason=STOP_LOSS | pnl=-2.51%")
+        assert "🔴 SELL CE  24600.00 @ ₹127.60" in body
+        assert "Reason  STOP_LOSS" in body
+        # "P&L" is HTML-escaped like everything else going into an HTML
+        # parse_mode message, and the "%" is NOT duplicated — every real
+        # caller's "pnl=" value already carries its own trailing "%".
+        assert "P&amp;L     -2.51%" in body
+        assert "%%" not in body
+
+    def test_qty_field_becomes_a_labeled_row(self):
+        body = telegram_alert._format_body("SELL CE 24600.00@127.60 | qty=65")
+        assert "Qty  65" in body
+
+    def test_unrecognized_fields_are_kept_as_plain_lines_not_dropped(self):
+        # "CE 2900@120.50" has no BUY/SELL prefix and no "=" — doesn't match
+        # the leg grid or the key=value row, but must still show up somewhere
+        # rather than silently vanish.
+        body = telegram_alert._format_body("CE 2900@120.50 | expiry=2026-01-29")
+        assert "CE 2900@120.50" in body
+        assert "Expiry  2026-01-29" in body
 
     def test_html_special_characters_in_the_body_are_escaped(self):
         body = telegram_alert._format_body("error: x < y & z > 0")
         assert "&lt;" in body and "&amp;" in body and "&gt;" in body
-        assert "<pre>" in body and "</pre>" in body
+        assert '<pre><code class="language-text">' in body and "</code></pre>" in body
+
+    def test_declares_an_explicit_language_so_the_telegram_client_does_not_auto_guess_one(self):
+        # A bare <pre> with no language gets run through the Telegram
+        # CLIENT's own auto-detect-and-highlight heuristic, which was
+        # mislabeling plain field dumps like "SELL CE 24600.00@127.60" as
+        # "Sql". Declaring language-text stops the client from overriding
+        # it with a guess.
+        body = telegram_alert._format_body("SELL CE 24600.00@127.60 | BUY CE 25000.00@17.65 | pnl=-2.51%")
+        assert 'class="language-text"' in body
 
 
 class TestPnlIcon:
@@ -131,13 +159,16 @@ class TestAlertHelpersFormatAndSend:
         self._capture(monkeypatch)
         telegram_alert.alert_trade_opened(
             "ten_percent_otm_strangle", "paper", "RELIANCE",
-            "CE 2900@120.50 | PE 2300@95.00 | qty=50 | expiry=2026-01-29",
+            "SELL CE 2900@120.50 | BUY PE 2300@95.00 | qty=50 | expiry=2026-01-29",
         )
         msg = self.sent[0]
         assert "Trade Opened" in msg and "PAPER" in msg
         assert "🧪" in msg
         assert "RELIANCE" in msg
-        assert "CE 2900@120.50\nPE 2300@95.00" in msg  # reflowed onto separate lines
+        assert "🔴 SELL CE  2900 @ ₹120.50" in msg  # leg grid row
+        assert "🟢 BUY  PE  2300 @ ₹95.00" in msg
+        assert "Qty     50" in msg
+        assert "Expiry  2026-01-29" in msg
 
     def test_alert_trade_opened_live_uses_different_icon(self, monkeypatch):
         self._capture(monkeypatch)
@@ -172,8 +203,8 @@ class TestAlertHelpersFormatAndSend:
         msg = self.sent[0]
         assert "Daemon Heartbeat" in msg
         assert "💓" in msg
-        assert "Open positions: 2" in msg
-        assert "Market open right now: yes" in msg
+        assert "Open positions   2" in msg
+        assert "Market open now  yes" in msg
 
     def test_alert_heartbeat_escapes_strategy_names(self, monkeypatch):
         self._capture(monkeypatch)

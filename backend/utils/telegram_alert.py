@@ -68,21 +68,70 @@ def esc(value) -> str:
 
 
 # This codebase's alert callers build their `details`/`message` strings in
-# one of two shapes: " | "-joined summary fields (e.g. "CE 24000@120.50 |
-# PE 24000@110.00 | qty=50"), or space-separated "key=value" tokens (e.g.
-# "position_id=1 strategy=Foo symbol=NIFTY"). Both get reflowed to one
-# field per line inside a <pre> block below, rather than staying a single
-# hard-to-scan run-on line — a real formatting fix, not just parsing for
-# parsing's sake, since these ARE the two conventions already used
-# throughout the codebase's alert call sites.
+# one of two shapes: " | "-joined summary fields (e.g. "SELL CE 24600@127.60
+# | BUY CE 25000@17.65 | qty=50"), or space-separated "key=value" tokens
+# (e.g. "position_id=1 strategy=Foo symbol=NIFTY"). _split_fields reflows
+# both into one field per line; _format_body then classifies each field —
+# "ACTION TYPE STRIKE@PRICE" fields become an aligned leg grid (icon +
+# padded columns), recognized key=value fields (qty/reason/pnl/expiry)
+# become labeled rows below it, and anything else (free text, an unrecognized
+# key=value, or a field with an unexpected prefix glued on) is left as its
+# own plain line rather than dropped — degrade gracefully, never silently
+# lose content.
 _FIELD_BOUNDARY_RE = re.compile(r"\s(?=\w+=)")
+_LEG_RE = re.compile(r"^(BUY|SELL)\s+(CE|PE)\s+([\d.]+)@([\d.]+)$")
+_KV_RE = re.compile(r"^(\w+)=(.+)$")
 _PNL_RE = re.compile(r"pnl=([+-]?\d+(?:\.\d+)?)%")
+_KV_LABELS = {"qty": "Qty", "reason": "Reason", "pnl": "P&L", "expiry": "Expiry"}
+_DIVIDER = "─" * 24
+
+
+def _split_fields(details: str) -> list[str]:
+    body = details.replace(" | ", "\n")
+    body = _FIELD_BOUNDARY_RE.sub("\n", body)
+    return [f.strip() for f in body.split("\n") if f.strip()]
 
 
 def _format_body(details: str) -> str:
-    body = details.replace(" | ", "\n")
-    body = _FIELD_BOUNDARY_RE.sub("\n", body)
-    return f"<pre>{esc(body)}</pre>"
+    leg_rows: list[tuple[str, str, str, str]] = []
+    kv_rows: list[tuple[str, str]] = []
+    plain_rows: list[str] = []
+    for field in _split_fields(details):
+        leg_match = _LEG_RE.match(field)
+        if leg_match:
+            leg_rows.append(leg_match.groups())
+            continue
+        kv_match = _KV_RE.match(field)
+        if kv_match and kv_match.group(1) in _KV_LABELS:
+            key, value = kv_match.groups()
+            kv_rows.append((_KV_LABELS[key], value))  # every real caller's "pnl=" value already includes its own trailing "%"
+            continue
+        plain_rows.append(field)
+
+    lines: list[str] = []
+    if leg_rows:
+        strike_w = max(len(strike) for _, _, strike, _ in leg_rows)
+        for action, option_type, strike, price in leg_rows:
+            icon = "🟢" if action == "BUY" else "🔴"
+            lines.append(f"{icon} {action:<4} {option_type}  {strike:>{strike_w}} @ ₹{price}")
+    if leg_rows and (kv_rows or plain_rows):
+        lines.append("")
+    if kv_rows:
+        label_w = max(len(label) for label, _ in kv_rows)
+        lines.extend(f"{label:<{label_w}}  {value}" for label, value in kv_rows)
+    lines.extend(plain_rows)
+
+    body = "\n".join(lines) if lines else details
+    # A bare <pre> block with no language gets run through the Telegram
+    # CLIENT's own auto-detect-and-syntax-highlight heuristic (confirmed
+    # Telegram-app behavior, not something the Bot API or this message
+    # controls — see telegramdesktop/tdesktop#250) — it was guessing "Sql"
+    # for lines like "SELL CE 24600.00@127.60" and slapping on a language
+    # label + syntax colors neither useful nor accurate for what's really
+    # just a plain field dump. Explicitly declaring language-text tells the
+    # client this was already classified by the sender, which stops it
+    # from overriding with its own guess.
+    return f'<pre><code class="language-text">{esc(body)}</code></pre>'
 
 
 def _pnl_icon(details: str) -> str:
@@ -92,47 +141,41 @@ def _pnl_icon(details: str) -> str:
     return "📈" if float(match.group(1)) >= 0 else "📉"
 
 
+def _card(icon: str, title: str, mode_label: str, strategy_name: str, symbol: str, details: str, pnl_icon: str = "") -> str:
+    header_suffix = f" {pnl_icon}" if pnl_icon else ""
+    return (
+        f"{icon} <b>{title}</b> · <code>{mode_label}</code>{header_suffix}\n"
+        f"{_DIVIDER}\n"
+        f"<b>{esc(strategy_name)}</b> · {esc(symbol)}\n\n"
+        f"{_format_body(details)}"
+    )
+
+
 def alert_error(source: str, message: str) -> None:
-    send_telegram_alert(f"🔴 <b>Error</b> — <code>{esc(source)}</code>\n{_format_body(message)}")
+    send_telegram_alert(f"🔴 <b>Error</b> · <code>{esc(source)}</code>\n{_DIVIDER}\n{_format_body(message)}")
 
 
 def alert_trade_opened(strategy_name: str, mode: str, symbol: str, details: str) -> None:
     icon = "🧪" if mode == "paper" else "✅"
     mode_label = "PAPER" if mode == "paper" else "LIVE"
-    send_telegram_alert(
-        f"{icon} <b>Trade Opened</b> <code>{mode_label}</code>\n"
-        f"<b>{esc(strategy_name)}</b> · {esc(symbol)}\n"
-        f"{_format_body(details)}"
-    )
+    send_telegram_alert(_card(icon, "Trade Opened", mode_label, strategy_name, symbol, details))
 
 
 def alert_trade_closed(strategy_name: str, mode: str, symbol: str, details: str) -> None:
     icon = "🧪" if mode == "paper" else "✅"
     mode_label = "PAPER" if mode == "paper" else "LIVE"
-    pnl_icon = _pnl_icon(details)
-    header_suffix = f" {pnl_icon}" if pnl_icon else ""
-    send_telegram_alert(
-        f"{icon} <b>Trade Closed</b> <code>{mode_label}</code>{header_suffix}\n"
-        f"<b>{esc(strategy_name)}</b> · {esc(symbol)}\n"
-        f"{_format_body(details)}"
-    )
+    send_telegram_alert(_card(icon, "Trade Closed", mode_label, strategy_name, symbol, details, _pnl_icon(details)))
 
 
 def alert_pnl_update(strategy_name: str, mode: str, symbol: str, details: str) -> None:
     """Periodic while-open P&L snapshot — see custom_strategy_scheduler.py's _send_pnl_updates (distinct from alert_trade_closed, which fires once, at actual exit)."""
     icon = "🧪" if mode == "paper" else "✅"
     mode_label = "PAPER" if mode == "paper" else "LIVE"
-    pnl_icon = _pnl_icon(details)
-    header_suffix = f" {pnl_icon}" if pnl_icon else ""
-    send_telegram_alert(
-        f"{icon} 📊 <b>P&amp;L Update</b> <code>{mode_label}</code>{header_suffix}\n"
-        f"<b>{esc(strategy_name)}</b> · {esc(symbol)}\n"
-        f"{_format_body(details)}"
-    )
+    send_telegram_alert(_card(f"{icon} 📊", "P&amp;L Update", mode_label, strategy_name, symbol, details, _pnl_icon(details)))
 
 
 def alert_manual_intervention(message: str) -> None:
-    send_telegram_alert(f"🚨 <b>MANUAL INTERVENTION REQUIRED</b>\n{_format_body(message)}")
+    send_telegram_alert(f"🚨 <b>MANUAL INTERVENTION REQUIRED</b>\n{_DIVIDER}\n{_format_body(message)}")
 
 
 def alert_heartbeat(modes: dict, open_position_count: int, market_open: bool) -> None:
@@ -144,9 +187,14 @@ def alert_heartbeat(modes: dict, open_position_count: int, market_open: bool) ->
     that the process itself is actually up and ticking.
     """
     strategies_line = ", ".join(f"{esc(name)} ({esc(mode)})" for name, mode in modes.items()) or "none configured"
-    body = (
-        f"Strategies: {strategies_line}\n"
-        f"Open positions: {open_position_count}\n"
-        f"Market open right now: {'yes' if market_open else 'no'}"
+    rows = [
+        ("Strategies", strategies_line),
+        ("Open positions", str(open_position_count)),
+        ("Market open now", "yes" if market_open else "no"),
+    ]
+    label_w = max(len(label) for label, _ in rows)
+    body = "\n".join(f"{label:<{label_w}}  {value}" for label, value in rows)
+    send_telegram_alert(
+        f"💓 <b>Daemon Heartbeat</b> — still running\n{_DIVIDER}\n"
+        f'<pre><code class="language-text">{body}</code></pre>'
     )
-    send_telegram_alert(f"💓 <b>Daemon Heartbeat</b> — still running\n<pre>{body}</pre>")
