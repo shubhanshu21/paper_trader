@@ -55,9 +55,9 @@ from sqlalchemy import text, update
 
 from compliance.sebi_rules import (
     AuditTrail,
-    KillSwitch,
     OrderRateLimiter,
     assert_market_is_open,
+    get_global_kill_switch,
 )
 from db.engine import SessionLocal
 from db.models import CustomStrategy, CustomStrategyPosition
@@ -85,7 +85,7 @@ log = get_logger(__name__)
 _IST = ZoneInfo("Asia/Kolkata")
 
 _audit = AuditTrail(audit_log_path="logs/custom_strategy_audit.log")
-_kill_switch = KillSwitch()
+_kill_switch = get_global_kill_switch()
 _rate_limiter = OrderRateLimiter(max_per_second=10)
 _brokers: dict | None = None
 # Lock protecting _brokers — the asyncio scheduler loop reads it from
@@ -911,11 +911,7 @@ def _try_exit(db, strategy: CustomStrategy, broker) -> None:
                     _get_last_entered_margin(strategy, symbol, default_expiry_mode)
                     if (take_profit_capital_pct is not None or stop_loss_capital_pct is not None) else None
                 )
-                if take_profit_amount is not None and pnl_amount >= take_profit_amount:
-                    trigger = "TAKE_PROFIT"
-                elif take_profit_pct is not None and pnl_pct >= take_profit_pct:
-                    trigger = "TAKE_PROFIT"
-                elif take_profit_capital_pct is not None and margin_at_entry and pnl_amount >= margin_at_entry * take_profit_capital_pct / 100.0:
+                if (take_profit_amount is not None and pnl_amount >= take_profit_amount) or (take_profit_pct is not None and pnl_pct >= take_profit_pct) or (take_profit_capital_pct is not None and margin_at_entry and pnl_amount >= margin_at_entry * take_profit_capital_pct / 100.0):
                     trigger = "TAKE_PROFIT"
                 elif stop_loss_capital_pct is not None and margin_at_entry and pnl_amount <= -margin_at_entry * stop_loss_capital_pct / 100.0:
                     trigger = "STOP_LOSS"

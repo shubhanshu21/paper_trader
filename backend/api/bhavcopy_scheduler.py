@@ -1,6 +1,5 @@
 """
-api/bhavcopy_scheduler.py — keeps the MySQL fno_bhavcopy table (OI
-Scanner, Chain Replay, the Options Simulator's EOD Replay mode, and the
+api/bhavcopy_scheduler.py — keeps the MySQL fno_bhavcopy table (the
 backtest engine's BhavcopyDataFeed) current without anyone having to
 remember to run scripts/fill_bhavcopy_gap.py by hand.
 

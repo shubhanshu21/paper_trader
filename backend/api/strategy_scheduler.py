@@ -45,7 +45,7 @@ from api.session_seller_engine import _tick_one_strategy as _tick_session_seller
 from api.smart_condor_engine import _tick_one_strategy as _tick_smart_condor
 from api.weekend_combo_scheduler import _tick_one_strategy as _tick_combo
 from api.weekly_directional_engine import _tick_one_strategy as _tick_weekly_directional
-from compliance.sebi_rules import assert_market_is_open
+from compliance.sebi_rules import assert_market_is_open, get_global_kill_switch
 from db.engine import SessionLocal
 from db.models import CustomStrategy
 from utils.logger import get_logger
@@ -63,8 +63,10 @@ _TICK_SEC_OPEN = 30
 _TICK_SEC_CLOSED = 300
 _RECONCILE_INTERVAL_SEC = 600   # moved from custom_strategy_scheduler.py
 _PNL_UPDATE_INTERVAL_SEC = 900  # moved from custom_strategy_scheduler.py
+_DRAWDOWN_CHECK_INTERVAL_SEC = 300  # a safety check, checked more often than reconcile/pnl-update
 _last_reconcile_at: float | None = None
 _last_pnl_update_at: float | None = None
+_last_drawdown_check_at: float | None = None
 
 # strategy_type -> _tick_one_strategy implementation. Any type NOT in this
 # dict (CUSTOM, legacy STRADDLE/STRANGLE/etc, None) falls through to the
@@ -90,6 +92,80 @@ def _market_is_open_now() -> bool:
         return True
     except RuntimeError:
         return False
+
+
+def _check_drawdown_auto_trigger(db) -> None:
+    """
+    Auto-trips the GLOBAL kill switch once any user's today's realized
+    LIVE P&L breaches their own configured max_daily_drawdown_pct (opt-
+    in, WalletSettings.max_daily_drawdown_pct — NULL means no auto-
+    trigger for that user, the default). Real per-leg P&L only (no
+    fabricated MTM on still-open legs) — reuses utils.pnl.compute_
+    basket_pnl, the same net-of-real-charges calculation the Leaderboard/
+    Trade Journal already use.
+
+    There is only ONE global switch (see compliance/sebi_rules.py's own
+    docstring on why 11 separate per-engine instances were themselves a
+    bug) — tripping it here halts every strategy's new order flow for
+    EVERY user, not just the one whose threshold fired. That's the
+    correct scope for an emergency stop: SEBI's own kill-switch mandate
+    describes halting ALL order generation, not a scoped subset.
+    """
+    from datetime import date
+
+    from db.models import CustomStrategyPosition, WalletSettings
+    from utils.notify import notify
+    from utils.pnl import compute_basket_pnl
+    from utils.wallet import get_charge_rates
+
+    kill_switch = get_global_kill_switch()
+    if kill_switch.is_active():
+        return  # already tripped (manually or by an earlier check this tick) — nothing further to do
+
+    configured = db.query(WalletSettings).filter(WalletSettings.max_daily_drawdown_pct.isnot(None)).all()
+    if not configured:
+        return
+
+    today = date.today()
+    for wallet in configured:
+        if not wallet.user_id or not wallet.starting_capital:
+            continue
+        own_strategy_ids = {r[0] for r in db.query(CustomStrategy.id).filter(CustomStrategy.user_id == wallet.user_id).all()}
+        if not own_strategy_ids:
+            continue
+        legs = db.query(CustomStrategyPosition).filter(
+            CustomStrategyPosition.strategy_id.in_(own_strategy_ids),
+            CustomStrategyPosition.mode == "live",
+            CustomStrategyPosition.status == "CLOSED",
+        ).all()
+        todays_legs = [leg for leg in legs if leg.closed_at and leg.closed_at.date() == today and leg.exit_price is not None]
+        if not todays_legs:
+            continue
+
+        rates = get_charge_rates(wallet.user_id)
+        result = compute_basket_pnl([
+            {"entry_price": leg.entry_price, "exit_price": leg.exit_price, "quantity": leg.quantity,
+             "transaction_type": leg.transaction_type, "instrument_type": leg.instrument_type}
+            for leg in todays_legs
+        ], rates)
+        drawdown_pct = 100 * result["net_pnl"] / float(wallet.starting_capital)
+        threshold = -abs(float(wallet.max_daily_drawdown_pct))
+
+        if drawdown_pct <= threshold:
+            reason = (
+                f"Auto-triggered: user {wallet.user_id}'s today's realized LIVE P&L is "
+                f"{drawdown_pct:.2f}% of starting capital, past their configured {threshold:.2f}% daily drawdown limit."
+            )
+            kill_switch.activate(reason=reason)
+            log.critical("strategy_scheduler: AUTO KILL SWITCH — %s", reason)
+            notify(
+                "kill_switch",
+                f"🚨 GLOBAL KILL SWITCH AUTO-ACTIVATED — {reason} ALL new order flow (every strategy, every "
+                f"user) is halted until manually reset from the Kill Switch control. Already-open positions "
+                f"can still be closed.",
+                level="error", user_id=wallet.user_id,
+            )
+            return  # one trip halts everything — no need to keep checking other users this tick
 
 
 async def strategy_scheduler() -> None:
@@ -138,8 +214,15 @@ async def strategy_scheduler() -> None:
                                     strategy.id, strategy.name, strategy.strategy_type, exc, exc_info=True,
                                 )
 
-                        global _last_reconcile_at, _last_pnl_update_at
+                        global _last_reconcile_at, _last_pnl_update_at, _last_drawdown_check_at
                         now_monotonic = time.monotonic()
+                        if _last_drawdown_check_at is None or now_monotonic - _last_drawdown_check_at >= _DRAWDOWN_CHECK_INTERVAL_SEC:
+                            _last_drawdown_check_at = now_monotonic
+                            try:
+                                _check_drawdown_auto_trigger(db)
+                            except Exception as exc:
+                                log.error("strategy_scheduler: drawdown auto-trigger check failed: %s", exc, exc_info=True)
+
                         if _last_reconcile_at is None or now_monotonic - _last_reconcile_at >= _RECONCILE_INTERVAL_SEC:
                             _last_reconcile_at = now_monotonic
                             try:

@@ -9,7 +9,13 @@ network-dependent and flaky. Covered instead by backtest/engine.py's
 """
 import pytest
 
-from compliance.sebi_rules import KillSwitch, OrderRateLimiter, validate_price_band
+from compliance.sebi_rules import (
+    KillSwitch,
+    OrderRateLimiter,
+    assert_kill_switch_not_active,
+    get_global_kill_switch,
+    validate_price_band,
+)
 
 
 class TestKillSwitch:
@@ -32,6 +38,54 @@ class TestKillSwitch:
         ks.activate(reason="first")
         ks.activate(reason="second")  # must not raise / must stay active
         assert ks.is_active() is True
+
+    def test_status_reports_reason_and_timestamp_once_active(self):
+        ks = KillSwitch()
+        assert ks.status() == {"active": False, "reason": None, "activated_at": None}
+        ks.activate(reason="daily drawdown breached")
+        status = ks.status()
+        assert status["active"] is True
+        assert status["reason"] == "daily drawdown breached"
+        assert status["activated_at"] is not None
+
+    def test_reset_clears_reason_and_timestamp(self):
+        ks = KillSwitch()
+        ks.activate(reason="test")
+        ks.reset()
+        assert ks.status() == {"active": False, "reason": None, "activated_at": None}
+
+
+class TestGlobalKillSwitch:
+    def test_returns_the_same_instance_every_call(self):
+        # The whole point: every one of the 11 strategy engines that used
+        # to build its OWN KillSwitch() now shares this one, so activating
+        # it from any single place actually halts every engine's order
+        # flow, not just the one that tripped it.
+        assert get_global_kill_switch() is get_global_kill_switch()
+
+    def test_activating_the_global_switch_is_visible_everywhere_it_is_referenced(self):
+        ks = get_global_kill_switch()
+        was_active = ks.is_active()
+        try:
+            ks.activate(reason="test — visible everywhere")
+            assert get_global_kill_switch().is_active() is True
+        finally:
+            ks.reset()
+            assert was_active is False  # sanity: this test didn't inherit an already-active switch from another test
+
+
+class TestAssertKillSwitchNotActive:
+    def test_none_is_always_a_pass_through(self):
+        assert_kill_switch_not_active(None)  # must not raise — read-only preview engines pass kill_switch=None
+
+    def test_inactive_switch_does_not_raise(self):
+        assert_kill_switch_not_active(KillSwitch())
+
+    def test_active_switch_raises(self):
+        ks = KillSwitch()
+        ks.activate(reason="test")
+        with pytest.raises(RuntimeError, match="KILL SWITCH IS ACTIVE"):
+            assert_kill_switch_not_active(ks)
 
 
 class TestOrderRateLimiter:

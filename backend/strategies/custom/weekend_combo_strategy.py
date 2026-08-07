@@ -12,7 +12,15 @@ combo_schema.py's module docstring), it's only the "two symbols in one
 basket" orchestration around them that's new.
 """
 from broker.base_broker import BaseBroker
-from compliance.sebi_rules import AuditTrail, ComplianceError, KillSwitch, OrderRateLimiter, validate_order_quantity, validate_price_band
+from compliance.sebi_rules import (
+    AuditTrail,
+    ComplianceError,
+    KillSwitch,
+    OrderRateLimiter,
+    assert_kill_switch_not_active,
+    validate_order_quantity,
+    validate_price_band,
+)
 from strategies.custom.combo_schema import legs_for
 from strategies.custom.rule_strategy import resolve_leg_strike
 from utils.logger import get_logger
@@ -105,6 +113,11 @@ class WeekendGapComboStrategy:
         return resolved
 
     def _place_leg(self, leg: dict, idx: int) -> str | None:
+        # Only the entry chokepoint is guarded, not _unwind_leg below — the
+        # kill switch stops NEW order flow, it must not also block closing
+        # a partial fill (that would strand real risk open, the opposite
+        # of what an emergency stop is for).
+        assert_kill_switch_not_active(self.kill_switch)
         self.rate_limiter.acquire()
         place = self.broker.place_sell_order if leg["action"] == "SELL" else self.broker.place_buy_order
         self.audit.record(

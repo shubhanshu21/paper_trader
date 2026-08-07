@@ -3,11 +3,13 @@ import { useNavigate, useLocation, NavLink } from "react-router-dom";
 import { User, LogOut, Menu, X } from "lucide-react";
 import { User as UserType } from "../api";
 import { C, FONT } from "../lib/format";
+import KillSwitchControl from "./KillSwitchControl";
 import NotificationBell from "./NotificationBell";
+import PriceAlertsBell from "./PriceAlertsBell";
 import MarketStatusBadge from "./MarketStatusBadge";
 import UpstoxTokenBadge from "./UpstoxTokenBadge";
 
-const NAV = ["Dashboard", "Strategies", "Orders", "Holdings", "Positions", "Leaderboard", "IV Screener", "OI Scanner", "Chain Replay", "Simulator"];
+const NAV = ["Dashboard", "Strategies", "Orders", "Holdings", "Positions", "Performance", "Leaderboard"];
 
 const navSlug = (navItem: string) => navItem.toLowerCase().replace(/\s+/g, "-");
 
@@ -82,11 +84,15 @@ export default function TopNav({ currentUser, onLogout }: TopNavProps) {
               </NavLink>
             );
           })}
+          <KillSwitchControl />
           <div className="hidden md:block">
             <MarketStatusBadge />
           </div>
           <div className="hidden md:block">
             <UpstoxTokenBadge />
+          </div>
+          <div className="hidden md:block">
+            <PriceAlertsBell />
           </div>
           <div className="hidden md:block">
             <NotificationBell />

@@ -223,6 +223,16 @@ export interface WalletResetResult extends WalletSummary {
   deleted_candles: number;
 }
 
+export interface DrawdownLimitResponse {
+  max_daily_drawdown_pct: number | null;
+}
+
+export interface KillSwitchStatus {
+  active: boolean;
+  reason: string | null;
+  activated_at: string | null;
+}
+
 export interface LedgerItem {
   date: string;
   position_id: number | null;
@@ -375,160 +385,64 @@ export interface LeaderboardRow {
   avg_pnl: number;
 }
 
-export interface IvScreenerRow {
+export interface TradeJournalEntryRow {
+  strategy: string;
   symbol: string;
-  current_iv: number | null;   // % (e.g. 18.5), null if a live solve wasn't possible right now
-  iv_rank: number | null;      // 0-100, null until history_required days have accumulated
-  history_days: number;
-  history_required: number;
-  sufficient: boolean;
-}
-
-export type OiSignal = "LONG_BUILDUP" | "SHORT_BUILDUP" | "LONG_UNWINDING" | "SHORT_COVERING" | "NEUTRAL";
-
-export interface OiFuturesSignal {
-  expiry: string;
-  close: number;
-  price_change: number;
-  price_change_pct: number;
-  open_interest: number;
-  chg_in_oi: number;
-  signal: OiSignal;
-}
-
-export interface OiStrikeMove {
-  strike: number;
-  option_type: string;
-  close: number;
-  price_change: number;
-  open_interest: number;
-  chg_in_oi: number;
-  signal: OiSignal;
-}
-
-export interface OiScannerResponse {
-  symbol: string;
-  as_of: string;         // the actual bhavcopy date this reflects — NOT necessarily today, see backend docstring
-  compared_to: string | null;
-  futures: OiFuturesSignal | null;
-  top_strike_moves: OiStrikeMove[];
-}
-
-export interface ChainReplayLeg {
-  close: number | null;
-  open_interest: number;
-  chg_in_oi: number;
-  volume: number;
-}
-
-export interface ChainReplayRow {
-  strike: number;
-  ce: ChainReplayLeg | null;
-  pe: ChainReplayLeg | null;
-}
-
-export interface ChainReplayResponse {
-  symbol: string;
-  date: string;
-  expiry: string;
-  underlying_close: number | null;
-  lot_size: number | null;
-  chain: ChainReplayRow[];
-}
-
-// --- Options simulator (live + EOD-replay halves) -------------------------
-
-export interface SimLegInput {
-  strike: number;
-  option_type: "CE" | "PE";
-  action: "BUY" | "SELL";
-  quantity: number;
-}
-
-export interface PayoffCurvePoint {
-  price: number;
+  mode: string;
+  category: string;
+  entry_date: string | null;
+  exit_date: string | null;
+  legs: number;
   pnl: number;
 }
 
-export interface BreakevenDetail {
-  price: number;
-  pct_from_spot: number | null;
+export interface PerformanceMetrics {
+  total_trades: number;
+  winning_trades: number;
+  losing_trades: number;
+  win_rate: number;
+  total_pnl: number;
+  average_win: number;
+  average_loss: number;
+  profit_factor: number;
+  max_drawdown: number;
+  sharpe_ratio: number | null;
+  best_trade: number | null;
+  worst_trade: number | null;
+  equity_curve: { date: string | null; cumulative_pnl: number }[];
 }
 
-export interface SimChainLeg {
-  instrument_key: string;
-  ltp: number | null;
-  iv: number | null;    // %, e.g. 18.5 — null if the solve failed (common for deep ITM, see backend docstring)
-  delta: number | null;
+export interface PerformanceBreakdownRow {
+  trades: number;
+  total_pnl: number;
+  average_pnl: number;
+  wins?: number;
+  win_rate?: number;
 }
 
-export interface SimChainRow {
-  strike: number;
-  ce: SimChainLeg | null;
-  pe: SimChainLeg | null;
+export interface PerformanceAnalytics {
+  strategy_breakdown: Record<string, PerformanceBreakdownRow>;
+  symbol_performance: Record<string, PerformanceBreakdownRow>;
+  day_of_week_performance: Record<string, PerformanceBreakdownRow>;
+  total_trades_analyzed: number;
 }
 
-export interface SimulatorChainResponse {
+export type PerformancePeriod = 'all' | 'today' | 'week' | 'month' | 'quarter' | 'year';
+export type PerformanceMode = 'paper' | 'live' | undefined;
+
+export type PriceAlertCondition = 'ABOVE' | 'BELOW' | 'CROSSES_ABOVE' | 'CROSSES_BELOW';
+export type PriceAlertStatus = 'ACTIVE' | 'TRIGGERED' | 'CANCELLED';
+
+export interface PriceAlertRow {
+  id: number;
   symbol: string;
-  expiry: string;
-  spot_price: number | null;
-  forward_price: number | null;
-  lot_size: number | null;
-  chain: SimChainRow[];
-}
-
-export interface SimulatorEvaluateRequest {
-  symbol: string;
-  expiry: string;
-  instrument_type: "INDEX" | "STOCK" | "COMMODITY";
-  legs: (SimLegInput & { instrument_key: string; fallback_premium?: number | null })[];
-}
-
-export interface SimulatorEvaluateResponse {
-  max_profit: number | null;
-  max_loss: number | null;
-  breakevens: number[];
-  net_premium: number;
-  spot_price: number | null;
-  forward_price: number | null;
-  payoff_curve: PayoffCurvePoint[];
-  greeks: { delta: number; gamma: number; theta: number; vega: number };
-  margin_required: number | null;
-  margin_is_real: boolean;
-  probability_of_profit_pct: number | null;
-  risk_reward_ratio: number | null;
-  breakevens_detail: BreakevenDetail[];
-  stale_legs: string[];  // e.g. "22450CE" — legs priced off the last-seen chain quote, not a fresh live one
-}
-
-export interface ReplayEvaluateRequest {
-  symbol: string;
-  expiry: string;
-  entry_date: string;
-  eval_date: string;
-  legs: SimLegInput[];
-}
-
-export interface ReplayLegDetail extends SimLegInput {
-  entry_price: number;
-  eval_price: number;
-  pnl: number;
-}
-
-export interface ReplayEvaluateResponse {
-  symbol: string;
-  expiry: string;
-  entry_date: string;
-  eval_date: string;
-  legs: ReplayLegDetail[];
-  mtm: number;
-  max_profit: number | null;
-  max_loss: number | null;
-  breakevens: number[];
-  net_premium: number;
-  payoff_curve: PayoffCurvePoint[];
-  entry_underlying_close: number | null;
-  eval_underlying_close: number | null;
+  condition: PriceAlertCondition;
+  target_price: number;
+  note: string | null;
+  status: PriceAlertStatus;
+  created_at: string;
+  triggered_at: string | null;
+  triggered_price: number | null;
 }
 
 export interface BacktestRequest {
@@ -788,6 +702,23 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(rates),
     }),
+  getDrawdownLimit: () => request<DrawdownLimitResponse>('/api/wallet/drawdown-limit'),
+  setDrawdownLimit: (max_daily_drawdown_pct: number | null) =>
+    request<DrawdownLimitResponse>('/api/wallet/drawdown-limit', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ max_daily_drawdown_pct }),
+    }),
+
+  // Global kill switch — accessible control for the SEBI-mandated "halt all order flow" switch
+  getKillSwitchStatus: () => request<KillSwitchStatus>('/api/kill-switch/status'),
+  activateKillSwitch: (reason: string) =>
+    request<KillSwitchStatus>('/api/kill-switch/activate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reason }),
+    }),
+  resetKillSwitch: () => request<KillSwitchStatus>('/api/kill-switch/reset', { method: 'POST' }),
 
   // Orders
   getOrders: (mode?: string, limit = 200) => request<Order[]>(`/api/orders?limit=${limit}${mode ? `&mode=${mode}` : ''}`),
@@ -815,6 +746,18 @@ export const api = {
       body: JSON.stringify(instrumentKeys),
     }),
 
+  // Price alerts — "notify me when X crosses Y", evaluated live in the background
+  createPriceAlert: (req: { symbol: string; condition: PriceAlertCondition; target_price: number; note?: string }) =>
+    request<PriceAlertRow>('/api/price-alerts', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(req),
+    }),
+  getPriceAlerts: (status?: PriceAlertStatus) =>
+    request<{ alerts: PriceAlertRow[] }>(`/api/price-alerts${status ? `?status=${status}` : ''}`),
+  deletePriceAlert: (id: number) =>
+    request<{ status: string }>(`/api/price-alerts/${id}`, { method: 'DELETE' }),
+
   // Backtesting
   runBacktest: (req: BacktestRequest) =>
     request<LegacyBacktestResult>('/api/backtest', {
@@ -826,34 +769,26 @@ export const api = {
   // Leaderboard
   getLeaderboard: () => request<{ rows: LeaderboardRow[] }>('/api/leaderboard'),
 
-  // IV percentile screener — across the logged-in user's watchlist symbols
-  getIvScreener: () => request<{ rows: IvScreenerRow[] }>('/api/iv-screener'),
-
-  // OI build-up/unwinding scanner — EOD bhavcopy-derived, per symbol
-  getOiScanner: (symbol: string) => request<OiScannerResponse>(`/api/oi-scanner?symbol=${encodeURIComponent(symbol)}`),
-
-  // Historical option chain replay
-  getChainReplayDates: (symbol: string) => request<{ symbol: string; dates: string[] }>(`/api/chain-replay/dates?symbol=${encodeURIComponent(symbol)}`),
-  getChainReplayExpiries: (symbol: string, date: string) =>
-    request<{ symbol: string; date: string; expiries: string[] }>(`/api/chain-replay/expiries?symbol=${encodeURIComponent(symbol)}&date=${encodeURIComponent(date)}`),
-  getChainReplay: (symbol: string, date: string, expiry: string) =>
-    request<ChainReplayResponse>(`/api/chain-replay?symbol=${encodeURIComponent(symbol)}&date=${encodeURIComponent(date)}&expiry=${encodeURIComponent(expiry)}`),
-  evaluateChainReplay: (req: ReplayEvaluateRequest) =>
-    request<ReplayEvaluateResponse>('/api/chain-replay/evaluate', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(req),
-    }),
-
-  // Live options simulator (see api/routes_simulator.py)
-  getSimulatorChain: (symbol: string, expiry: string) =>
-    request<SimulatorChainResponse>(`/api/simulator/chain?symbol=${encodeURIComponent(symbol)}&expiry=${encodeURIComponent(expiry)}`),
-  evaluateSimulator: (req: SimulatorEvaluateRequest) =>
-    request<SimulatorEvaluateResponse>('/api/simulator/evaluate', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(req),
-    }),
+  // Trade Journal / Performance — all computed from real closed CustomStrategyPosition data
+  getPerformanceMetrics: (userId: number, period: PerformancePeriod = 'all', mode?: PerformanceMode) =>
+    request<PerformanceMetrics>(
+      `/api/performance/metrics/${userId}?period=${period}${mode ? `&mode=${mode}` : ''}`,
+    ),
+  getPerformanceAnalytics: (userId: number, mode?: PerformanceMode) =>
+    request<PerformanceAnalytics>(`/api/performance/analytics/${userId}${mode ? `?mode=${mode}` : ''}`),
+  getTradeJournal: (params: { period?: PerformancePeriod; mode?: PerformanceMode; symbol?: string; strategy?: string; limit?: number } = {}) => {
+    const qs = new URLSearchParams();
+    if (params.period) qs.set('period', params.period);
+    if (params.mode) qs.set('mode', params.mode);
+    if (params.symbol) qs.set('symbol', params.symbol);
+    if (params.strategy) qs.set('strategy', params.strategy);
+    if (params.limit) qs.set('limit', String(params.limit));
+    return request<{ entries: TradeJournalEntryRow[] }>(`/api/performance/journal?${qs.toString()}`);
+  },
+  exportTradeJournal: (userId: number, format: 'csv' | 'json', period: PerformancePeriod = 'all', mode?: PerformanceMode) =>
+    request<{ csv?: string; trades?: TradeJournalEntryRow[] }>(
+      `/api/performance/export/${userId}?format=${format}&period=${period}${mode ? `&mode=${mode}` : ''}`,
+    ),
 
   // Custom strategies (the strategy builder) — list/create/update/delete/status
   // only; everything per-selected-strategy and ephemeral (payoff, live greeks,

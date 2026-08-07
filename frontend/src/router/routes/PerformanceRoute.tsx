@@ -1,12 +1,12 @@
 import { lazy, Suspense } from "react";
 import RouteFallback from "../RouteFallback";
 
-const IvScreenerView = lazy(() => import("../../components/IvScreenerView"));
+const PerformanceView = lazy(() => import("../../components/PerformanceView"));
 
-export default function IvScreenerRoute() {
+export default function PerformanceRoute() {
   return (
     <Suspense fallback={<RouteFallback />}>
-      <IvScreenerView />
+      <PerformanceView />
     </Suspense>
   );
 }

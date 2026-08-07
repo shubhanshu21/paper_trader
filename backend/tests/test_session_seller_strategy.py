@@ -12,7 +12,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from api.session_seller_engine import _is_blacked_out
-from compliance.sebi_rules import ComplianceError
+from compliance.sebi_rules import ComplianceError, KillSwitch
 from strategies.custom.session_seller_strategy import SessionSellerStrategy
 
 
@@ -112,3 +112,74 @@ class TestIsBlackedOut:
 
     def test_false_with_no_windows(self):
         assert _is_blacked_out({"blackout_dates": []}, date(2026, 3, 3)) is False
+
+
+# ---------------------------------------------------------------------------
+# Kill switch enforcement — entries blocked, closes always allowed
+# ---------------------------------------------------------------------------
+class OrderPlacingFakeBroker(FakeBroker):
+    """FakeBroker plus the order-placement surface _place() actually calls."""
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.placed_orders = []
+
+    def place_sell_order(self, instrument_token, quantity, product, order_type, tag, user_id=None):
+        self.placed_orders.append(("SELL", instrument_token))
+        return "ORDER-1"
+
+    def place_buy_order(self, instrument_token, quantity, product, order_type, tag, user_id=None):
+        self.placed_orders.append(("BUY", instrument_token))
+        return "ORDER-1"
+
+    def get_fill_price(self, order_id):
+        return 1.5
+
+
+def make_strategy_with_kill_switch(kill_switch: KillSwitch) -> SessionSellerStrategy:
+    broker = OrderPlacingFakeBroker(strike_step=50, lot_size=75, ltp_by_token={"C1": 1.5})
+    rules = {
+        "lots": 1,
+        "symbol_schedule": {"MON": "NIFTY"},
+        "sessions": {"NIFTY": {"morning_entry": "09:20", "morning_exit": "11:30", "afternoon_entry": "12:30", "afternoon_exit": "15:15"}},
+        "otm_points": 100, "hedge_premium_min": 1, "hedge_premium_max": 2, "stop_loss_pct": 50, "blackout_dates": [],
+    }
+    return SessionSellerStrategy(
+        broker=broker, audit=MagicMock(), kill_switch=kill_switch, rate_limiter=MagicMock(),
+        symbol="NIFTY", rules=rules, user_id=1,
+    )
+
+
+class TestKillSwitchEnforcement:
+    def _chain(self):
+        return [make_chain_entry(24000, ce_key="C1")]
+
+    def test_active_kill_switch_blocks_a_new_short(self):
+        ks = KillSwitch()
+        ks.activate(reason="test")
+        strategy = make_strategy_with_kill_switch(ks)
+        with pytest.raises(RuntimeError, match="KILL SWITCH IS ACTIVE"):
+            strategy.sell_short(chain=self._chain(), expiry="2026-08-27", option_type="CE", strike=24000)
+        assert strategy.broker.placed_orders == []  # never reached the broker at all
+
+    def test_active_kill_switch_blocks_a_new_hedge(self):
+        ks = KillSwitch()
+        ks.activate(reason="test")
+        strategy = make_strategy_with_kill_switch(ks)
+        with pytest.raises(RuntimeError, match="KILL SWITCH IS ACTIVE"):
+            strategy.buy_hedge(chain=self._chain(), expiry="2026-08-27", option_type="CE", strike=24000)
+
+    def test_active_kill_switch_does_not_block_closing_an_existing_leg(self):
+        # The whole point of NOT guarding close_leg: halting new order flow
+        # must never also trap an already-open real position with no way
+        # to exit while the switch is active.
+        ks = KillSwitch()
+        ks.activate(reason="test")
+        strategy = make_strategy_with_kill_switch(ks)
+        result = strategy.close_leg(instrument_token="C1", quantity=75, strike=24000, option_type="CE", original_transaction_type="SELL")
+        assert result["order_id"] == "ORDER-1"
+        assert strategy.broker.placed_orders == [("BUY", "C1")]
+
+    def test_inactive_kill_switch_allows_a_new_short(self):
+        strategy = make_strategy_with_kill_switch(KillSwitch())
+        result = strategy.sell_short(chain=self._chain(), expiry="2026-08-27", option_type="CE", strike=24000)
+        assert result["order_id"] == "ORDER-1"

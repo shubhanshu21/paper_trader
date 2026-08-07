@@ -14,10 +14,22 @@ real previous-session pivot, never guessed or simulated.
 from datetime import date
 
 from broker.base_broker import BaseBroker
-from compliance.sebi_rules import AuditTrail, ComplianceError, KillSwitch, OrderRateLimiter, validate_order_quantity, validate_price_band
+from compliance.sebi_rules import (
+    AuditTrail,
+    ComplianceError,
+    KillSwitch,
+    OrderRateLimiter,
+    assert_kill_switch_not_active,
+    validate_order_quantity,
+    validate_price_band,
+)
 from strategies.custom.intraday_schema import get_setting
 from utils.logger import get_logger
-from utils.option_utils import find_instrument_token, find_nearest_expiry_by_type, round_to_nearest_strike
+from utils.option_utils import (
+    find_instrument_token,
+    find_nearest_expiry_by_type,
+    round_to_nearest_strike,
+)
 from utils.technical_indicators import pivot_points, supertrend
 
 log = get_logger(__name__)
@@ -190,6 +202,7 @@ class IntradaySupertrendStrategy:
         RuleBasedStrategy.execute() has with its own caller.
         """
         leg = self.resolve_atm_leg(option_type)
+        assert_kill_switch_not_active(self.kill_switch)  # entry only — exit()/square-off below must still be able to close an already-open leg even while halted
         self.rate_limiter.acquire()
         self.audit.record(
             event_type="ORDER_INITIATED", symbol=self.symbol, instrument_token=leg["instrument_token"],

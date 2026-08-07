@@ -36,7 +36,13 @@ import json
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
-from compliance.sebi_rules import AuditTrail, ComplianceError, KillSwitch, OrderRateLimiter, assert_market_is_open
+from compliance.sebi_rules import (
+    AuditTrail,
+    ComplianceError,
+    OrderRateLimiter,
+    assert_market_is_open,
+    get_global_kill_switch,
+)
 from db.models import CustomStrategy, CustomStrategyPosition
 from strategies.custom.combo_schema import get_setting
 from strategies.custom.weekend_combo_strategy import WeekendGapComboStrategy
@@ -52,7 +58,7 @@ _IST = ZoneInfo("Asia/Kolkata")
 _WEEKDAY_NUMS = {"MON": 0, "TUE": 1, "WED": 2, "THU": 3, "FRI": 4, "SAT": 5, "SUN": 6}
 
 _audit = AuditTrail(audit_log_path="logs/weekend_combo_audit.log")
-_kill_switch = KillSwitch()
+_kill_switch = get_global_kill_switch()
 _rate_limiter = OrderRateLimiter(max_per_second=10)
 
 

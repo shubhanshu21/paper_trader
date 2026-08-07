@@ -35,7 +35,12 @@ plain ATM, reusing the same hedges). Each tick:
 import json
 from datetime import date, datetime
 
-from compliance.sebi_rules import AuditTrail, ComplianceError, KillSwitch, OrderRateLimiter
+from compliance.sebi_rules import (
+    AuditTrail,
+    ComplianceError,
+    OrderRateLimiter,
+    get_global_kill_switch,
+)
 from db.models import CustomStrategy, CustomStrategyPosition
 from strategies.custom.session_seller_schema import get_setting
 from strategies.custom.session_seller_strategy import SessionSellerStrategy
@@ -47,7 +52,7 @@ from utils.telegram_alert import alert_trade_closed, alert_trade_opened
 log = get_logger(__name__)
 
 _audit = AuditTrail(audit_log_path="logs/session_seller_audit.log")
-_kill_switch = KillSwitch()
+_kill_switch = get_global_kill_switch()
 _rate_limiter = OrderRateLimiter(max_per_second=10)
 
 _WEEKDAY_NAMES = ["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"]

@@ -193,6 +193,11 @@ class WalletSettings(Base):
     sebi_charge_pct     = Column(Numeric(12, 8), nullable=True)
     stamp_duty_pct      = Column(Numeric(12, 8), nullable=True)
 
+    # Opt-in automatic global kill-switch trip once today's realized LIVE
+    # P&L drops past this % of starting_capital — see api/strategy_scheduler.py's
+    # drawdown check. NULL (the default) means no auto-trigger.
+    max_daily_drawdown_pct = Column(Numeric(6, 2), nullable=True)
+
 
 # ---------------------------------------------------------------------------
 # Panel authentication: registered users
@@ -715,3 +720,48 @@ class SymbolIvHistory(Base):
     __table_args__ = (
         Index("ix_symbol_iv_history_symbol_date", "symbol", "trade_date"),
     )
+
+
+class PriceAlert(Base):
+    """
+    User-created "notify me when X crosses Y" price alert — evaluated
+    live against real LTP by api/price_alert_scheduler.py, independent of
+    any CustomStrategy (a plain watch-and-notify, never places an order).
+    condition is one of 'ABOVE'/'BELOW' (true whenever the current price
+    is on that side, fires the FIRST tick it's true) or
+    'CROSSES_ABOVE'/'CROSSES_BELOW' (fires only on the tick the price
+    transitions across target_price, using last_seen_price to detect the
+    crossing — 'ABOVE' would otherwise re-fire on every single tick for
+    as long as the price stays above target).
+    """
+    __tablename__ = "price_alerts"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    user_id = Column(BigInteger, nullable=False)
+    symbol = Column(String(32), nullable=False)
+    condition = Column(String(16), nullable=False)  # 'ABOVE' | 'BELOW' | 'CROSSES_ABOVE' | 'CROSSES_BELOW'
+    target_price = Column(Numeric(14, 4), nullable=False)
+    note = Column(String(255), nullable=True)
+    status = Column(String(12), nullable=False, default="ACTIVE")  # 'ACTIVE' | 'TRIGGERED' | 'CANCELLED'
+    last_seen_price = Column(Numeric(14, 4), nullable=True)  # only used by the CROSSES_* conditions, see above
+    created_at = Column(DateTime, nullable=False, server_default=func.now())
+    triggered_at = Column(DateTime, nullable=True)
+    triggered_price = Column(Numeric(14, 4), nullable=True)
+
+    __table_args__ = (
+        Index("ix_price_alerts_user_id", "user_id"),
+        Index("ix_price_alerts_status", "status"),
+    )
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "symbol": self.symbol,
+            "condition": self.condition,
+            "target_price": float(self.target_price) if self.target_price is not None else None,
+            "note": self.note,
+            "status": self.status,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "triggered_at": self.triggered_at.isoformat() if self.triggered_at else None,
+            "triggered_price": float(self.triggered_price) if self.triggered_price is not None else None,
+        }

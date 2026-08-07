@@ -1,15 +1,38 @@
 """
-api/routes_performance.py — Trade journaling and performance analytics API.
+api/routes_performance.py — Trade journal & performance analytics: win
+rate, profit factor, max drawdown, Sharpe ratio, equity curve, and
+strategy/symbol/day-of-week breakdowns.
 
-Provides comprehensive trade tracking, performance metrics, and
-analytics for improving trading strategies and discipline.
+Computed entirely from REAL closed positions (CustomStrategyPosition),
+not a separate manually-typed log — this module used to be a standalone
+in-memory "trade journal" (a module-level dict, wiped on every restart,
+that nothing in the actual trading system ever wrote to — every strategy
+engine, the scheduler, everything, was completely disconnected from it).
+That's gone. "My trade history" now means exactly what the Leaderboard/
+Positions pages already show — this module just adds the metrics/curve/
+breakdown views on top of the same real data.
+
+Reuses routes_leaderboard.py's basket-grouping logic (_basket_bucket,
+_is_leg_for_symbol, _CATEGORY_LABELS) rather than re-deriving it: a
+basket (one entry cycle's worth of legs opened together) is the correct
+unit for "one trade" here — a 4-leg iron condor closing is ONE trade for
+win-rate/profit-factor purposes, not four raw legs.
 """
+import json
+import statistics
+from collections import defaultdict
 from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from api.auth import get_current_user
+from api.custom_strategy_scheduler import _is_leg_for_symbol
+from api.routes_leaderboard import _CATEGORY_LABELS, _basket_bucket
+from db.engine import SessionLocal
+from db.models import CustomStrategy, CustomStrategyPosition
+from utils.pnl import compute_basket_pnl
+from utils.wallet import get_charge_rates
 
 router = APIRouter(prefix="/api/performance", tags=["performance"])
 
@@ -18,24 +41,8 @@ def _uid(user: dict) -> int:
     return int(user["sub"])
 
 
-class TradeJournalEntry(BaseModel):
-    """Individual trade journal entry."""
-    symbol: str
-    strategy: str
-    entry_date: str
-    exit_date: str | None = None
-    side: str  # "BUY" or "SELL"
-    quantity: int
-    entry_price: float
-    exit_price: float | None = None
-    pnl: float | None = None
-    notes: str | None = None
-    tags: list[str] | None = None
-    user_id: int | None = None
-
-
 class PerformanceMetrics(BaseModel):
-    """Performance metrics for a user or strategy."""
+    """Performance metrics for a user, over some period/mode filter."""
     total_trades: int
     winning_trades: int
     losing_trades: int
@@ -48,321 +55,260 @@ class PerformanceMetrics(BaseModel):
     sharpe_ratio: float | None = None
     best_trade: float | None = None
     worst_trade: float | None = None
+    equity_curve: list[dict] = []
 
 
-# In-memory storage for trade journal (in production, use database)
-trade_journal: dict = {}
-performance_cache: dict = {}
+_PERIOD_DAYS = {"week": 7, "month": 30, "quarter": 90, "year": 365}
 
 
-@router.post("/journal")
-def add_trade_entry(entry: TradeJournalEntry, user: dict = Depends(get_current_user)):
-    """Add a trade entry to the journal, owned by the caller."""
-    entry_id = f"trade_{datetime.now().strftime('%Y%m%d%H%M%S')}"
-    entry.user_id = _uid(user)  # ignore any client-supplied user_id — always the caller
-
-    # Calculate P&L if exit price is provided
-    if entry.exit_price and not entry.pnl:
-        if entry.side == "BUY":
-            entry.pnl = (entry.exit_price - entry.entry_price) * entry.quantity
-        else:
-            entry.pnl = (entry.entry_price - entry.exit_price) * entry.quantity
-
-    trade_journal[entry_id] = {
-        "entry_id": entry_id,
-        **entry.dict(),
-        "created_at": datetime.now().isoformat()
+def _closed_trades(db, user_id: int, mode: str | None = None) -> list[dict]:
+    """
+    One row per real, closed trade (a basket of legs opened together —
+    see routes_leaderboard.py::_basket_bucket for why baskets, not raw
+    legs, are the right unit), sorted oldest-exit-first. `mode` optionally
+    restricts to 'paper' or 'live'; None returns both.
+    """
+    own_strategy_ids = {
+        row[0] for row in db.query(CustomStrategy.id).filter(CustomStrategy.user_id == user_id).all()
     }
+    if not own_strategy_ids:
+        return []
 
-    performance_cache.pop(entry.user_id, None)
+    q = db.query(CustomStrategyPosition).filter(
+        CustomStrategyPosition.status == "CLOSED",
+        CustomStrategyPosition.strategy_id.in_(own_strategy_ids),
+    )
+    if mode:
+        q = q.filter(CustomStrategyPosition.mode == mode)
+    closed_legs = q.all()
+    if not closed_legs:
+        return []
 
-    return {"entry_id": entry_id, "status": "created"}
+    strategies = {s.id: s for s in db.query(CustomStrategy).filter(CustomStrategy.id.in_(own_strategy_ids)).all()}
+    rates = get_charge_rates(user_id)
+
+    baskets: dict = defaultdict(list)
+    for leg in closed_legs:
+        strategy = strategies.get(leg.strategy_id)
+        if strategy is None:
+            continue
+        symbol_list = json.loads(strategy.symbols) if isinstance(strategy.symbols, str) else strategy.symbols
+        leg_symbol = next((s for s in symbol_list if _is_leg_for_symbol(leg.instrument_key, s)), None)
+        if leg_symbol is None:
+            continue
+        bucket = _basket_bucket(leg.opened_at)
+        baskets[(strategy.id, leg_symbol, leg.mode, bucket)].append(leg)
+
+    trades = []
+    for (strategy_id, symbol, leg_mode, bucket), legs in baskets.items():
+        if any(leg.exit_price is None for leg in legs):
+            continue  # same skip-not-crash rule as the leaderboard — a closed leg with no recorded exit price can't be priced
+        strategy = strategies[strategy_id]
+        result = compute_basket_pnl([
+            {"entry_price": leg.entry_price, "exit_price": leg.exit_price,
+             "quantity": leg.quantity, "transaction_type": leg.transaction_type,
+             "instrument_type": leg.instrument_type}
+            for leg in legs
+        ], rates)
+        entry_at = bucket or legs[0].opened_at
+        exit_at = max((leg.closed_at for leg in legs if leg.closed_at), default=None)
+        trades.append({
+            "strategy": strategy.name,
+            "symbol": symbol,
+            "mode": leg_mode,
+            "category": _CATEGORY_LABELS.get(strategy.instrument_type, "stock"),
+            "entry_date": entry_at.isoformat() if entry_at else None,
+            "exit_date": exit_at.isoformat() if exit_at else None,
+            "legs": len(legs),
+            "pnl": round(result["net_pnl"], 2),
+        })
+
+    trades.sort(key=lambda t: t["exit_date"] or "")
+    return trades
 
 
-def _get_owned_entry(entry_id: str, user: dict) -> dict:
-    """Fetch a journal entry the caller owns, or 404 — same response whether the id doesn't exist or belongs to someone else, so this can't be used to enumerate other users' entries."""
-    entry = trade_journal.get(entry_id)
-    if not entry or entry.get("user_id") != _uid(user):
-        raise HTTPException(status_code=404, detail="Trade entry not found")
-    return entry
-
-
-@router.get("/journal/{entry_id}")
-def get_trade_entry(entry_id: str, user: dict = Depends(get_current_user)):
-    """Get a specific trade journal entry."""
-    return _get_owned_entry(entry_id, user)
-
-
-@router.put("/journal/{entry_id}")
-def update_trade_entry(entry_id: str, entry: TradeJournalEntry, user: dict = Depends(get_current_user)):
-    """Update a trade journal entry."""
-    _get_owned_entry(entry_id, user)
-    entry.user_id = _uid(user)  # ownership can't be reassigned via the body
-
-    # Recalculate P&L if exit price changed
-    if entry.exit_price and not entry.pnl:
-        if entry.side == "BUY":
-            entry.pnl = (entry.exit_price - entry.entry_price) * entry.quantity
-        else:
-            entry.pnl = (entry.entry_price - entry.exit_price) * entry.quantity
-
-    trade_journal[entry_id].update({
-        **entry.dict(),
-        "updated_at": datetime.now().isoformat()
-    })
-
-    performance_cache.pop(entry.user_id, None)
-
-    return {"entry_id": entry_id, "status": "updated"}
-
-
-@router.delete("/journal/{entry_id}")
-def delete_trade_entry(entry_id: str, user: dict = Depends(get_current_user)):
-    """Delete a trade journal entry."""
-    _get_owned_entry(entry_id, user)
-    del trade_journal[entry_id]
-    performance_cache.pop(_uid(user), None)
-
-    return {"entry_id": entry_id, "status": "deleted"}
+def _filter_period(trades: list[dict], period: str) -> list[dict]:
+    """Period can be: 'all', 'today', 'week', 'month', 'quarter', 'year' — filtered on exit_date, since that's when a trade's P&L actually realized."""
+    if period == "all":
+        return trades
+    now = datetime.now()
+    if period == "today":
+        return [t for t in trades if t["exit_date"] and datetime.fromisoformat(t["exit_date"]).date() == now.date()]
+    days = _PERIOD_DAYS.get(period)
+    if days is None:
+        return trades
+    cutoff = now - timedelta(days=days)
+    return [t for t in trades if t["exit_date"] and datetime.fromisoformat(t["exit_date"]) >= cutoff]
 
 
 @router.get("/journal")
 def list_trade_entries(
     symbol: str | None = None,
     strategy: str | None = None,
-    limit: int = 100,
+    mode: str | None = None,
+    period: str = "all",
+    limit: int = 200,
     user: dict = Depends(get_current_user),
 ):
-    """List the caller's own trade journal entries, with optional filters."""
-    entries = [e for e in trade_journal.values() if e["user_id"] == _uid(user)]
-
+    """The caller's real trade history — newest-exit-first, with optional filters."""
+    db = SessionLocal()
+    try:
+        trades = _filter_period(_closed_trades(db, _uid(user), mode), period)
+    finally:
+        db.close()
     if symbol:
-        entries = [e for e in entries if e["symbol"] == symbol]
-
+        trades = [t for t in trades if t["symbol"] == symbol]
     if strategy:
-        entries = [e for e in entries if e["strategy"] == strategy]
-
-    # Sort by entry date descending
-    entries.sort(key=lambda x: x["entry_date"], reverse=True)
-
-    return {"entries": entries[:limit]}
+        trades = [t for t in trades if t["strategy"] == strategy]
+    trades = sorted(trades, key=lambda t: t["exit_date"] or "", reverse=True)
+    return {"entries": trades[:limit]}
 
 
 @router.get("/metrics/{user_id}")
-def calculate_performance_metrics(user_id: int, period: str = "all", user: dict = Depends(get_current_user)):
-    """
-    Calculate performance metrics for the caller.
-
-    Period can be: 'all', 'today', 'week', 'month', 'quarter', 'year'
-    """
+def calculate_performance_metrics(
+    user_id: int, period: str = "all", mode: str | None = None, user: dict = Depends(get_current_user),
+):
+    """Real win rate / profit factor / max drawdown / Sharpe / equity curve, computed fresh on every call (no cache — a closed trade should show up immediately, not after some stale TTL)."""
     if user_id != _uid(user):
         raise HTTPException(status_code=404, detail="Not found")
-    # Check cache
-    cache_key = f"{user_id}_{period}"
-    if cache_key in performance_cache:
-        return performance_cache[cache_key]
-    
-    # Get user's trades
-    user_trades = [t for t in trade_journal.values() if t["user_id"] == user_id]
-    
-    # Filter by period
-    now = datetime.now()
-    if period == "today":
-        user_trades = [t for t in user_trades if datetime.fromisoformat(t["entry_date"]).date() == now.date()]
-    elif period == "week":
-        week_ago = now - timedelta(days=7)
-        user_trades = [t for t in user_trades if datetime.fromisoformat(t["entry_date"]) >= week_ago]
-    elif period == "month":
-        month_ago = now - timedelta(days=30)
-        user_trades = [t for t in user_trades if datetime.fromisoformat(t["entry_date"]) >= month_ago]
-    elif period == "quarter":
-        quarter_ago = now - timedelta(days=90)
-        user_trades = [t for t in user_trades if datetime.fromisoformat(t["entry_date"]) >= quarter_ago]
-    elif period == "year":
-        year_ago = now - timedelta(days=365)
-        user_trades = [t for t in user_trades if datetime.fromisoformat(t["entry_date"]) >= year_ago]
-    
-    # Calculate metrics
-    completed_trades = [t for t in user_trades if t["pnl"] is not None]
-    
-    if not completed_trades:
+
+    db = SessionLocal()
+    try:
+        trades = _filter_period(_closed_trades(db, user_id, mode), period)
+    finally:
+        db.close()
+
+    if not trades:
         return PerformanceMetrics(
-            total_trades=0,
-            winning_trades=0,
-            losing_trades=0,
-            win_rate=0.0,
-            total_pnl=0.0,
-            average_win=0.0,
-            average_loss=0.0,
-            profit_factor=0.0,
-            max_drawdown=0.0
+            total_trades=0, winning_trades=0, losing_trades=0, win_rate=0.0, total_pnl=0.0,
+            average_win=0.0, average_loss=0.0, profit_factor=0.0, max_drawdown=0.0,
         )
-    
-    total_trades = len(completed_trades)
-    winning_trades = [t for t in completed_trades if t["pnl"] > 0]
-    losing_trades = [t for t in completed_trades if t["pnl"] < 0]
-    
-    wins = len(winning_trades)
-    losses = len(losing_trades)
-    win_rate = (wins / total_trades) * 100 if total_trades > 0 else 0.0
-    
-    total_pnl = sum(t["pnl"] for t in completed_trades)
-    average_win = sum(t["pnl"] for t in winning_trades) / wins if wins > 0 else 0.0
-    average_loss = sum(t["pnl"] for t in losing_trades) / losses if losses > 0 else 0.0
-    
-    total_wins = sum(t["pnl"] for t in winning_trades)
-    total_losses = abs(sum(t["pnl"] for t in losing_trades))
-    profit_factor = total_wins / total_losses if total_losses > 0 else 0.0
-    
-    # Calculate max drawdown
-    cumulative_pnl = []
-    running_total = 0.0
-    for trade in sorted(completed_trades, key=lambda x: x["entry_date"]):
-        if trade["pnl"]:
-            running_total += trade["pnl"]
-            cumulative_pnl.append(running_total)
-    
+
+    wins = [t for t in trades if t["pnl"] > 0]
+    losses = [t for t in trades if t["pnl"] < 0]
+    total_pnl = sum(t["pnl"] for t in trades)
+    total_wins = sum(t["pnl"] for t in wins)
+    total_losses = abs(sum(t["pnl"] for t in losses))
+
+    # Equity curve + max drawdown in one pass — trades are already sorted
+    # oldest-exit-first, so a running cumulative sum IS the equity curve.
+    running = 0.0
+    peak = 0.0
     max_drawdown = 0.0
-    if cumulative_pnl:
-        peak = cumulative_pnl[0]
-        for value in cumulative_pnl:
-            if value > peak:
-                peak = value
-            drawdown = peak - value
-            if drawdown > max_drawdown:
-                max_drawdown = drawdown
-    
-    # Calculate Sharpe ratio (simplified)
+    equity_curve = []
+    for t in trades:
+        running += t["pnl"]
+        peak = max(peak, running)
+        max_drawdown = max(max_drawdown, peak - running)
+        equity_curve.append({"date": t["exit_date"], "cumulative_pnl": round(running, 2)})
+
     sharpe_ratio = None
-    if len(completed_trades) > 1:
-        import statistics
-        pnl_values = [t["pnl"] for t in completed_trades]
-        if statistics.stdev(pnl_values) > 0:
-            sharpe_ratio = (statistics.mean(pnl_values) / statistics.stdev(pnl_values)) * (252 ** 0.5)
-    
-    best_trade = max(t["pnl"] for t in completed_trades) if completed_trades else None
-    worst_trade = min(t["pnl"] for t in completed_trades) if completed_trades else None
-    
-    metrics = PerformanceMetrics(
-        total_trades=total_trades,
-        winning_trades=wins,
-        losing_trades=losses,
-        win_rate=win_rate,
-        total_pnl=total_pnl,
-        average_win=average_win,
-        average_loss=average_loss,
-        profit_factor=profit_factor,
-        max_drawdown=max_drawdown,
+    if len(trades) > 1:
+        pnl_values = [t["pnl"] for t in trades]
+        stdev = statistics.stdev(pnl_values)
+        if stdev > 0:
+            sharpe_ratio = round((statistics.mean(pnl_values) / stdev) * (252 ** 0.5), 2)
+
+    return PerformanceMetrics(
+        total_trades=len(trades),
+        winning_trades=len(wins),
+        losing_trades=len(losses),
+        win_rate=round(100 * len(wins) / len(trades), 2),
+        total_pnl=round(total_pnl, 2),
+        average_win=round(total_wins / len(wins), 2) if wins else 0.0,
+        average_loss=round(sum(t["pnl"] for t in losses) / len(losses), 2) if losses else 0.0,
+        profit_factor=round(total_wins / total_losses, 2) if total_losses > 0 else 0.0,
+        max_drawdown=round(max_drawdown, 2),
         sharpe_ratio=sharpe_ratio,
-        best_trade=best_trade,
-        worst_trade=worst_trade
+        best_trade=round(max(t["pnl"] for t in trades), 2),
+        worst_trade=round(min(t["pnl"] for t in trades), 2),
+        equity_curve=equity_curve,
     )
-    
-    # Cache result
-    performance_cache[cache_key] = metrics
-    
-    return metrics
 
 
 @router.get("/analytics/{user_id}")
-def get_performance_analytics(user_id: int, user: dict = Depends(get_current_user)):
-    """
-    Get detailed performance analytics for the caller, including:
-    - Strategy breakdown
-    - Symbol performance
-    - Time-based analysis
-    - Win/loss patterns
-    """
+def get_performance_analytics(user_id: int, mode: str | None = None, user: dict = Depends(get_current_user)):
+    """Strategy / symbol / day-of-week breakdowns over the caller's full real trade history."""
     if user_id != _uid(user):
         raise HTTPException(status_code=404, detail="Not found")
-    user_trades = [t for t in trade_journal.values() if t["user_id"] == user_id and t["pnl"] is not None]
-    
-    if not user_trades:
-        return {"message": "No completed trades found"}
-    
-    # Strategy breakdown
-    strategy_performance: dict[str, dict] = {}
-    for trade in user_trades:
-        strategy = trade["strategy"]
-        if strategy not in strategy_performance:
-            strategy_performance[strategy] = {
-                "trades": 0,
-                "wins": 0,
-                "total_pnl": 0.0
-            }
-        strategy_performance[strategy]["trades"] += 1
-        strategy_performance[strategy]["total_pnl"] += trade["pnl"]
-        if trade["pnl"] > 0:
-            strategy_performance[strategy]["wins"] += 1
-    
-    # Calculate win rates per strategy
-    for strategy in strategy_performance:
-        stats = strategy_performance[strategy]
-        stats["win_rate"] = (stats["wins"] / stats["trades"]) * 100 if stats["trades"] > 0 else 0.0
-        stats["average_pnl"] = stats["total_pnl"] / stats["trades"] if stats["trades"] > 0 else 0.0
-    
-    # Symbol performance
-    symbol_performance: dict[str, dict] = {}
-    for trade in user_trades:
-        symbol = trade["symbol"]
-        if symbol not in symbol_performance:
-            symbol_performance[symbol] = {
-                "trades": 0,
-                "total_pnl": 0.0
-            }
-        symbol_performance[symbol]["trades"] += 1
-        symbol_performance[symbol]["total_pnl"] += trade["pnl"]
-    
-    for symbol in symbol_performance:
-        symbol_performance[symbol]["average_pnl"] = (
-            symbol_performance[symbol]["total_pnl"] / symbol_performance[symbol]["trades"]
-        )
-    
-    # Day of week analysis
-    dow_performance: dict[str, dict] = {}
-    for trade in user_trades:
-        entry_date = datetime.fromisoformat(trade["entry_date"])
-        day_of_week = entry_date.strftime("%A")
-        if day_of_week not in dow_performance:
-            dow_performance[day_of_week] = {
-                "trades": 0,
-                "total_pnl": 0.0
-            }
-        dow_performance[day_of_week]["trades"] += 1
-        dow_performance[day_of_week]["total_pnl"] += trade["pnl"]
-    
-    for day in dow_performance:
-        dow_performance[day]["average_pnl"] = (
-            dow_performance[day]["total_pnl"] / dow_performance[day]["trades"]
-        )
-    
+
+    db = SessionLocal()
+    try:
+        trades = _closed_trades(db, user_id, mode)
+    finally:
+        db.close()
+
+    if not trades:
+        return {
+            "message": "No completed trades found",
+            "strategy_breakdown": {}, "symbol_performance": {}, "day_of_week_performance": {},
+            "total_trades_analyzed": 0,
+        }
+
+    strategy_performance: dict = defaultdict(lambda: {"trades": 0, "wins": 0, "total_pnl": 0.0})
+    symbol_performance: dict = defaultdict(lambda: {"trades": 0, "total_pnl": 0.0})
+    dow_performance: dict = defaultdict(lambda: {"trades": 0, "total_pnl": 0.0})
+
+    for t in trades:
+        sp = strategy_performance[t["strategy"]]
+        sp["trades"] += 1
+        sp["total_pnl"] += t["pnl"]
+        if t["pnl"] > 0:
+            sp["wins"] += 1
+
+        symp = symbol_performance[t["symbol"]]
+        symp["trades"] += 1
+        symp["total_pnl"] += t["pnl"]
+
+        if t["exit_date"]:
+            dp = dow_performance[datetime.fromisoformat(t["exit_date"]).strftime("%A")]
+            dp["trades"] += 1
+            dp["total_pnl"] += t["pnl"]
+
+    for stats in strategy_performance.values():
+        stats["win_rate"] = round(100 * stats["wins"] / stats["trades"], 1) if stats["trades"] else 0.0
+        stats["average_pnl"] = round(stats["total_pnl"] / stats["trades"], 2) if stats["trades"] else 0.0
+        stats["total_pnl"] = round(stats["total_pnl"], 2)
+    for stats in symbol_performance.values():
+        stats["average_pnl"] = round(stats["total_pnl"] / stats["trades"], 2) if stats["trades"] else 0.0
+        stats["total_pnl"] = round(stats["total_pnl"], 2)
+    for stats in dow_performance.values():
+        stats["average_pnl"] = round(stats["total_pnl"] / stats["trades"], 2) if stats["trades"] else 0.0
+        stats["total_pnl"] = round(stats["total_pnl"], 2)
+
     return {
-        "strategy_breakdown": strategy_performance,
-        "symbol_performance": symbol_performance,
-        "day_of_week_performance": dow_performance,
-        "total_trades_analyzed": len(user_trades)
+        "strategy_breakdown": dict(strategy_performance),
+        "symbol_performance": dict(symbol_performance),
+        "day_of_week_performance": dict(dow_performance),
+        "total_trades_analyzed": len(trades),
     }
 
 
 @router.get("/export/{user_id}")
-def export_trade_journal(user_id: str, format: str = "json", user: dict = Depends(get_current_user)):
-    """Export the caller's trade journal in various formats."""
-    if int(user_id) != _uid(user):
+def export_trade_journal(
+    user_id: int, format: str = "json", period: str = "all", mode: str | None = None,
+    user: dict = Depends(get_current_user),
+):
+    """Export the caller's real trade history."""
+    if user_id != _uid(user):
         raise HTTPException(status_code=404, detail="Not found")
-    user_trades = [t for t in trade_journal.values() if t["user_id"] == int(user_id)]
-    
+
+    db = SessionLocal()
+    try:
+        trades = _filter_period(_closed_trades(db, user_id, mode), period)
+    finally:
+        db.close()
+
     if format == "json":
-        return {"trades": user_trades}
-    elif format == "csv":
+        return {"trades": trades}
+    if format == "csv":
         import csv
         from io import StringIO
-        
+
         output = StringIO()
-        if user_trades:
-            writer = csv.DictWriter(output, fieldnames=user_trades[0].keys())
+        if trades:
+            writer = csv.DictWriter(output, fieldnames=trades[0].keys())
             writer.writeheader()
-            writer.writerows(user_trades)
-        
+            writer.writerows(trades)
         return {"csv": output.getvalue()}
-    else:
-        raise HTTPException(status_code=400, detail="Unsupported format")
+    raise HTTPException(status_code=400, detail="Unsupported format")

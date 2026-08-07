@@ -9,9 +9,9 @@ interface SymbolSearchInputProps {
   placeholder?: string;
   className?: string;
   // Restrict suggestions to one category — commodities only exist in the
-  // live broker/instrument master, never in fno_bhavcopy (see OiScannerView/
-  // ChainReplayView's own note), so callers backed by bhavcopy should pass
-  // "NSE_FO" to hide commodity suggestions that would 404 anyway.
+  // live broker/instrument master, never in fno_bhavcopy, so a caller
+  // backed by bhavcopy data should pass "NSE_FO" to hide commodity
+  // suggestions that would 404 anyway.
   scope?: "ALL" | "NSE_FO";
 }
 

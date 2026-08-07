@@ -51,6 +51,10 @@ export default function ProfileView({ currentUser, ledger, onRefreshData }: Prof
   const [chargeRatesBusy, setChargeRatesBusy] = useState(false);
   const [chargeRatesFeedback, setChargeRatesFeedback] = useState({ msg: "", isError: false });
 
+  const [drawdownInput, setDrawdownInput] = useState("");
+  const [drawdownBusy, setDrawdownBusy] = useState(false);
+  const [drawdownFeedback, setDrawdownFeedback] = useState({ msg: "", isError: false });
+
   React.useEffect(() => {
     (async () => {
       try {
@@ -61,7 +65,38 @@ export default function ProfileView({ currentUser, ledger, onRefreshData }: Prof
         // Profile page still works without this card if the fetch fails — user can retry via Save.
       }
     })();
+    (async () => {
+      try {
+        const res = await api.getDrawdownLimit();
+        setDrawdownInput(res.max_daily_drawdown_pct != null ? String(res.max_daily_drawdown_pct) : "");
+      } catch {
+        // same graceful-degrade as charge rates above
+      }
+    })();
   }, []);
+
+  const handleSaveDrawdownLimit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setDrawdownFeedback({ msg: "", isError: false });
+    setDrawdownBusy(true);
+    try {
+      const raw = drawdownInput.trim();
+      const value = raw === "" ? null : parseFloat(raw);
+      const res = await api.setDrawdownLimit(value);
+      setDrawdownInput(res.max_daily_drawdown_pct != null ? String(res.max_daily_drawdown_pct) : "");
+      setDrawdownFeedback({
+        msg: res.max_daily_drawdown_pct != null
+          ? `Auto kill-switch enabled: trips at ${res.max_daily_drawdown_pct}% daily loss.`
+          : "Auto kill-switch trigger disabled.",
+        isError: false,
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : undefined;
+      setDrawdownFeedback({ msg: message || "Failed to update the drawdown limit.", isError: true });
+    } finally {
+      setDrawdownBusy(false);
+    }
+  };
 
   const handleSaveChargeRates = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -577,6 +612,41 @@ export default function ProfileView({ currentUser, ledger, onRefreshData }: Prof
             </button>
           </form>
         )}
+      </div>
+
+      {/* Auto Kill-Switch Trigger */}
+      <div className="bg-white p-6 border rounded-lg shadow-sm mb-12">
+        <h3 className="text-lg font-medium text-gray-800 mb-1">Automatic Kill-Switch Trigger</h3>
+        <p className="text-xs text-gray-500 mb-4">
+          Optional safety net: automatically halts ALL new order flow, across every strategy, the moment today's
+          realized LIVE P&amp;L (paper trades are never counted) drops past this % of your starting capital. This is
+          a global stop — it affects every strategy, not just the one that lost money — and does not auto-reset;
+          you resume trading yourself from the Kill Switch control in the top bar. Leave blank to disable.
+        </p>
+        {drawdownFeedback.msg && (
+          <div className={`px-4 py-2 mb-4 rounded text-xs border ${drawdownFeedback.isError ? "bg-red-50 border-red-200 text-red-600" : "bg-green-50 border-green-200 text-green-600"}`}>
+            {drawdownFeedback.msg}
+          </div>
+        )}
+        <form onSubmit={handleSaveDrawdownLimit} className="flex items-end gap-3">
+          <div>
+            <label className="block text-[11px] font-medium text-gray-600 mb-1">Max daily drawdown (%)</label>
+            <input
+              type="number" step="any" min="0" placeholder="Disabled"
+              value={drawdownInput}
+              onChange={(e) => setDrawdownInput(e.target.value)}
+              className="w-40 px-3 py-2 border rounded focus:ring-1 focus:ring-orange-500 outline-none text-sm"
+              style={{ borderColor: C.border2 }}
+            />
+          </div>
+          <button
+            type="submit"
+            disabled={drawdownBusy}
+            className="px-4 py-2 text-xs font-semibold text-white bg-blue-500 rounded hover:bg-blue-600 disabled:bg-gray-300 shadow-sm"
+          >
+            {drawdownBusy ? "Saving..." : "Save"}
+          </button>
+        </form>
       </div>
 
       {/* Statement */}

@@ -31,7 +31,12 @@ and this expiry cycle hasn't already been entered.
 import json
 from datetime import date, datetime
 
-from compliance.sebi_rules import AuditTrail, ComplianceError, KillSwitch, OrderRateLimiter
+from compliance.sebi_rules import (
+    AuditTrail,
+    ComplianceError,
+    OrderRateLimiter,
+    get_global_kill_switch,
+)
 from db.models import CustomStrategy, CustomStrategyPosition
 from strategies.custom.otm_put_roll_schema import get_setting
 from strategies.custom.otm_put_roll_strategy import OtmPutRollStrategy
@@ -44,7 +49,7 @@ from utils.telegram_alert import alert_trade_closed, alert_trade_opened
 log = get_logger(__name__)
 
 _audit = AuditTrail(audit_log_path="logs/otm_put_roll_audit.log")
-_kill_switch = KillSwitch()
+_kill_switch = get_global_kill_switch()
 _rate_limiter = OrderRateLimiter(max_per_second=10)
 
 

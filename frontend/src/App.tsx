@@ -25,11 +25,8 @@ export default function App() {
   // Strategies has its own left column (the strategy list — see
   // StrategiesView.tsx) that takes over this same left-edge position once
   // the watchlist is out of the way, rather than a third column competing
-  // for space with it. The Simulator is a dense, wide-table + chart page
-  // (option chain, payoff diagram) that needs the full width — a
-  // persistent watchlist column competing for space there just forces
-  // everything else to wrap/scroll awkwardly.
-  const FULL_WIDTH_ROUTES = ['/strategies', '/simulator'];
+  // for space with it.
+  const FULL_WIDTH_ROUTES = ['/strategies'];
   const showWatchlist = !FULL_WIDTH_ROUTES.some((p) => location.pathname.startsWith(p));
   const { isAuthenticated, currentUser } = useSelector((state: RootState) => state.auth);
   const [authEnabled, setAuthEnabled] = useState<boolean | null>(null);

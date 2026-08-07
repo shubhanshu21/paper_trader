@@ -32,7 +32,12 @@ new cycle and the configured entry_time-entry_time_end window is open.
 import json
 from datetime import date, datetime
 
-from compliance.sebi_rules import AuditTrail, ComplianceError, KillSwitch, OrderRateLimiter
+from compliance.sebi_rules import (
+    AuditTrail,
+    ComplianceError,
+    OrderRateLimiter,
+    get_global_kill_switch,
+)
 from db.models import CustomStrategy, CustomStrategyPosition
 from strategies.custom.delta_neutral_schema import get_setting
 from strategies.custom.delta_neutral_strategy import DeltaNeutralStrategy
@@ -44,7 +49,7 @@ from utils.telegram_alert import alert_trade_closed, alert_trade_opened
 log = get_logger(__name__)
 
 _audit = AuditTrail(audit_log_path="logs/delta_neutral_audit.log")
-_kill_switch = KillSwitch()
+_kill_switch = get_global_kill_switch()
 _rate_limiter = OrderRateLimiter(max_per_second=10)
 
 

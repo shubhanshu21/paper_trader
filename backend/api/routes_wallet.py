@@ -8,9 +8,11 @@ from utils.costs import DEFAULT_RATES
 from utils.orders import get_order_book
 from utils.wallet import (
     get_charge_rates,
+    get_drawdown_limit,
     get_ledger,
     get_wallet_summary,
     set_charge_rates,
+    set_drawdown_limit,
     set_starting_capital,
 )
 from utils.wallet_adjustments import add_adjustment
@@ -36,6 +38,10 @@ class ChargeRatesRequest(BaseModel):
     stt_pct: float | None = None
     sebi_charge_pct: float | None = None
     stamp_duty_pct: float | None = None
+
+
+class DrawdownLimitRequest(BaseModel):
+    max_daily_drawdown_pct: float | None = None
 
 
 @router.get("")
@@ -91,6 +97,22 @@ def wallet_set_charge_rates(req: ChargeRatesRequest, user: dict = Depends(get_cu
     user_id = int(user["sub"])
     set_charge_rates(user_id, req.model_dump())
     return {"rates": get_charge_rates(user_id), "defaults": DEFAULT_RATES}
+
+
+@router.get("/drawdown-limit")
+def wallet_get_drawdown_limit(user: dict = Depends(get_current_user)):
+    return {"max_daily_drawdown_pct": get_drawdown_limit(int(user["sub"]))}
+
+
+@router.post("/drawdown-limit")
+def wallet_set_drawdown_limit(req: DrawdownLimitRequest, user: dict = Depends(get_current_user)):
+    """Opt into (or out of, by omitting the field) automatically tripping the GLOBAL kill switch once today's realized LIVE P&L breaches this % of starting capital — see api/strategy_scheduler.py::_check_drawdown_auto_trigger."""
+    user_id = int(user["sub"])
+    try:
+        value = set_drawdown_limit(user_id, req.max_daily_drawdown_pct)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"max_daily_drawdown_pct": value}
 
 
 @router.post("/reset")

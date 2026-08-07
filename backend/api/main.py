@@ -28,22 +28,20 @@ from api import (
     routes_adjustment_preview,
     routes_auth,
     routes_backtest,
-    routes_chain_replay,
     routes_custom_strategies,
     routes_daemon,
     routes_dashboard,
     routes_equity,
     routes_health,
-    routes_iv_screener,
+    routes_kill_switch,
     routes_leaderboard,
     routes_logs,
     routes_multi_leg,
     routes_notifications,
     routes_oauth,
-    routes_oi_scanner,
     routes_performance,
     routes_positions,
-    routes_simulator,
+    routes_price_alerts,
     routes_strategies,
     routes_terminal,
     routes_upstox_token,
@@ -88,6 +86,7 @@ async def _lifespan(application: FastAPI):
     from api.instrument_sync_scheduler import instrument_sync_scheduler
     from api.iv_history_scheduler import iv_history_scheduler
     from api.market_broadcaster import market_price_broadcaster
+    from api.price_alert_scheduler import price_alert_scheduler
     from api.strategy_scheduler import strategy_scheduler
     from api.token_refresh_scheduler import token_refresh_scheduler
 
@@ -112,6 +111,7 @@ async def _lifespan(application: FastAPI):
         asyncio.create_task(iv_history_scheduler()),
         asyncio.create_task(instrument_sync_scheduler()),
         asyncio.create_task(bhavcopy_scheduler()),
+        asyncio.create_task(price_alert_scheduler()),
     ]
     _background_tasks.update(tasks)
     for task in tasks:
@@ -297,10 +297,6 @@ app.include_router(routes_backtest.router)
 app.include_router(routes_logs.router)
 app.include_router(routes_dashboard.router)
 app.include_router(routes_leaderboard.router)
-app.include_router(routes_iv_screener.router)
-app.include_router(routes_oi_scanner.router)
-app.include_router(routes_chain_replay.router)
-app.include_router(routes_simulator.router)
 app.include_router(routes_wallet.router)
 app.include_router(routes_wallet.orders_router)
 app.include_router(routes_equity.router)
@@ -309,6 +305,8 @@ app.include_router(routes_watchlist.router)
 app.include_router(routes_websocket.router)
 app.include_router(routes_multi_leg.router)
 app.include_router(routes_performance.router)
+app.include_router(routes_price_alerts.router)
+app.include_router(routes_kill_switch.router)
 app.include_router(routes_custom_strategies.router)
 app.include_router(routes_adjustment_preview.router)
 app.include_router(routes_upstox_token.router)

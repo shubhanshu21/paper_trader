@@ -20,6 +20,7 @@ from compliance.sebi_rules import (
     ComplianceError,
     KillSwitch,
     OrderRateLimiter,
+    assert_kill_switch_not_active,
     validate_order_quantity,
 )
 from strategies.custom.smart_condor_schema import get_setting
@@ -121,7 +122,14 @@ class SmartCondorStrategy:
             raise ComplianceError(f"No listed contract for {self.symbol} {strike} {option_type}.")
         return token
 
-    def _place(self, action: str, instrument_token: str, quantity: int, strike: float, option_type: str, tag: str) -> dict:
+    def _place(self, action: str, instrument_token: str, quantity: int, strike: float, option_type: str, tag: str, is_close: bool = False) -> dict:
+        # Kill switch blocks NEW order flow (entries/adjustments) only —
+        # never a close, which would strand real open risk with no way to
+        # exit while halted. Matches this codebase's existing precedent
+        # (rule_strategy.py's run_pre_trade_checks is only ever called on
+        # the entry path, never on an exit/unwind).
+        if not is_close:
+            assert_kill_switch_not_active(self.kill_switch)
         self.rate_limiter.acquire()
         place = self.broker.place_sell_order if action == "SELL" else self.broker.place_buy_order
         self.audit.record(
@@ -178,7 +186,7 @@ class SmartCondorStrategy:
     def close_leg(self, instrument_token: str, quantity: int, strike: float, option_type: str, original_transaction_type: str) -> dict:
         """Reverses whichever side originally opened this leg — BUY to close a short, SELL to close a long hedge."""
         action = "BUY" if original_transaction_type == "SELL" else "SELL"
-        fill = self._place(action, instrument_token, quantity, strike, option_type, f"SCONDOR_{self.symbol[:5]}_CLOSE")
+        fill = self._place(action, instrument_token, quantity, strike, option_type, f"SCONDOR_{self.symbol[:5]}_CLOSE", is_close=True)
         return {"exit_price": fill["price"], "order_id": fill["order_id"]}
 
     def resolve_matching_strike(self, chain: list, option_type: str, direction_sign: int, atm_strike: float, target_premium: float) -> float:

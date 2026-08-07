@@ -80,6 +80,26 @@ def set_charge_rates(user_id: int, rates: dict) -> dict:
     return get_charge_rates(user_id)
 
 
+def get_drawdown_limit(user_id: int) -> float | None:
+    """This account's opt-in max_daily_drawdown_pct (see api/strategy_scheduler.py's auto kill-switch trigger) — None means no auto-trigger configured."""
+    with get_session() as session:
+        row = session.query(WalletSettings).filter_by(user_id=user_id).first()
+        return float(row.max_daily_drawdown_pct) if row and row.max_daily_drawdown_pct is not None else None
+
+
+def set_drawdown_limit(user_id: int, value: float | None) -> float | None:
+    """Passing None disables the auto-trigger for this account."""
+    if value is not None and value <= 0:
+        raise ValueError("max_daily_drawdown_pct must be positive")
+    with get_session() as session:
+        row = session.query(WalletSettings).filter_by(user_id=user_id).first()
+        if row is None:
+            row = WalletSettings(user_id=user_id, starting_capital=0)
+            session.add(row)
+        row.max_daily_drawdown_pct = value
+    return get_drawdown_limit(user_id)
+
+
 def set_starting_capital(user_id: int, value: float) -> float:
     if value < 0:
         raise ValueError("Starting capital can't be negative")

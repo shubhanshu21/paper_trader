@@ -127,6 +127,8 @@ class KillSwitch:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._active = False
+        self._reason: str | None = None
+        self._activated_at: datetime | None = None
         log.info("[SEBI] Kill switch initialised (state: OFF).")
 
     def activate(self, reason: str = "Manual trigger") -> None:
@@ -134,6 +136,8 @@ class KillSwitch:
         with self._lock:
             if not self._active:
                 self._active = True
+                self._reason = reason
+                self._activated_at = datetime.now()
                 log.critical(
                     "[SEBI KILL SWITCH ACTIVATED] All order flow halted. Reason: %s",
                     reason,
@@ -143,12 +147,55 @@ class KillSwitch:
         """Deactivate the kill switch — requires explicit manual reset."""
         with self._lock:
             self._active = False
+            self._reason = None
+            self._activated_at = None
             log.warning("[SEBI] Kill switch RESET. Order flow re-enabled manually.")
 
     def is_active(self) -> bool:
         """Return True if the kill switch is currently engaged."""
         with self._lock:
             return self._active
+
+    def status(self) -> dict:
+        """Full state — the accessible kill switch's own status endpoint reads this, not just is_active(), so the UI can show WHY and WHEN it tripped."""
+        with self._lock:
+            return {
+                "active": self._active,
+                "reason": self._reason,
+                "activated_at": self._activated_at.isoformat() if self._activated_at else None,
+            }
+
+
+# One shared instance for the ENTIRE process, not one per engine module.
+# Every strategy engine used to build its own `KillSwitch()` in its own
+# module — 11 separate instances, none of which shared state with any
+# other, so activating "the" kill switch from any one place never
+# actually touched the other 10. That made the whole SEBI-mandated
+# "accessible kill switch that halts ALL order flow" requirement
+# impossible to satisfy: there was no single switch to make accessible.
+# Every engine constructor call site now passes this same object instead
+# of instantiating its own.
+_global_kill_switch = KillSwitch()
+
+
+def get_global_kill_switch() -> KillSwitch:
+    return _global_kill_switch
+
+
+def assert_kill_switch_not_active(kill_switch: "KillSwitch | None") -> None:
+    """
+    Raise if `kill_switch` is currently active — the actual per-order
+    enforcement point every engine's own order-placement method calls
+    first, now that a kill switch is a real, shared, halts-everything
+    control rather than an inert per-engine flag nothing checked.
+    None is a pass-through (never guess whether one SHOULD have been
+    wired in) — used by read-only preview engines (see
+    routes_adjustment_preview.py) that never place a real order anyway.
+    """
+    if kill_switch is not None and kill_switch.is_active():
+        raise RuntimeError(
+            "[SEBI] KILL SWITCH IS ACTIVE — all order flow is halted. Reset it manually before retrying."
+        )
 
 
 # ---------------------------------------------------------------------------

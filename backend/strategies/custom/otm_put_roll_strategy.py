@@ -15,7 +15,15 @@ directly here rather than reimplemented.
 from datetime import date
 
 from broker.base_broker import BaseBroker
-from compliance.sebi_rules import AuditTrail, ComplianceError, KillSwitch, OrderRateLimiter, validate_order_quantity, validate_price_band
+from compliance.sebi_rules import (
+    AuditTrail,
+    ComplianceError,
+    KillSwitch,
+    OrderRateLimiter,
+    assert_kill_switch_not_active,
+    validate_order_quantity,
+    validate_price_band,
+)
 from strategies.custom.otm_put_roll_schema import get_setting
 from utils.logger import get_logger
 from utils.option_utils import find_instrument_token, find_monthly_expiries, round_to_nearest_strike
@@ -106,7 +114,14 @@ class OtmPutRollStrategy:
             raise ComplianceError(f"No listed contract for {self.symbol} {strike} PE expiry {expiry}.")
         return token
 
-    def _place(self, action: str, instrument_token: str, quantity: int, strike: float, tag: str) -> dict:
+    def _place(self, action: str, instrument_token: str, quantity: int, strike: float, tag: str, is_close: bool = False) -> dict:
+        # Kill switch blocks NEW order flow (entries/rolls) only — never a
+        # close, which would strand real open risk with no way to exit
+        # while halted. Matches this codebase's existing precedent
+        # (rule_strategy.py's run_pre_trade_checks is only ever called on
+        # the entry path, never on an exit/unwind).
+        if not is_close:
+            assert_kill_switch_not_active(self.kill_switch)
         self.rate_limiter.acquire()
         place = self.broker.place_sell_order if action == "SELL" else self.broker.place_buy_order
         self.audit.record(
@@ -153,5 +168,5 @@ class OtmPutRollStrategy:
         return {"instrument_token": token, "strike": new_strike, "expiry": expiry, "quantity": quantity, "entry_price": fill["price"], "order_id": fill["order_id"]}
 
     def close(self, instrument_token: str, quantity: int, strike: float) -> dict:
-        fill = self._place("BUY", instrument_token, quantity, strike, f"PUTROLL_{self.symbol[:6]}_CLOSE")
+        fill = self._place("BUY", instrument_token, quantity, strike, f"PUTROLL_{self.symbol[:6]}_CLOSE", is_close=True)
         return {"exit_price": fill["price"], "order_id": fill["order_id"]}

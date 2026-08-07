@@ -12,9 +12,9 @@ another, so a process restart mid-day can't double-write. Symbols
 snapshotted: every symbol referenced by any CustomStrategy currently
 PAPER_TRADING or LIVE (the only symbols an IV_RANK entry condition could
 actually be evaluated against) UNIONED with every symbol on ANY user's
-watchlist (api/routes_iv_screener.py's screener page needs history for a
-symbol whether or not it happens to have a strategy built on it yet —
-otherwise a plain watchlist symbol could never accumulate a rank).
+watchlist — a plain watchlist symbol should still be able to accumulate
+IV history whether or not it happens to have a strategy built on it yet,
+in case one gets built on it later.
 
 This table starts EMPTY — there's no historical options-price archive
 live to backfill an IV history from (see db/models.py's SymbolIvHistory
@@ -112,9 +112,8 @@ def _watchlist_symbols(db) -> set[str]:
     background task, not scoped to one user — same as the active-strategy
     query below). Two separate lookups rather than a SQL-level join —
     instruments and user_watchlists have mismatched column collations in
-    this DB, which makes a JOIN on instrument_key fail outright (same
-    reason api/routes_iv_screener.py does a per-row session.get(Instrument,
-    ...) instead of a join).
+    this DB, which makes a JOIN on instrument_key fail outright — a per-row
+    session.get(Instrument, ...) works around it instead.
     """
     instrument_keys = {row[0] for row in db.query(UserWatchlist.instrument_key).distinct().all()}
     symbols = set()

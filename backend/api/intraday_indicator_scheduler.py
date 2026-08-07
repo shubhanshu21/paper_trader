@@ -38,7 +38,13 @@ from zoneinfo import ZoneInfo
 
 from sqlalchemy import func
 
-from compliance.sebi_rules import AuditTrail, ComplianceError, KillSwitch, OrderRateLimiter, assert_market_is_open
+from compliance.sebi_rules import (
+    AuditTrail,
+    ComplianceError,
+    OrderRateLimiter,
+    assert_market_is_open,
+    get_global_kill_switch,
+)
 from db.models import CustomStrategy, CustomStrategyPosition
 from strategies.custom.intraday_indicator_strategy import IntradaySupertrendStrategy
 from strategies.custom.intraday_schema import get_setting
@@ -53,7 +59,7 @@ log = get_logger(__name__)
 _IST = ZoneInfo("Asia/Kolkata")
 
 _audit = AuditTrail(audit_log_path="logs/intraday_indicator_audit.log")
-_kill_switch = KillSwitch()
+_kill_switch = get_global_kill_switch()
 _rate_limiter = OrderRateLimiter(max_per_second=10)
 
 

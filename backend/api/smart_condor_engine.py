@@ -33,7 +33,12 @@ this expiry cycle hasn't already been traded.
 import json
 from datetime import date, datetime
 
-from compliance.sebi_rules import AuditTrail, ComplianceError, KillSwitch, OrderRateLimiter
+from compliance.sebi_rules import (
+    AuditTrail,
+    ComplianceError,
+    OrderRateLimiter,
+    get_global_kill_switch,
+)
 from db.models import CustomStrategy, CustomStrategyPosition
 from strategies.custom.smart_condor_schema import get_setting
 from strategies.custom.smart_condor_strategy import SmartCondorStrategy
@@ -45,7 +50,7 @@ from utils.telegram_alert import alert_trade_closed, alert_trade_opened
 log = get_logger(__name__)
 
 _audit = AuditTrail(audit_log_path="logs/smart_condor_audit.log")
-_kill_switch = KillSwitch()
+_kill_switch = get_global_kill_switch()
 _rate_limiter = OrderRateLimiter(max_per_second=10)
 
 _WEEKDAY_NUMS = {"MON": 0, "TUE": 1, "WED": 2, "THU": 3, "FRI": 4, "SAT": 5, "SUN": 6}
@@ -136,10 +141,10 @@ def _close_position(db, strategy: CustomStrategy, engine: SmartCondorStrategy, p
             )
             notify(
                 "custom_strategy",
-                f"MANUAL INTERVENTION REQUIRED — \"{{strategy.name}}\" leg {{position.instrument_key}} "
-                f"({{position.transaction_type}} {{position.option_type}} {{position.strike}}) has expired/delisted, "
-                f"and this system could not fetch a spot price for {{engine.symbol}} to settle it either. Left OPEN "
-                f"so this keeps retrying — please settle manually against your broker's contract note.",
+                "MANUAL INTERVENTION REQUIRED — \"{strategy.name}\" leg {position.instrument_key} "
+                "({position.transaction_type} {position.option_type} {position.strike}) has expired/delisted, "
+                "and this system could not fetch a spot price for {engine.symbol} to settle it either. Left OPEN "
+                "so this keeps retrying — please settle manually against your broker's contract note.",
                 user_id=strategy.user_id,
             )
             position.status = "OPEN"
@@ -160,10 +165,10 @@ def _close_position(db, strategy: CustomStrategy, engine: SmartCondorStrategy, p
         db.commit()
         notify(
             "custom_strategy",
-            f"\"{{strategy.name}}\" leg {{position.instrument_key}} ({{position.transaction_type}} {{position.option_type}} "
-            f"{{position.strike}}) had already expired/delisted by the time {{trigger}} ran — no live contract left to "
-            f"close against. Settled at intrinsic value ₹{{intrinsic:.2f}} ({{engine.symbol}} spot was ₹{{spot:.2f}} vs "
-            f"strike {{position.strike}}). Please cross-check against your broker's contract note if this was a live position.",
+            "\"{strategy.name}\" leg {position.instrument_key} ({position.transaction_type} {position.option_type} "
+            "{position.strike}) had already expired/delisted by the time {trigger} ran — no live contract left to "
+            "close against. Settled at intrinsic value ₹{intrinsic:.2f} ({engine.symbol} spot was ₹{spot:.2f} vs "
+            "strike {position.strike}). Please cross-check against your broker's contract note if this was a live position.",
             level="warning", user_id=strategy.user_id,
         )
         return True
