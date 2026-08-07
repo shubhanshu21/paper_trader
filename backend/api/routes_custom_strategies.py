@@ -18,6 +18,8 @@ from db.engine import SessionLocal, get_db
 from db.models import CustomBacktestRun, CustomStrategy, CustomStrategyPosition
 from strategies.custom.engine_registry import get_engine
 from utils.logger import get_logger
+from utils.pnl import compute_basket_pnl
+from utils.wallet import get_charge_rates
 
 router = APIRouter(prefix="/api/custom-strategies", tags=["custom-strategies"])
 log = get_logger(__name__)
@@ -1335,10 +1337,32 @@ def get_strategy_positions(strategy_id: int, db: Session = Depends(get_db), user
         CustomStrategyPosition.strategy_id == strategy.id
     ).order_by(CustomStrategyPosition.opened_at.desc(), CustomStrategyPosition.leg_index.asc()).all()
 
+    closed_legs = [leg for leg in legs if leg.status == "CLOSED"]
+    # Net-of-real-charges total across every closed leg this strategy has
+    # ever had — same compute_basket_pnl() the leaderboard uses (see
+    # routes_leaderboard.py), so this page's "realized" figure and the
+    # leaderboard's total agree instead of each reinventing gross P&L math.
+    # A CLOSED leg can still have exit_price == None (see
+    # custom_strategy_scheduler.py::_close_leg's fallback price lookup) —
+    # skip those rather than letting one bad row 500 this endpoint.
+    priced_closed_legs = [leg for leg in closed_legs if leg.exit_price is not None]
+    realized_net_pnl = None
+    if priced_closed_legs:
+        rates = get_charge_rates(_current_user_id(user))
+        realized_net_pnl = compute_basket_pnl([
+            {
+                "entry_price": leg.entry_price, "exit_price": leg.exit_price,
+                "quantity": leg.quantity, "transaction_type": leg.transaction_type,
+                "instrument_type": leg.instrument_type,
+            }
+            for leg in priced_closed_legs
+        ], rates)["net_pnl"]
+
     return {
         "strategy_id": strategy_id,
         "open": [leg.to_dict() for leg in legs if leg.status == "OPEN"],
-        "closed": [leg.to_dict() for leg in legs if leg.status == "CLOSED"],
+        "closed": [leg.to_dict() for leg in closed_legs],
+        "realized_net_pnl": realized_net_pnl,
     }
 
 

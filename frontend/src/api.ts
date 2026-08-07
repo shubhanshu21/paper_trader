@@ -820,7 +820,7 @@ export const api = {
   getPortfolioMargin: () => request<PortfolioMarginResponse>('/api/custom-strategies/portfolio/margin'),
   closeCustomStrategyPosition: (id: number) =>
     request<{ message: string }>(`/api/custom-strategies/positions/${id}/close`, { method: 'POST' }),
-  getCustomStrategyPositions: (id: number) => request<{ open: PositionLeg[]; closed: PositionLeg[] }>(`/api/custom-strategies/${id}/positions`),
+  getCustomStrategyPositions: (id: number) => request<{ open: PositionLeg[]; closed: PositionLeg[]; realized_net_pnl: number | null }>(`/api/custom-strategies/${id}/positions`),
   getCustomStrategyPayoff: (id: number) => request<PayoffResponse>(`/api/custom-strategies/${id}/payoff`),
   getCustomStrategyMargin: (id: number) => request<MarginResponse>(`/api/custom-strategies/${id}/margin`),
   getAdjustmentPreview: (id: number) => request<AdjustmentPreviewResponse>(`/api/custom-strategies/${id}/adjustment-preview`),

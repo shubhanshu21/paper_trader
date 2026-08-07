@@ -913,6 +913,11 @@ export default function StrategiesView({
   const liveOpenLegs = selectedStrategy ? liveRows.filter((r) => r.strategy_id === selectedStrategy.id) : [];
 
   const [closedLegs, setClosedLegs] = useState<PositionLeg[]>([]);
+  // Net-of-real-charges total across every closed leg (from the backend —
+  // the same compute_basket_pnl() math the leaderboard uses), so this
+  // page's realized figure agrees with the leaderboard instead of the two
+  // silently drifting with independent gross-only formulas.
+  const [realizedNetPnl, setRealizedNetPnl] = useState<number | null>(null);
   const [positionsLoading, setPositionsLoading] = useState(false);
 
   // Same stale-response guard as fetchPayoff above.
@@ -922,9 +927,15 @@ export default function StrategiesView({
     setPositionsLoading(true);
     try {
       const data = await api.getCustomStrategyPositions(strategy.id);
-      if (closedLegsRequestIdRef.current === requestId) setClosedLegs(data.closed || []);
+      if (closedLegsRequestIdRef.current === requestId) {
+        setClosedLegs(data.closed || []);
+        setRealizedNetPnl(data.realized_net_pnl ?? null);
+      }
     } catch {
-      if (closedLegsRequestIdRef.current === requestId) setClosedLegs([]);
+      if (closedLegsRequestIdRef.current === requestId) {
+        setClosedLegs([]);
+        setRealizedNetPnl(null);
+      }
     } finally {
       if (closedLegsRequestIdRef.current === requestId) setPositionsLoading(false);
     }
@@ -932,6 +943,7 @@ export default function StrategiesView({
 
   useEffect(() => {
     setClosedLegs([]);
+    setRealizedNetPnl(null);
     if (selectedStrategy) fetchClosedLegs(selectedStrategy);
   }, [selectedStrategy]);
 
@@ -1952,22 +1964,27 @@ export default function StrategiesView({
                     </tbody>
                     <tfoot>
                       {(() => {
-                        const totalPnl =
-                          liveOpenLegs.reduce((sum, leg) => sum + (leg.pnl ?? 0), 0) +
-                          closedLegs.reduce((sum, leg) => {
-                            const sign = leg.transaction_type === "SELL" ? 1 : -1;
-                            const pnl = leg.exit_price != null ? (leg.entry_price - leg.exit_price) * leg.quantity * sign : 0;
-                            return sum + pnl;
-                          }, 0);
-                        return (
-                          <tr className="border-t-2 text-xs" style={{ borderColor: C.border2, background: C.tableHeaderBg }}>
-                            <td className="px-4 py-2.5 font-semibold text-gray-600" colSpan={4}>Total</td>
-                            <td className="px-4 py-2.5 text-right font-bold" style={{ color: totalPnl >= 0 ? C.green : C.red }}>
-                              {totalPnl < 0 ? "-" : ""}₹{Math.abs(totalPnl).toFixed(2)}
+                        // Two SEPARATE totals, not one blended figure — an open
+                        // leg's P&L is unrealized mark-to-market (gross, no exit
+                        // charges yet incurred) while a closed leg's is realized
+                        // and net of real charges (via compute_basket_pnl on the
+                        // backend, same formula the Leaderboard uses). Summing
+                        // them into one "Total" made this page's number silently
+                        // disagree with the Leaderboard's for the same strategy.
+                        const unrealizedPnl = liveOpenLegs.reduce((sum, leg) => sum + (leg.pnl ?? 0), 0);
+                        const rows: { label: string; value: number | null }[] = [
+                          { label: `Unrealized P&L (${liveOpenLegs.length} open, gross MTM)`, value: liveOpenLegs.length > 0 ? unrealizedPnl : null },
+                          { label: `Realized P&L (${closedLegs.length} closed, net of charges)`, value: closedLegs.length > 0 ? realizedNetPnl : null },
+                        ];
+                        return rows.map((row) => (
+                          <tr key={row.label} className="border-t text-xs" style={{ borderColor: C.border2, background: C.tableHeaderBg }}>
+                            <td className="px-4 py-2.5 font-semibold text-gray-600" colSpan={4}>{row.label}</td>
+                            <td className="px-4 py-2.5 text-right font-bold" style={{ color: row.value == null ? C.muted : row.value >= 0 ? C.green : C.red }}>
+                              {row.value == null ? "—" : `${row.value < 0 ? "-" : ""}₹${Math.abs(row.value).toFixed(2)}`}
                             </td>
                             <td className="px-4 py-2.5" colSpan={3}></td>
                           </tr>
-                        );
+                        ));
                       })()}
                     </tfoot>
                   </table>
