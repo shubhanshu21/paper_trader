@@ -1,8 +1,10 @@
-import { useState } from "react";
-import { Search, Download, Clock, FileText, ChevronDown, ChevronUp } from "lucide-react";
+import { useEffect, useState } from "react";
+import { Search, Download, Clock, FileText, ChevronDown, ChevronUp, ChevronLeft, ChevronRight } from "lucide-react";
 import { Order } from "../api";
 import { StatusPill, TypeTag, Td, Th } from "./Common";
-import { C, FONT, inr } from "../lib/format";
+import { C, FONT, inr, fmtDateTimeIST } from "../lib/format";
+
+const PAGE_SIZE = 15;
 
 interface OrdersProps {
   orders: Order[];
@@ -50,24 +52,18 @@ const EmptyState = () => {
 };
 
 export default function OrdersView({ orders }: OrdersProps) {
-  const [openQuery, setOpenQuery] = useState("");
   const [execQuery, setExecQuery] = useState("");
   const [tradesExpanded, setTradesExpanded] = useState(false);
+  const [page, setPage] = useState(1);
 
   // Map API orders to visual list items
   const mappedOrders: OrderListItem[] = orders.map(o => {
-    const timePart = o.date.includes(" ") 
-      ? o.date.split(" ")[1] 
-      : o.date.includes("T") 
-        ? o.date.split("T")[1].substring(0, 8) 
-        : o.date;
-
     return {
       // order_id can be null (e.g. dry-run paper orders) and isn't
       // guaranteed unique alone — combined with position/date/side this is
       // stable across re-filters, unlike the array-index key used before.
       key: `${o.order_id ?? "noid"}-${o.position_id ?? "nopos"}-${o.date}-${o.transaction_type}`,
-      time: timePart || "12:00:00",
+      time: fmtDateTimeIST(o.date),
       type: o.transaction_type as "BUY" | "SELL",
       symbol: o.display_symbol || o.symbol.split("|")[0],
       // A real strike means this leg trades on the F&O segment; equity
@@ -83,21 +79,23 @@ export default function OrdersView({ orders }: OrdersProps) {
     };
   });
 
-  const openOrdersList = mappedOrders.filter(o => 
-    o.status === "OPEN" || o.status === "PENDING" || o.status === "TRIGGER PENDING"
-  );
-  
-  const executedOrdersList = mappedOrders.filter(o => 
-    o.status !== "OPEN" && o.status !== "PENDING" && o.status !== "TRIGGER PENDING"
-  );
-
-  const filteredOpen = openOrdersList.filter(o => 
-    o.symbol.toLowerCase().includes(openQuery.toLowerCase())
-  );
-
-  const filteredExec = executedOrdersList.filter(o => 
+  // Every order this backend ever produces is reconstructed from an
+  // already-filled position (see utils/orders.py) — this app only ever
+  // places MARKET orders, never a resting LIMIT/SL order, so there is no
+  // "open/pending order" state to represent (an "Open orders" section
+  // was removed for exactly this reason: it could never show anything).
+  const filteredExec = mappedOrders.filter(o =>
     o.symbol.toLowerCase().includes(execQuery.toLowerCase())
   );
+
+  // Reset to page 1 whenever the search narrows/widens the result set —
+  // otherwise a search typed while sitting on page 3 could land on a
+  // page past the end of the new (shorter) filtered list.
+  useEffect(() => { setPage(1); }, [execQuery]);
+
+  const pageCount = Math.max(1, Math.ceil(filteredExec.length / PAGE_SIZE));
+  const currentPage = Math.min(page, pageCount);
+  const pagedExec = filteredExec.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE);
 
   return (
     <div className="w-full" style={FONT}>
@@ -119,81 +117,6 @@ export default function OrdersView({ orders }: OrdersProps) {
         <EmptyState />
       ) : (
         <div className="space-y-10">
-          {/* Open Orders Section */}
-          <div className="space-y-4">
-            <div className="flex items-center justify-between">
-              <h2 className="text-[15px] font-semibold text-gray-700">Open orders ({filteredOpen.length})</h2>
-
-              <div className="flex items-center gap-4 text-xs">
-                <div
-                  className="flex items-center gap-2 px-3 py-1.5 rounded bg-white border"
-                  style={{ borderColor: C.border2 }}
-                >
-                  <Search size={13} style={{ color: C.faint }} />
-                  <input
-                    placeholder="Search"
-                    className="outline-none w-28 bg-transparent text-xs text-gray-700"
-                    value={openQuery}
-                    onChange={(e) => setOpenQuery(e.target.value)}
-                  />
-                </div>
-                <button className="flex items-center gap-1 text-blue-500 font-semibold hover:underline">
-                  <Download size={13} /> Download
-                </button>
-              </div>
-            </div>
-
-            {filteredOpen.length === 0 ? (
-              <div className="py-10 text-center text-gray-400 border border-dashed rounded-lg bg-gray-50 text-xs">
-                No matching open orders.
-              </div>
-            ) : (
-              <div className="bg-white border rounded shadow-xs overflow-hidden" style={{ borderColor: C.tableBorder }}>
-                <table className="w-full border-collapse">
-                  <thead>
-                    <tr className="border-b text-xs" style={{ borderColor: C.border2, background: C.tableHeaderBg }}>
-                      <th className="px-4 py-3 text-left w-12">
-                        <input type="checkbox" className="rounded border-gray-300 text-orange-500 focus:ring-orange-500" disabled />
-                      </th>
-                      <Th>Time</Th>
-                      <Th>Type</Th>
-                      <Th>Instrument</Th>
-                      <Th>Product</Th>
-                      <Th right>Qty.</Th>
-                      <Th right>Price</Th>
-                      <Th right>Status</Th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y" style={{ borderColor: C.border }}>
-                    {filteredOpen.map((o) => (
-                      <tr key={o.key} className="hover:bg-gray-50 transition-colors" style={{ height: "40px" }}>
-                        <td className="px-4 py-3 text-left w-12">
-                          <input type="checkbox" className="rounded border-gray-300 text-orange-500 focus:ring-orange-500" />
-                        </td>
-                        <Td className="text-gray-500 font-mono">{o.time}</Td>
-                        <Td>
-                          <TypeTag t={o.type} />
-                        </Td>
-                        <Td>
-                          <div className="flex items-baseline gap-1 text-[13px]">
-                            <span className="font-semibold text-gray-700">{o.symbol}</span>
-                            <span className="text-[10px] text-gray-400 font-medium uppercase">{o.exch}</span>
-                          </div>
-                        </Td>
-                        <Td className="text-gray-500 font-semibold">{o.product}</Td>
-                        <Td right className="font-semibold text-gray-700">{o.qty}</Td>
-                        <Td right className="font-semibold text-gray-700 font-mono">{inr(o.price)}</Td>
-                        <Td right>
-                          <StatusPill status={o.status} />
-                        </Td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </div>
-
           {/* Executed Orders Section */}
           <div className="space-y-4">
             <div className="flex items-center justify-between">
@@ -233,7 +156,7 @@ export default function OrdersView({ orders }: OrdersProps) {
                 <table className="w-full border-collapse">
                   <thead>
                     <tr className="border-b text-xs" style={{ borderColor: C.border2, background: C.tableHeaderBg }}>
-                      <Th>Time</Th>
+                      <Th>Date &amp; Time (IST)</Th>
                       <Th>Type</Th>
                       <Th>Instrument</Th>
                       <Th>Product</Th>
@@ -243,9 +166,9 @@ export default function OrdersView({ orders }: OrdersProps) {
                     </tr>
                   </thead>
                   <tbody className="divide-y" style={{ borderColor: C.border }}>
-                    {filteredExec.map((o) => (
+                    {pagedExec.map((o) => (
                       <tr key={o.key} className="hover:bg-gray-50 transition-colors" style={{ height: "40px" }}>
-                        <Td className="text-gray-500 font-mono">{o.time}</Td>
+                        <Td className="text-gray-500 font-mono whitespace-nowrap">{o.time}</Td>
                         <Td>
                           <TypeTag t={o.type} />
                         </Td>
@@ -265,6 +188,31 @@ export default function OrdersView({ orders }: OrdersProps) {
                     ))}
                   </tbody>
                 </table>
+
+                {filteredExec.length > PAGE_SIZE && (
+                  <div className="px-4 py-3 border-t flex items-center justify-between" style={{ borderColor: C.border }}>
+                    <p className="text-[11px] text-gray-400">
+                      Showing {(currentPage - 1) * PAGE_SIZE + 1}–{Math.min(currentPage * PAGE_SIZE, filteredExec.length)} of {filteredExec.length}
+                    </p>
+                    <div className="flex items-center gap-1">
+                      <button
+                        onClick={() => setPage((p) => Math.max(1, p - 1))}
+                        disabled={currentPage === 1}
+                        className="p-1.5 rounded-md text-gray-500 hover:bg-gray-100 disabled:opacity-30 disabled:hover:bg-transparent focus:outline-none"
+                      >
+                        <ChevronLeft size={14} />
+                      </button>
+                      <span className="text-[11px] font-semibold text-gray-600 px-2">Page {currentPage} of {pageCount}</span>
+                      <button
+                        onClick={() => setPage((p) => Math.min(pageCount, p + 1))}
+                        disabled={currentPage === pageCount}
+                        className="p-1.5 rounded-md text-gray-500 hover:bg-gray-100 disabled:opacity-30 disabled:hover:bg-transparent focus:outline-none"
+                      >
+                        <ChevronRight size={14} />
+                      </button>
+                    </div>
+                  </div>
+                )}
               </div>
             )}
           </div>

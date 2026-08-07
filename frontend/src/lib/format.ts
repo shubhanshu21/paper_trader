@@ -101,3 +101,30 @@ export function fmtDateTime(iso: string): string {
   h = h % 12 === 0 ? 12 : h % 12;
   return `${datePart}, ${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")} ${period}`;
 }
+
+/**
+ * Naive backend timestamp -> "7 AUG 2026, 03:30:24 PM IST", explicitly in
+ * Asia/Kolkata regardless of the viewer's own machine timezone (unlike
+ * fmtDateTime, which reads the browser's local zone). The backend's raw
+ * strings (Python datetime.isoformat(), e.g. from order/position
+ * opened_at/closed_at) carry no timezone suffix — they're UTC (the
+ * server's own clock is UTC) but a bare `new Date(...)` on a string with
+ * no "Z"/offset gets parsed as the BROWSER's local time instead, silently
+ * shifting the displayed clock by however far that browser is from UTC.
+ * Appending "Z" first fixes the parse (same trick NotificationBell.tsx's
+ * timeAgo() already uses); explicit timeZone: "Asia/Kolkata" then fixes
+ * the *display*, this app's one target audience.
+ */
+export function fmtDateTimeIST(raw: string | null | undefined): string {
+  if (!raw) return "";
+  const iso = /[zZ]|[+-]\d{2}:\d{2}$/.test(raw) ? raw : `${raw}Z`;
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return raw;
+  const datePart = new Intl.DateTimeFormat("en-GB", {
+    day: "numeric", month: "short", year: "numeric", timeZone: "Asia/Kolkata",
+  }).format(d).toUpperCase();
+  const timePart = new Intl.DateTimeFormat("en-US", {
+    hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: true, timeZone: "Asia/Kolkata",
+  }).format(d);
+  return `${datePart}, ${timePart} IST`;
+}
