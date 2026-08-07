@@ -103,25 +103,48 @@ def _close_position(db, strategy: CustomStrategy, engine: SessionSellerStrategy,
     # held overnight), so by the time OVERNIGHT_SAFETY fires on the leg,
     # its option may have already expired and been dropped from the
     # instrument master entirely — there is then no live price and no order
-    # book to place a closing order against, ever. A real broker cash-
-    # settles an expired index option at the final settlement price
-    # (intrinsic value vs. the underlying's expiry close) — NOT always
-    # ₹0, an ITM contract settles for real money either way — and this
-    # system has no record of that settlement price once the contract is
-    # gone (no BSE bhavcopy archive for Sensex). Fabricating ₹0 here would
-    # silently misstate this leg's P&L, so instead: stop retrying (mark it
-    # DELISTED, not OPEN, so it's excluded from every OPEN-position query
-    # and this branch is never re-entered for it) and notify ONCE so you
-    # can settle it manually against your own broker/exchange contract
-    # note — matches the "refuse rather than guess a number" rule this
-    # codebase already applies everywhere else (see e.g. PaperBroker's
-    # instrument-resolution and margin checks).
+    # book to place a closing order against. A real broker doesn't give up
+    # here either: an expired index option cash-settles at INTRINSIC value
+    # vs. the underlying's expiry close (max(spot-strike,0) for CE,
+    # max(strike-spot,0) for PE — same formula as
+    # utils.option_utils.strategy_payoff_at_expiry) — never a fabricated
+    # ₹0, an ITM leg still settles for real money. Unlike the option, the
+    # underlying INDEX itself never expires/delists, so its LTP is always
+    # resolvable via engine.instrument_key. This is exact when caught
+    # promptly (OVERNIGHT_SAFETY's normal case, next tick after the missed
+    # same-day exit); if the process was down long enough to miss the
+    # expiry-day close entirely, "current spot" is a later price than the
+    # true settlement print, so the notification below says which spot was
+    # used so it can be sanity-checked against the real contract note.
     if not InstrumentCache().instrument_exists(position.instrument_key):
+        spot = engine.broker.get_ltp(engine.instrument_key)
+        if spot is None:
+            log.critical(
+                "session_seller_engine: leg %s for strategy %s expired/delisted and spot LTP for %s is also "
+                "unavailable — cannot settle. MANUAL INTERVENTION REQUIRED.",
+                position.instrument_key, strategy.id, engine.symbol,
+            )
+            notify(
+                "custom_strategy",
+                f"MANUAL INTERVENTION REQUIRED — \"{strategy.name}\" leg {position.instrument_key} "
+                f"({position.transaction_type} {position.option_type} {position.strike}) has expired/delisted, "
+                f"and this system could not fetch a spot price for {engine.symbol} to settle it either. Left OPEN "
+                f"so this keeps retrying — please settle manually against your broker's contract note.",
+                user_id=strategy.user_id,
+            )
+            position.status = "OPEN"
+            db.commit()
+            return False
+
+        strike = float(position.strike)
+        intrinsic = max(spot - strike, 0.0) if position.option_type == "CE" else max(strike - spot, 0.0)
         log.warning(
-            "session_seller_engine: leg %s for strategy %s no longer listed (expired) — marking DELISTED, needs manual reconciliation.",
-            position.instrument_key, strategy.id,
+            "session_seller_engine: leg %s for strategy %s expired/delisted — settling at intrinsic value %.2f "
+            "(spot %s=%.2f, strike=%s %s).",
+            position.instrument_key, strategy.id, intrinsic, engine.symbol, spot, position.strike, position.option_type,
         )
-        position.status = "DELISTED"
+        position.status = "CLOSED"
+        position.exit_price = intrinsic
         position.exit_reason = trigger
         position.closed_at = datetime.now()
         db.commit()
@@ -129,9 +152,8 @@ def _close_position(db, strategy: CustomStrategy, engine: SessionSellerStrategy,
             "custom_strategy",
             f"\"{strategy.name}\" leg {position.instrument_key} ({position.transaction_type} {position.option_type} "
             f"{position.strike}) had already expired/delisted by the time {trigger} ran — no live contract left to "
-            f"close against, and this system has no settlement-price archive for it. Marked DELISTED (won't retry "
-            f"again). Please reconcile the real P&L for this leg manually — check your own notification history "
-            f"for its last observed price, or your broker's contract note if this was a live position.",
+            f"close against. Settled at intrinsic value ₹{intrinsic:.2f} (spot {engine.symbol}=₹{spot:.2f} vs strike "
+            f"{position.strike}). Please cross-check against your broker's contract note if this was a live position.",
             level="warning", user_id=strategy.user_id,
         )
         return True
