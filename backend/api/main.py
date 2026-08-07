@@ -84,6 +84,7 @@ async def _lifespan(application: FastAPI):
     @app.on_event('startup') pattern removed in FastAPI 0.109+)."""
     import asyncio
 
+    from api.bhavcopy_scheduler import bhavcopy_scheduler
     from api.instrument_sync_scheduler import instrument_sync_scheduler
     from api.iv_history_scheduler import iv_history_scheduler
     from api.market_broadcaster import market_price_broadcaster
@@ -110,6 +111,7 @@ async def _lifespan(application: FastAPI):
         asyncio.create_task(token_refresh_scheduler()),
         asyncio.create_task(iv_history_scheduler()),
         asyncio.create_task(instrument_sync_scheduler()),
+        asyncio.create_task(bhavcopy_scheduler()),
     ]
     _background_tasks.update(tasks)
     for task in tasks:
