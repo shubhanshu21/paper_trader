@@ -10,6 +10,7 @@ from typing import Any
 
 from broker.base_broker import BaseBroker
 from utils.logger import get_logger
+from utils.slippage_models import SlippageModel, as_model
 
 log = get_logger(__name__)
 
@@ -17,19 +18,25 @@ log = get_logger(__name__)
 class MockBroker(BaseBroker):
     """
     A simulated broker for backtesting strategies against historical data.
-    
-    It relies on an injected `data_feed` object that holds the state of the 
+
+    It relies on an injected `data_feed` object that holds the state of the
     market at the current simulated time.
     """
 
-    def __init__(self, data_feed: Any, slippage_pct: float = 0.001) -> None:
+    def __init__(self, data_feed: Any, slippage_pct: "float | SlippageModel" = 0.001) -> None:
         """
         Args:
             data_feed: An object providing `get_ltp(key)`, `get_chain(key, expiry)`, etc.
-            slippage_pct: Slippage to apply on order execution (default 0.1%).
+            slippage_pct: Slippage to apply on order execution — either a
+                flat fraction (default 0.1%, today's original behavior) or
+                a pluggable model from utils/slippage_models.py (volume-
+                scaled, random-band, ...). self.slippage_pct stays set to
+                the original flat value when one was given (some callers/
+                logs read it directly); it's None when a model is used.
         """
         self.data_feed = data_feed
-        self.slippage_pct = slippage_pct
+        self.slippage_pct = slippage_pct if isinstance(slippage_pct, (int, float)) else None
+        self._slippage_model = as_model(slippage_pct)
 
         # place_sell_order() always records a (virtual) fill — it never skips
         # the way a live broker's dry-run path does — so this is False. The
@@ -133,7 +140,8 @@ class MockBroker(BaseBroker):
         # Slippage always works against us: worse = lower price on a SELL,
         # worse = higher price on a BUY.
         is_sell = transaction_type.upper() == "SELL"
-        execution_price = current_price * (1.0 - self.slippage_pct if is_sell else 1.0 + self.slippage_pct)
+        pct = self._slippage_model(current_price, quantity, is_sell)
+        execution_price = current_price * (1.0 - pct if is_sell else 1.0 + pct)
 
         order_id = f"MOCK-{uuid.uuid4().hex[:8].upper()}"
 

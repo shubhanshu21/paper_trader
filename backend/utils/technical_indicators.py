@@ -211,3 +211,66 @@ def macd(candles: list[CandleLike], fast: int = 12, slow: int = 26, signal: int 
         m = macd_values[i]
         result.append(None if s is None else {"macd": m, "signal": s, "histogram": m - s})
     return result
+
+
+def rsi(values: list[float], period: int = 14) -> list[float | None]:
+    """
+    Wilder's RSI (0-100) — same Wilder-smoothing family as
+    average_true_range() above, seeded with a plain average of the first
+    `period` gains/losses then smoothed forward. None for every index
+    before that seed exists. A period with zero average loss returns 100
+    (fully overbought, no divide-by-zero) rather than raising.
+    """
+    if period < 1:
+        raise ValueError(f"RSI period must be >= 1, got {period}.")
+    if len(values) < period + 1:
+        return [None] * len(values)
+
+    deltas = [values[i] - values[i - 1] for i in range(1, len(values))]
+    gains = [max(d, 0.0) for d in deltas]
+    losses = [max(-d, 0.0) for d in deltas]
+
+    avg_gain = sum(gains[:period]) / period
+    avg_loss = sum(losses[:period]) / period
+
+    out: list[float | None] = [None] * period  # values[0..period-1] have no RSI yet
+
+    def _rsi_from_averages(gain: float, loss: float) -> float:
+        if loss == 0:
+            return 100.0
+        rs = gain / loss
+        return 100.0 - (100.0 / (1.0 + rs))
+
+    out.append(_rsi_from_averages(avg_gain, avg_loss))
+    for i in range(period, len(deltas)):
+        avg_gain = (avg_gain * (period - 1) + gains[i]) / period
+        avg_loss = (avg_loss * (period - 1) + losses[i]) / period
+        out.append(_rsi_from_averages(avg_gain, avg_loss))
+    return out
+
+
+def bollinger_bands(values: list[float], period: int = 20, num_std: float = 2.0) -> list[dict | None]:
+    """
+    Standard Bollinger Bands — SMA(period) midline, upper/lower bands
+    `num_std` population-standard-deviations away. Also returns `width`
+    ((upper - lower) / middle, the normalized band-width used for
+    volatility-squeeze entry conditions — a low `width` means the market
+    has gone quiet, historically often the run-up to a breakout). None for
+    every index before `period` closes exist.
+    """
+    if period < 2:
+        raise ValueError(f"Bollinger period must be >= 2, got {period}.")
+    if len(values) < period:
+        return [None] * len(values)
+
+    out: list[dict | None] = [None] * (period - 1)
+    for i in range(period - 1, len(values)):
+        window = values[i - period + 1: i + 1]
+        middle = sum(window) / period
+        variance = sum((v - middle) ** 2 for v in window) / period
+        stdev = variance ** 0.5
+        upper = middle + num_std * stdev
+        lower = middle - num_std * stdev
+        width = (upper - lower) / middle if middle != 0 else None
+        out.append({"middle": middle, "upper": upper, "lower": lower, "width": width})
+    return out

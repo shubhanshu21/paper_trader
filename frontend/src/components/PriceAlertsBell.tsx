@@ -91,7 +91,7 @@ export default function PriceAlertsBell() {
 
   return (
     <div className="relative" ref={ref}>
-      <button type="button" onClick={() => setOpen((o) => !o)} className="relative flex items-center focus:outline-none" title="Price Alerts">
+      <button type="button" onClick={() => setOpen((o) => !o)} className="relative flex items-center focus:outline-none" title="Price Alerts" aria-label={`Price alerts${activeCount > 0 ? ` (${activeCount} active)` : ""}`}>
         <AlarmClock size={17} style={{ color: activeCount > 0 ? C.orange : C.text }} className="cursor-pointer hover:text-orange-500" />
         {activeCount > 0 && (
           <span className="absolute -top-1.5 -right-1.5 min-w-[15px] h-[15px] px-1 rounded-full text-white text-[9px] font-bold flex items-center justify-center" style={{ backgroundColor: C.blue }}>
@@ -169,7 +169,7 @@ export default function PriceAlertsBell() {
                         : `Watching · created ${timeAgo(a.created_at)}`}
                     </div>
                   </div>
-                  <button onClick={() => removeAlert(a.id)} className="p-1 rounded hover:bg-red-50 text-red-400 shrink-0"><Trash2 size={13} /></button>
+                  <button onClick={() => removeAlert(a.id)} className="p-1 rounded hover:bg-red-50 text-red-400 shrink-0" aria-label={`Delete alert for ${a.symbol}`}><Trash2 size={13} /></button>
                 </div>
               ))
             )}

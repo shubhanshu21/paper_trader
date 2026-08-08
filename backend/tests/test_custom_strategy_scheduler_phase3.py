@@ -161,6 +161,92 @@ class TestEntryConditionMet:
         with patch.object(sched, "_ma_crossover_met", side_effect=RuntimeError("boom")):
             assert sched._entry_condition_met(FakeBroker(), "NIFTY", {"type": "MA_CROSSOVER"}, "INDEX") is False
 
+    def test_dispatches_vix_threshold(self):
+        with patch.object(sched, "_vix_threshold_condition_met", return_value=True) as vix:
+            assert sched._entry_condition_met(FakeBroker(), "NIFTY", {"type": "VIX_THRESHOLD"}, "INDEX") is True
+            vix.assert_called_once()
+
+    def test_dispatches_oi_buildup(self):
+        with patch.object(sched, "_oi_buildup_condition_met", return_value=True) as oi:
+            assert sched._entry_condition_met(FakeBroker(), "NIFTY", {"type": "OI_BUILDUP"}, "INDEX") is True
+            oi.assert_called_once()
+
+
+class TestVixThresholdCondition:
+    def test_true_when_vix_above_threshold(self):
+        broker = FakeBroker(ltp=22.5)
+        assert sched._vix_threshold_condition_met(broker, {"operator": "ABOVE", "threshold": 20.0}) is True
+
+    def test_false_when_vix_below_threshold_for_above_operator(self):
+        broker = FakeBroker(ltp=14.0)
+        assert sched._vix_threshold_condition_met(broker, {"operator": "ABOVE", "threshold": 20.0}) is False
+
+    def test_below_operator(self):
+        broker = FakeBroker(ltp=12.0)
+        assert sched._vix_threshold_condition_met(broker, {"operator": "BELOW", "threshold": 15.0}) is True
+
+    def test_none_ltp_never_triggers(self):
+        broker = FakeBroker(ltp=None)
+        assert sched._vix_threshold_condition_met(broker, {"operator": "ABOVE", "threshold": 20.0}) is False
+
+    def test_malformed_condition_never_triggers(self):
+        broker = FakeBroker(ltp=25.0)
+        assert sched._vix_threshold_condition_met(broker, {"operator": "SIDEWAYS", "threshold": 20.0}) is False
+
+    def test_broker_lookup_failure_never_triggers(self):
+        class BrokenBroker:
+            def resolve_instrument_key(self, symbol):
+                raise RuntimeError("instrument master unavailable")
+        assert sched._vix_threshold_condition_met(BrokenBroker(), {"operator": "ABOVE", "threshold": 20.0}) is False
+
+
+class TestOiBuildupCondition:
+    def test_true_when_oi_grew_past_threshold(self, bhav_session, monkeypatch):
+        session = bhav_session()
+        for i, oi in enumerate([100_000, 105_000, 110_000, 118_000, 130_000]):
+            session.add(FnoBhavcopy(symbol="NIFTY", instrument="FUTIDX", trade_date=f"2026-01-0{i+1}",
+                                     expiry_dt="2099-12-31", open_int=oi))
+        session.commit()
+        session.close()
+        monkeypatch.setattr(sched, "SessionLocal", bhav_session)
+        condition = {"type": "OI_BUILDUP", "period_days": 4, "operator": "ABOVE", "threshold": 10.0}
+        assert sched._oi_buildup_condition_met("NIFTY", "INDEX", condition) is True
+
+    def test_false_when_oi_change_below_threshold(self, bhav_session, monkeypatch):
+        session = bhav_session()
+        for i, oi in enumerate([100_000, 100_500, 101_000, 101_200, 101_500]):
+            session.add(FnoBhavcopy(symbol="NIFTY", instrument="FUTIDX", trade_date=f"2026-01-0{i+1}",
+                                     expiry_dt="2099-12-31", open_int=oi))
+        session.commit()
+        session.close()
+        monkeypatch.setattr(sched, "SessionLocal", bhav_session)
+        condition = {"type": "OI_BUILDUP", "period_days": 4, "operator": "ABOVE", "threshold": 10.0}
+        assert sched._oi_buildup_condition_met("NIFTY", "INDEX", condition) is False
+
+    def test_oi_unwinding_triggers_below_operator(self, bhav_session, monkeypatch):
+        session = bhav_session()
+        for i, oi in enumerate([130_000, 120_000, 115_000, 108_000, 100_000]):
+            session.add(FnoBhavcopy(symbol="NIFTY", instrument="FUTIDX", trade_date=f"2026-01-0{i+1}",
+                                     expiry_dt="2099-12-31", open_int=oi))
+        session.commit()
+        session.close()
+        monkeypatch.setattr(sched, "SessionLocal", bhav_session)
+        condition = {"type": "OI_BUILDUP", "period_days": 4, "operator": "BELOW", "threshold": -10.0}
+        assert sched._oi_buildup_condition_met("NIFTY", "INDEX", condition) is True
+
+    def test_insufficient_history_never_triggers(self, bhav_session, monkeypatch):
+        session = bhav_session()
+        session.add(FnoBhavcopy(symbol="NIFTY", instrument="FUTIDX", trade_date="2026-01-01", expiry_dt="2099-12-31", open_int=100_000))
+        session.commit()
+        session.close()
+        monkeypatch.setattr(sched, "SessionLocal", bhav_session)
+        condition = {"type": "OI_BUILDUP", "period_days": 4, "operator": "ABOVE", "threshold": 10.0}
+        assert sched._oi_buildup_condition_met("NIFTY", "INDEX", condition) is False
+
+    def test_malformed_condition_never_triggers(self, bhav_session, monkeypatch):
+        monkeypatch.setattr(sched, "SessionLocal", bhav_session)
+        assert sched._oi_buildup_condition_met("NIFTY", "INDEX", {"type": "OI_BUILDUP"}) is False
+
 
 # ---------------------------------------------------------------------------
 # Per-leg independent exit (TP/SL/trailing) via _try_exit_individual_leg

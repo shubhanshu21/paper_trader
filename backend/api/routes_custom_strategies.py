@@ -181,6 +181,51 @@ def get_strategy(strategy_id: int, db: Session = Depends(get_db), user: dict = D
     return strategy.to_dict()
 
 
+@router.post("/{strategy_id}/clone")
+def clone_strategy(strategy_id: int, db: Session = Depends(get_db), user: dict = Depends(get_current_user)):
+    """
+    Duplicate a strategy's configuration (symbols, rules, sizing) into a
+    new DRAFT row the user can tweak independently — Streak/Composer's
+    "fork a strategy instead of editing in place" pattern. Deliberately
+    NOT full version history (no diff-against-parent, no lineage chain) —
+    that's a materially bigger feature (its own table, a diff UI); this is
+    the actually-useful core of it: never lose a working configuration
+    while experimenting with a variant.
+
+    Explicitly NOT copied: status (always starts DRAFT — a clone has
+    placed zero real orders, however LIVE the original is), backtest/
+    paper/live performance figures and the stored backtest result (all
+    belong to the ORIGINAL's history, not this new row's), last_entry_date
+    (cycle-tracking state that's meaningless for a strategy that's never
+    ticked), and automation/adjustment settings (auto_roll etc. — start
+    off, matching every other new strategy's defaults, not silently
+    inherited).
+    """
+    original = _get_owned_strategy(db, strategy_id, _current_user_id(user))
+
+    clone = CustomStrategy(
+        user_id=_current_user_id(user),
+        name=f"{original.name} (Copy)",
+        description=original.description,
+        instrument_type=original.instrument_type,
+        symbols=original.symbols,
+        rules_json=original.rules_json,
+        strategy_type=original.strategy_type,
+        option_type=original.option_type,
+        strike_offset=original.strike_offset,
+        expiry_days=original.expiry_days,
+        num_lots=original.num_lots,
+        take_profit_pct=original.take_profit_pct,
+        stop_loss_pct=original.stop_loss_pct,
+        exit_days_before_expiry=original.exit_days_before_expiry,
+        status="DRAFT",
+    )
+    db.add(clone)
+    db.commit()
+    db.refresh(clone)
+    return clone.to_dict()
+
+
 @router.put("/{strategy_id}")
 def update_strategy(strategy_id: int, strategy: CustomStrategyUpdate, db: Session = Depends(get_db), user: dict = Depends(get_current_user)):
     """Update a custom strategy."""
@@ -398,6 +443,13 @@ class BacktestRequest(BaseModel):
     slippage_pct: float | None = 0.1
 
 
+class OptimizeRequest(BaseModel):
+    from_date: str | None = None  # 'YYYY-MM-DD'
+    to_date: str | None = None
+    slippage_pct: float | None = 0.1
+    param_grid: dict[str, list[float]]  # e.g. {"stop_loss_pct": [10, 15, 20], "take_profit_pct": [20, 30]}
+
+
 # strategy_type -> the NAME of a synthetic (intraday-candle-driven)
 # backtest runner in backtest.synthetic_engine, same (symbols, rules,
 # instrument_type, from_date, to_date, on_progress, charge_rates) ->
@@ -487,7 +539,11 @@ def _run_backtest_sync(run_id: int) -> None:
     custom_strategy_scheduler.py).
     """
     from backtest.custom_engine import compute_nifty_benchmark_return
-    from utils.backtest_stats import compute_backtest_stats
+    from utils.backtest_stats import (
+        compute_backtest_stats,
+        compute_monte_carlo_stats,
+        compute_walk_forward_stats,
+    )
 
     db = SessionLocal()
     try:
@@ -569,6 +625,8 @@ def _run_backtest_sync(run_id: int) -> None:
             "per_symbol": per_symbol,
             "skipped_symbols": skipped_symbols,
             **compute_backtest_stats(cycles, rules=rules, benchmark_return_pct=benchmark_return_pct),
+            "monte_carlo": compute_monte_carlo_stats(cycles),
+            "walk_forward": compute_walk_forward_stats(cycles, rules=rules),
         }
         if runner_name:
             # Load-bearing honesty: this run used RECONSTRUCTED (Black-76)
@@ -669,6 +727,73 @@ async def backtest_strategy(strategy_id: int, request: BacktestRequest, db: Sess
         task.add_done_callback(_background_tasks.discard)
 
     return {"run_id": run.id, "status": run.status}
+
+
+def _run_optimizer_grid_sync(
+    symbols: list[str], base_rules: dict, instrument_type: str,
+    from_date: str | None, to_date: str | None, charge_rates: dict | None,
+    param_grid: dict[str, list[float]],
+) -> list[dict]:
+    """The blocking part of /optimize — runs one full _run_backtest_symbols() per grid point. See utils/optimizer.py:grid_search() for the ranking/error-handling logic; this closure just adapts its (symbols, rules, ...) shape into run_fn's (rules) -> cycles shape."""
+    from utils.optimizer import grid_search
+
+    def run_fn(rules: dict) -> list[dict]:
+        cycles, _per_symbol, _skipped = _run_backtest_symbols(
+            symbols, rules, instrument_type, from_date, to_date, charge_rates=charge_rates,
+        )
+        return cycles
+
+    return grid_search(base_rules, param_grid, run_fn)
+
+
+@router.post("/{strategy_id}/optimize")
+async def optimize_strategy(strategy_id: int, request: OptimizeRequest, db: Session = Depends(get_db), user: dict = Depends(get_current_user)):
+    """
+    Grid-search stop_loss_pct/take_profit_pct against real historical
+    bhavcopy data, same engine and same caveats as POST /{id}/backtest —
+    just run once per (stop_loss_pct, take_profit_pct) combination in
+    `request.param_grid`, ranked by Sharpe ratio. Synchronous (unlike
+    /backtest's background+poll pattern) since utils/optimizer.py caps the
+    grid at 25 combinations — bounded worst-case runtime, no need for the
+    extra run/poll machinery a single potentially-long backtest needs.
+    Same eligibility rules as /backtest (no COMMODITY, no all-EQUITY).
+    """
+    from utils.optimizer import MAX_COMBINATIONS
+
+    db_strategy = _get_owned_strategy(db, strategy_id, _current_user_id(user))
+    if not db_strategy.rules_json:
+        raise HTTPException(status_code=400, detail="This strategy has no rules configured.")
+    engine = get_engine(db_strategy.strategy_type)
+    if not engine["backtest_supported"]:
+        raise HTTPException(status_code=400, detail=engine["backtest_unavailable_reason"])
+    if db_strategy.instrument_type == "COMMODITY":
+        raise HTTPException(status_code=400, detail="Optimization isn't available for COMMODITY strategies yet — same dataset limitation as /backtest.")
+    rules_for_check = json.loads(db_strategy.rules_json)
+    if rules_for_check.get("legs") and all((leg.get("instrument_type") or "OPTION") == "EQUITY" for leg in rules_for_check["legs"]):
+        raise HTTPException(status_code=400, detail="Optimization isn't available for an all-EQUITY strategy — same dataset limitation as /backtest.")
+
+    try:
+        from utils.optimizer import build_grid
+        combo_count = len(build_grid(request.param_grid))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    rules_for_check["slippage_pct"] = request.slippage_pct
+    symbols = json.loads(db_strategy.symbols)
+    charge_rates = get_charge_rates(db_strategy.user_id)
+
+    results = await asyncio.to_thread(
+        _run_optimizer_grid_sync,
+        symbols, rules_for_check, db_strategy.instrument_type,
+        request.from_date, request.to_date, charge_rates, request.param_grid,
+    )
+
+    return {
+        "strategy_id": strategy_id,
+        "combinations_tested": combo_count,
+        "max_combinations": MAX_COMBINATIONS,
+        "results": results,
+    }
 
 
 @router.get("/{strategy_id}/backtest/runs")
@@ -1422,6 +1547,30 @@ def get_strategy_positions(strategy_id: int, db: Session = Depends(get_db), user
         "closed": [leg.to_dict() for leg in closed_legs],
         "realized_net_pnl": realized_net_pnl,
     }
+
+
+@router.get("/{strategy_id}/fill-divergence")
+def get_fill_divergence(strategy_id: int, db: Session = Depends(get_db), user: dict = Depends(get_current_user)):
+    """
+    Paper-vs-live fill-quality comparison for this strategy — realized
+    P&L-per-unit, holding duration, and exit-reason mix, split by
+    CustomStrategyPosition.mode ('paper' vs 'live'). See
+    utils/fill_divergence.py for exactly what this can and can't measure
+    (real P&L/timing from stored fills; NOT tick-level price slippage —
+    this codebase keeps no LTP history to diff against after the fact).
+    `comparable=False` when either mode has fewer than 5 closed legs —
+    still returns both summaries, just flags the comparison as too thin
+    to trust yet.
+    """
+    from utils.fill_divergence import compute_fill_divergence
+
+    strategy = _get_owned_strategy(db, strategy_id, _current_user_id(user))
+    legs = db.query(CustomStrategyPosition).filter(CustomStrategyPosition.strategy_id == strategy.id).all()
+
+    paper_legs = [leg.to_dict() for leg in legs if leg.mode == "paper"]
+    live_legs = [leg.to_dict() for leg in legs if leg.mode == "live"]
+
+    return {"strategy_id": strategy_id, **compute_fill_divergence(paper_legs, live_legs)}
 
 
 @router.get("/positions/open")

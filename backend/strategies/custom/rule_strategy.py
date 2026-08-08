@@ -98,6 +98,7 @@ class RuleBasedStrategy(BaseStrategy):
         product: str = "NRML",
         user_id: int | None = None,
         notify_on_failure: bool = True,
+        strategy_id: int | None = None,
     ) -> None:
         super().__init__(broker, audit, kill_switch, rate_limiter, notify_on_failure=notify_on_failure)
         if not rules or not rules.get("legs"):
@@ -107,6 +108,17 @@ class RuleBasedStrategy(BaseStrategy):
         self.rules = rules
         self.product = product.upper()
         self.user_id = user_id  # owning CustomStrategy's user_id, for notify() scoping — see utils/notify.py
+        # The owning CustomStrategy row's DB id (db/models.py) — None for
+        # backtest/CLI callers with no real strategy row behind them. When
+        # set, every order this instance places carries it in the broker
+        # tag (see _place_leg) so a real order in Upstox's own order book
+        # traces back to the exact strategy that generated it. This is an
+        # application-level identifier riding Upstox's existing 16-char tag
+        # field — NOT the exchange-issued Algo/Strategy ID SEBI's Feb 2025
+        # retail algo framework requires (that one is assigned by the
+        # broker/exchange during empanelment, a business process this app
+        # cannot generate on its own).
+        self.strategy_id = strategy_id
 
         # OPTION legs need a real strike_step/lot_size resolved up front
         # (wrong quantity/strike is a real-money risk — never guessed, see
@@ -407,6 +419,23 @@ class RuleBasedStrategy(BaseStrategy):
                     raise ComplianceError(str(exc)) from exc
             validate_order_quantity(self.symbol, resolved["quantity"])
 
+    def _order_tag(self, prefix: str, resolved: dict, idx: int) -> str:
+        """
+        Broker order tag (Upstox hard limit: 16 chars, enforced again at
+        the broker layer regardless). When this instance has a real
+        strategy_id (live/paper trading through a saved CustomStrategy —
+        see __init__), the tag leads with it so the order is traceable
+        back to the exact strategy in Upstox's own order book, at the
+        cost of dropping the option_type/symbol bits (already visible
+        elsewhere in the order book UI via the instrument column) — there
+        isn't room for both within 16 chars. Falls back to the original
+        descriptive format, unchanged, for backtest/CLI callers with no
+        strategy_id.
+        """
+        if self.strategy_id is not None:
+            return f"S{self.strategy_id}{prefix}{idx}"[:16]
+        return f"{'CUSTOM' if prefix == 'L' else 'UNWIND'}_{resolved['option_type']}_{self.symbol[:6]}_{idx}"[:20]
+
     def _place_leg(self, resolved: dict, idx: int) -> str | None:
         self.rate_limiter.acquire()
         place = self.broker.place_sell_order if resolved["transaction_type"] == "SELL" else self.broker.place_buy_order
@@ -425,7 +454,7 @@ class RuleBasedStrategy(BaseStrategy):
             quantity=resolved["quantity"],
             product=self.product,
             order_type="MARKET",
-            tag=f"CUSTOM_{resolved['option_type']}_{self.symbol[:6]}_{idx}"[:20],
+            tag=self._order_tag("L", resolved, idx),
             user_id=self.user_id,
         )
         status = "DRY_RUN" if self.broker.dry_run else ("PLACED" if order_id else "FAILED")
@@ -485,7 +514,7 @@ class RuleBasedStrategy(BaseStrategy):
                     quantity=resolved["quantity"],
                     product=self.product,
                     order_type="MARKET",
-                    tag=f"UNWIND_{resolved['option_type']}_{self.symbol[:6]}_{idx}"[:20],
+                    tag=self._order_tag("U", resolved, idx),
                     user_id=self.user_id,
                 )
                 self.audit.record(

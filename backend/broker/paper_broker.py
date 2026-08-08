@@ -15,6 +15,7 @@ import uuid
 
 from broker.base_broker import BaseBroker
 from utils.logger import get_logger
+from utils.slippage_models import SlippageModel, as_model
 
 log = get_logger(__name__)
 
@@ -22,9 +23,13 @@ class PaperBroker(BaseBroker):
     """
     Acts as a proxy to a real broker for data, but executes orders virtually.
     """
-    def __init__(self, real_broker: BaseBroker, slippage_pct: float = 0.001):
+    def __init__(self, real_broker: BaseBroker, slippage_pct: "float | SlippageModel" = 0.001):
         self.real_broker = real_broker
-        self.slippage_pct = slippage_pct
+        # See MockBroker's __init__ docstring — same flat-value-or-model
+        # contract, self.slippage_pct stays the original float for direct
+        # readers/logs, None when a pluggable model was passed instead.
+        self.slippage_pct = slippage_pct if isinstance(slippage_pct, (int, float)) else None
+        self._slippage_model = as_model(slippage_pct)
 
         # place_sell_order() always records a (virtual) fill — it never skips
         # the way a live broker's dry-run path does — so this is False. The
@@ -234,10 +239,9 @@ class PaperBroker(BaseBroker):
 
         # Slippage always works against us: worse = lower price on a SELL,
         # worse = higher price on a BUY.
-        if transaction_type.upper() == "SELL":
-            execution_price = current_price * (1.0 - self.slippage_pct)
-        else:
-            execution_price = current_price * (1.0 + self.slippage_pct)
+        is_sell = transaction_type.upper() == "SELL"
+        pct = self._slippage_model(current_price, quantity, is_sell)
+        execution_price = current_price * (1.0 - pct if is_sell else 1.0 + pct)
 
         order_id = f"PAPER-{uuid.uuid4().hex[:8].upper()}"
         self._fills[order_id] = execution_price

@@ -161,6 +161,7 @@ export default function NotificationBell() {
         onClick={() => setOpen((o) => !o)}
         className="relative flex items-center focus:outline-none"
         title="Notifications"
+        aria-label={`Notifications${unreadCount > 0 ? ` (${unreadCount} unread)` : ""}`}
       >
         <Bell size={17} style={{ color: unreadCount > 0 ? C.orange : C.text }} className="cursor-pointer hover:text-orange-500" />
         {unreadCount > 0 && (

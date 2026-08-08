@@ -33,6 +33,10 @@ export interface CustomStrategyRules {
     condition?:
       | { type: 'MA_CROSSOVER'; period_days: number; direction: 'ABOVE' | 'BELOW' }
       | { type: 'IV_RANK'; operator: 'ABOVE' | 'BELOW'; threshold: number }
+      | { type: 'RSI'; period_days: number; operator: 'ABOVE' | 'BELOW'; threshold: number }
+      | { type: 'BOLLINGER_WIDTH'; period_days: number; operator: 'ABOVE' | 'BELOW'; threshold: number } // threshold is a fraction of the middle band, e.g. 0.05 = 5%
+      | { type: 'VIX_THRESHOLD'; operator: 'ABOVE' | 'BELOW'; threshold: number } // India VIX index level; live-scheduler only, never backtested
+      | { type: 'OI_BUILDUP'; period_days: number; operator: 'ABOVE' | 'BELOW'; threshold: number } // % change in futures OI; live-scheduler only, never backtested
       | null;
     before_expiry?: {                                 // required iff mode === 'BEFORE_EXPIRY'
       days_before_expiry: number;                      // entry window opens this many calendar days before the resolved expiry

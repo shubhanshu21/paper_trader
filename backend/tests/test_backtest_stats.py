@@ -8,7 +8,11 @@ expected values on small synthetic cycle lists — no DB, no network.
 import math
 
 from utils import black76
-from utils.backtest_stats import compute_backtest_stats
+from utils.backtest_stats import (
+    compute_backtest_stats,
+    compute_monte_carlo_stats,
+    compute_walk_forward_stats,
+)
 
 
 def _cycle(entry_date, exit_date, pnl_pct, net_pnl=None, won=None):
@@ -223,3 +227,85 @@ class TestBackwardCompatFields:
         # Sanity: confirm the module is actually wired to the shared India
         # rate constant, not a hardcoded/duplicated value.
         assert black76.DEFAULT_RISK_FREE_RATE == 0.065
+
+
+class TestMonteCarloStats:
+    def test_none_below_five_cycles(self):
+        cycles = [_cycle(f"2026-0{i}-01", f"2026-0{i}-15", 5.0) for i in range(1, 4)]
+        assert compute_monte_carlo_stats(cycles) is None
+
+    def test_all_winners_never_lose_regardless_of_order(self):
+        cycles = [_cycle(f"2026-{i:02d}-01", f"2026-{i:02d}-15", 5.0) for i in range(1, 8)]
+        mc = compute_monte_carlo_stats(cycles, n_simulations=200, seed=1)
+        assert mc["probability_of_loss_pct"] == 0.0
+        assert mc["total_return_pct_p5"] > 0
+        # Every reordering of the SAME set of returns compounds to the same
+        # final value — order-independence of the product, so every
+        # percentile of total_return_pct must coincide.
+        assert mc["total_return_pct_p5"] == mc["total_return_pct_p50"] == mc["total_return_pct_p95"]
+
+    def test_deterministic_given_seed(self):
+        cycles = [_cycle(f"2026-{i:02d}-01", f"2026-{i:02d}-15", (-1) ** i * 4.0) for i in range(1, 12)]
+        a = compute_monte_carlo_stats(cycles, n_simulations=300, seed=42)
+        b = compute_monte_carlo_stats(cycles, n_simulations=300, seed=42)
+        assert a == b
+
+    def test_drawdown_varies_by_ordering_even_when_final_return_does_not(self):
+        # Same multiset of returns, order matters for max drawdown (a big
+        # loss up front vs. at the end changes the worst peak-to-trough
+        # dip) even though the compounded final value is order-independent.
+        cycles = [
+            _cycle("2026-01-01", "2026-01-15", 20.0, net_pnl=2000, won=True),
+            _cycle("2026-02-01", "2026-02-15", 20.0, net_pnl=2000, won=True),
+            _cycle("2026-03-01", "2026-03-15", -15.0, net_pnl=-1500, won=False),
+            _cycle("2026-04-01", "2026-04-15", -15.0, net_pnl=-1500, won=False),
+            _cycle("2026-05-01", "2026-05-15", 8.0, net_pnl=800, won=True),
+        ]
+        mc = compute_monte_carlo_stats(cycles, n_simulations=500, seed=7)
+        assert mc["max_drawdown_pct_p95"] >= mc["max_drawdown_pct_p50"] >= 0
+        assert 0.0 <= mc["probability_of_loss_pct"] <= 100.0
+
+    def test_n_simulations_echoed_back(self):
+        cycles = [_cycle(f"2026-{i:02d}-01", f"2026-{i:02d}-15", 3.0) for i in range(1, 6)]
+        mc = compute_monte_carlo_stats(cycles, n_simulations=50, seed=1)
+        assert mc["n_simulations"] == 50
+
+
+class TestWalkForwardStats:
+    def test_none_below_two_cycles_per_fold(self):
+        cycles = [_cycle(f"2026-{i:02d}-01", f"2026-{i:02d}-15", 5.0) for i in range(1, 6)]
+        assert compute_walk_forward_stats(cycles, n_folds=4) is None
+
+    def test_splits_into_requested_fold_count(self):
+        cycles = [_cycle(f"2026-{i:02d}-01", f"2026-{i:02d}-15", 5.0) for i in range(1, 13)]
+        wf = compute_walk_forward_stats(cycles, n_folds=4)
+        assert wf["n_folds"] == 4
+        assert sum(f["cycles_tested"] for f in wf["folds"]) == 12
+        assert [f["cycles_tested"] for f in wf["folds"]] == [3, 3, 3, 3]
+
+    def test_last_fold_absorbs_remainder(self):
+        cycles = [_cycle(f"2026-{i:02d}-01", f"2026-{i:02d}-15", 5.0) for i in range(1, 11)]  # 10 cycles / 4 folds
+        wf = compute_walk_forward_stats(cycles, n_folds=4)
+        assert sum(f["cycles_tested"] for f in wf["folds"]) == 10
+        assert wf["folds"][-1]["cycles_tested"] == 4  # 2, 2, 2, +2 remainder = 4
+
+    def test_all_profitable_folds_gives_full_consistency_score(self):
+        cycles = [_cycle(f"2026-{i:02d}-01", f"2026-{i:02d}-15", 5.0) for i in range(1, 13)]
+        wf = compute_walk_forward_stats(cycles, n_folds=4)
+        assert wf["profitable_fold_count"] == 4
+        assert wf["consistency_score"] == 1.0
+
+    def test_mixed_profitability_reflected_in_consistency_score(self):
+        # First half of the year all winners, second half all losers.
+        cycles = [_cycle(f"2026-{i:02d}-01", f"2026-{i:02d}-15", 5.0 if i <= 6 else -5.0) for i in range(1, 13)]
+        wf = compute_walk_forward_stats(cycles, n_folds=4)
+        assert wf["profitable_fold_count"] == 2
+        assert wf["consistency_score"] == 0.5
+        assert wf["folds"][0]["total_return_pct"] > 0
+        assert wf["folds"][-1]["total_return_pct"] < 0
+
+    def test_folds_are_chronological_and_non_overlapping(self):
+        cycles = [_cycle(f"2026-{i:02d}-01", f"2026-{i:02d}-15", 5.0) for i in range(1, 13)]
+        wf = compute_walk_forward_stats(cycles, n_folds=3)
+        dates = [f["from_date"] for f in wf["folds"]]
+        assert dates == sorted(dates)

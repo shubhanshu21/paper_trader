@@ -82,3 +82,61 @@ class TestOtherValidation:
     def test_at_time_entry_without_time_rejected(self):
         errors = validate_rules(_rules([_leg()], entry={"mode": "AT_TIME", "time": None}))
         assert any("HH:MM" in e for e in errors)
+
+
+class TestConditionalEntryValidation:
+    def test_valid_rsi_condition_accepted(self):
+        entry = {"mode": "CONDITIONAL", "time": None, "condition": {"type": "RSI", "period_days": 14, "operator": "BELOW", "threshold": 30}}
+        assert validate_rules(_rules([_leg()], entry=entry)) == []
+
+    def test_rsi_missing_period_rejected(self):
+        entry = {"mode": "CONDITIONAL", "time": None, "condition": {"type": "RSI", "operator": "BELOW", "threshold": 30}}
+        errors = validate_rules(_rules([_leg()], entry=entry))
+        assert any("period_days" in e for e in errors)
+
+    def test_rsi_bad_operator_rejected(self):
+        entry = {"mode": "CONDITIONAL", "time": None, "condition": {"type": "RSI", "period_days": 14, "operator": "SIDEWAYS", "threshold": 30}}
+        errors = validate_rules(_rules([_leg()], entry=entry))
+        assert any("operator" in e for e in errors)
+
+    def test_rsi_threshold_out_of_range_rejected(self):
+        entry = {"mode": "CONDITIONAL", "time": None, "condition": {"type": "RSI", "period_days": 14, "operator": "BELOW", "threshold": 150}}
+        errors = validate_rules(_rules([_leg()], entry=entry))
+        assert any("threshold" in e for e in errors)
+
+    def test_valid_bollinger_width_condition_accepted(self):
+        entry = {"mode": "CONDITIONAL", "time": None, "condition": {"type": "BOLLINGER_WIDTH", "period_days": 20, "operator": "BELOW", "threshold": 0.05}}
+        assert validate_rules(_rules([_leg()], entry=entry)) == []
+
+    def test_bollinger_width_non_positive_threshold_rejected(self):
+        entry = {"mode": "CONDITIONAL", "time": None, "condition": {"type": "BOLLINGER_WIDTH", "period_days": 20, "operator": "BELOW", "threshold": 0}}
+        errors = validate_rules(_rules([_leg()], entry=entry))
+        assert any("threshold" in e for e in errors)
+
+    def test_unknown_condition_type_rejected(self):
+        entry = {"mode": "CONDITIONAL", "time": None, "condition": {"type": "MACD_CROSS"}}
+        errors = validate_rules(_rules([_leg()], entry=entry))
+        assert any("condition type" in e for e in errors)
+
+    def test_valid_vix_threshold_condition_accepted(self):
+        entry = {"mode": "CONDITIONAL", "time": None, "condition": {"type": "VIX_THRESHOLD", "operator": "ABOVE", "threshold": 20}}
+        assert validate_rules(_rules([_leg()], entry=entry)) == []
+
+    def test_vix_threshold_non_positive_rejected(self):
+        entry = {"mode": "CONDITIONAL", "time": None, "condition": {"type": "VIX_THRESHOLD", "operator": "ABOVE", "threshold": 0}}
+        errors = validate_rules(_rules([_leg()], entry=entry))
+        assert any("threshold" in e for e in errors)
+
+    def test_valid_oi_buildup_condition_accepted(self):
+        entry = {"mode": "CONDITIONAL", "time": None, "condition": {"type": "OI_BUILDUP", "period_days": 5, "operator": "ABOVE", "threshold": 10}}
+        assert validate_rules(_rules([_leg()], entry=entry)) == []
+
+    def test_oi_buildup_missing_period_rejected(self):
+        entry = {"mode": "CONDITIONAL", "time": None, "condition": {"type": "OI_BUILDUP", "operator": "ABOVE", "threshold": 10}}
+        errors = validate_rules(_rules([_leg()], entry=entry))
+        assert any("period_days" in e for e in errors)
+
+    def test_oi_buildup_allows_negative_threshold(self):
+        # Negative threshold = "OI shrank by at least this much" (unwinding), a legitimate BELOW-operator use.
+        entry = {"mode": "CONDITIONAL", "time": None, "condition": {"type": "OI_BUILDUP", "period_days": 5, "operator": "BELOW", "threshold": -10}}
+        assert validate_rules(_rules([_leg()], entry=entry)) == []

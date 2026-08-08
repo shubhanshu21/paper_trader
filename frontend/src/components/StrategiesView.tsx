@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, type ReactNode } from "react";
 import {
   Plus, Play, Pause, RefreshCw, TrendingUp, AlertCircle, BarChart3, Trash2, Pencil,
   Layers, Clock, LogOut, Activity, FileText, Target, ArrowUpRight, ArrowDownRight, Calendar, IndianRupee, Info, X,
-  Download, GitCompare, Eye, Wallet,
+  Download, GitCompare, Eye, Wallet, Copy,
   type LucideIcon,
 } from "lucide-react";
 import { DatePicker } from "./Common";
@@ -11,7 +11,7 @@ import { useToast } from "../hooks/useToast";
 import { api, wsUrl } from "../api";
 import type {
   BacktestCycle, BacktestResult, BacktestRunSummary, BacktestRunDetail,
-  PayoffResponse, PositionLeg, MarginResponse, PortfolioMarginResponse,
+  PayoffResponse, PositionLeg, MarginResponse, PortfolioMarginResponse, OptimizeResponse, FillDivergenceResponse,
 } from "../api";
 import type { CustomStrategy, CustomStrategyRules, EngineRules, PortfolioGreeksResponse } from "../types/customStrategy";
 import { useCustomStrategyPositions } from "../hooks/useCustomStrategyPositions";
@@ -342,6 +342,210 @@ function BacktestRangeModal({
   );
 }
 
+// "10, 15, 20" -> [10, 15, 20] — silently drops non-numeric/empty entries rather than erroring, since a trailing comma or stray space while typing shouldn't block the rest of the list.
+function parseValueList(raw: string): number[] {
+  return raw.split(",").map((s) => parseFloat(s.trim())).filter((n) => !Number.isNaN(n));
+}
+
+function OptimizeModal({
+  strategy, onClose, onRun, result, error, running,
+}: {
+  strategy: CustomStrategy;
+  onClose: () => void;
+  onRun: (paramGrid: Record<string, number[]>, fromDate: string, toDate: string, slippagePct: number) => void;
+  result: OptimizeResponse | null;
+  error: string;
+  running: boolean;
+}) {
+  const [fromDate, setFromDate] = useState(BACKTEST_PRESETS[1].from || "");
+  const [toDate, setToDate] = useState("");
+  const [slippagePct, setSlippagePct] = useState(0.1);
+  const [stopLossValues, setStopLossValues] = useState("10, 15, 20, 30");
+  const [takeProfitValues, setTakeProfitValues] = useState("20, 30, 40");
+  const [sweepStopLoss, setSweepStopLoss] = useState(true);
+  const [sweepTakeProfit, setSweepTakeProfit] = useState(true);
+
+  const grid: Record<string, number[]> = {};
+  if (sweepStopLoss) grid.stop_loss_pct = parseValueList(stopLossValues);
+  if (sweepTakeProfit) grid.take_profit_pct = parseValueList(takeProfitValues);
+  const comboCount = Object.values(grid).reduce((n, values) => n * (values.length || 0), 1);
+  const canRun = Object.keys(grid).length > 0 && comboCount > 0 && comboCount <= 25;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-40 backdrop-blur-sm">
+      <div className="bg-white rounded-2xl p-6 max-w-lg w-full mx-4 border shadow-2xl max-h-[85vh] overflow-y-auto" style={{ borderColor: C.border }}>
+        <h3 className="text-base font-bold text-gray-800">Optimize "{strategy.name}"</h3>
+        <p className="text-xs text-gray-500 mt-1.5">
+          Grid-search stop-loss/take-profit over real historical data — one backtest per combination, ranked by Sharpe ratio. Capped at 25 combinations per run.
+        </p>
+
+        {!result ? (
+          <>
+            <div className="grid grid-cols-2 gap-3 mt-4">
+              <div>
+                <label className="block text-xs font-medium text-gray-500 mb-1.5">From</label>
+                <DatePicker value={fromDate} onChange={setFromDate} allowClear maxDate={toDate || undefined} placeholder="Earliest available" />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-500 mb-1.5">To</label>
+                <DatePicker value={toDate} onChange={setToDate} allowClear minDate={fromDate || undefined} placeholder="Today" />
+              </div>
+            </div>
+
+            <div className="mt-4 space-y-3">
+              <div className="flex items-start gap-2">
+                <input type="checkbox" checked={sweepStopLoss} onChange={(e) => setSweepStopLoss(e.target.checked)} className="mt-1" />
+                <div className="flex-1">
+                  <label className="block text-xs font-medium text-gray-500 mb-1.5">Stop-loss %% candidates (comma-separated)</label>
+                  <input
+                    type="text"
+                    value={stopLossValues}
+                    onChange={(e) => setStopLossValues(e.target.value)}
+                    disabled={!sweepStopLoss}
+                    className="w-full px-3 py-1.5 border rounded-lg text-xs font-semibold outline-none focus:border-orange-500 transition-colors disabled:opacity-40"
+                    style={{ borderColor: C.border2 }}
+                  />
+                </div>
+              </div>
+              <div className="flex items-start gap-2">
+                <input type="checkbox" checked={sweepTakeProfit} onChange={(e) => setSweepTakeProfit(e.target.checked)} className="mt-1" />
+                <div className="flex-1">
+                  <label className="block text-xs font-medium text-gray-500 mb-1.5">Take-profit %% candidates (comma-separated)</label>
+                  <input
+                    type="text"
+                    value={takeProfitValues}
+                    onChange={(e) => setTakeProfitValues(e.target.value)}
+                    disabled={!sweepTakeProfit}
+                    className="w-full px-3 py-1.5 border rounded-lg text-xs font-semibold outline-none focus:border-orange-500 transition-colors disabled:opacity-40"
+                    style={{ borderColor: C.border2 }}
+                  />
+                </div>
+              </div>
+            </div>
+
+            <div className="mt-4">
+              <label className="block text-xs font-medium text-gray-500 mb-1.5">Slippage (% per trade)</label>
+              <input
+                type="number" step="0.01" min="0" max="5"
+                value={slippagePct}
+                onChange={(e) => setSlippagePct(parseFloat(e.target.value) || 0)}
+                className="w-full px-3 py-1.5 border rounded-lg text-xs font-semibold outline-none focus:border-orange-500 transition-colors"
+                style={{ borderColor: C.border2 }}
+              />
+            </div>
+
+            <div className="mt-3 text-xs font-medium" style={{ color: comboCount > 25 ? C.red : C.muted }}>
+              {comboCount > 0 ? `${comboCount} combination${comboCount === 1 ? "" : "s"} will be tested${comboCount > 25 ? " — exceeds the cap of 25, narrow your ranges" : ""}.` : "Select at least one parameter to sweep."}
+            </div>
+
+            {error && <div className="mt-3 px-3 py-2 rounded-lg text-xs font-medium" style={{ backgroundColor: C.sellBg, color: C.red }}>{error}</div>}
+
+            <div className="flex justify-end gap-2 mt-6">
+              <button onClick={onClose} className="px-3.5 py-1.5 text-xs font-semibold rounded-lg bg-gray-100 text-gray-600 hover:bg-gray-200 transition-colors focus:outline-none">
+                Cancel
+              </button>
+              <button
+                onClick={() => onRun(grid, fromDate, toDate, slippagePct)}
+                disabled={!canRun || running}
+                className="flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-semibold rounded-lg text-white transition-colors focus:outline-none hover:opacity-90 disabled:opacity-50"
+                style={{ backgroundColor: C.orange }}
+              >
+                {running ? "Running..." : "Run Optimization"}
+              </button>
+            </div>
+          </>
+        ) : (
+          <>
+            <div className="mt-4 text-xs text-gray-500">
+              {result.combinations_tested} combination{result.combinations_tested === 1 ? "" : "s"} tested, ranked by Sharpe ratio (best first).
+            </div>
+            <div className="mt-3 overflow-x-auto">
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="text-left text-gray-400 uppercase tracking-wide text-[10px]">
+                    <th className="py-1.5 pr-3">Params</th>
+                    <th className="py-1.5 pr-3 text-right">Cycles</th>
+                    <th className="py-1.5 pr-3 text-right">Win %</th>
+                    <th className="py-1.5 pr-3 text-right">Return %</th>
+                    <th className="py-1.5 pr-3 text-right">Sharpe</th>
+                    <th className="py-1.5 text-right">Max DD %</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {result.results.map((row, i) => (
+                    <tr key={i} className="border-t" style={{ borderColor: C.border2, background: i === 0 && !row.error ? C.buyBg : undefined }}>
+                      <td className="py-1.5 pr-3 font-medium text-gray-700">
+                        {Object.entries(row.params).map(([k, v]) => `${k.replace("_pct", "").replace("_", " ")}=${v}`).join(", ")}
+                      </td>
+                      <td className="py-1.5 pr-3 text-right tabular-nums">{row.cycles_tested}</td>
+                      <td className="py-1.5 pr-3 text-right tabular-nums">{row.win_rate_pct != null ? row.win_rate_pct.toFixed(1) : "—"}</td>
+                      <td className="py-1.5 pr-3 text-right tabular-nums" style={{ color: row.total_return_pct != null ? (row.total_return_pct >= 0 ? C.green : C.red) : C.muted }}>
+                        {row.total_return_pct != null ? `${row.total_return_pct >= 0 ? "+" : ""}${row.total_return_pct.toFixed(2)}` : row.error ? "error" : "—"}
+                      </td>
+                      <td className="py-1.5 pr-3 text-right tabular-nums font-semibold">{row.sharpe_ratio != null ? row.sharpe_ratio.toFixed(2) : "—"}</td>
+                      <td className="py-1.5 text-right tabular-nums">{row.max_drawdown_pct != null ? row.max_drawdown_pct.toFixed(2) : "—"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div className="flex justify-end gap-2 mt-6">
+              <button onClick={onClose} className="px-3.5 py-1.5 text-xs font-semibold rounded-lg bg-gray-100 text-gray-600 hover:bg-gray-200 transition-colors focus:outline-none">
+                Close
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function FillDivergenceStat({ label, value }: { label: string; value: string }) {
+  return (
+    <div>
+      <div className="text-[10px] uppercase tracking-wide text-gray-400">{label}</div>
+      <div className="text-sm font-semibold text-gray-700">{value}</div>
+    </div>
+  );
+}
+
+function FillDivergencePanel({ strategyId }: { strategyId: number }) {
+  const [data, setData] = useState<FillDivergenceResponse | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    api.getFillDivergence(strategyId).then((d) => { if (!cancelled) setData(d); }).catch(() => { if (!cancelled) setData(null); });
+    return () => { cancelled = true; };
+  }, [strategyId]);
+
+  // Nothing to show until this strategy has actually run in BOTH modes at least once each.
+  if (!data || data.paper.legs_closed === 0 || data.live.legs_closed === 0) return null;
+
+  return (
+    <div className="rounded-xl border p-4 bg-white shadow-sm" style={{ borderColor: C.border2 }}>
+      <div className="flex items-center gap-1.5 text-xs font-bold text-gray-700 uppercase tracking-wider mb-1">
+        Paper vs Live
+      </div>
+      <p className="text-[11px] text-gray-400 mb-3">
+        Realized P&amp;L-per-unit and holding time, compared across every closed leg in each mode.
+        {!data.comparable && " Fewer than 5 closed legs on one side — treat this as a rough signal, not a reliable comparison yet."}
+      </p>
+      <div className="grid grid-cols-4 gap-3">
+        <FillDivergenceStat label={`Paper avg P&L/unit (${data.paper.legs_closed})`} value={data.paper.avg_pnl_per_unit != null ? `₹${data.paper.avg_pnl_per_unit.toFixed(2)}` : "—"} />
+        <FillDivergenceStat label={`Live avg P&L/unit (${data.live.legs_closed})`} value={data.live.avg_pnl_per_unit != null ? `₹${data.live.avg_pnl_per_unit.toFixed(2)}` : "—"} />
+        <FillDivergenceStat label="Paper avg hold" value={data.paper.avg_holding_hours != null ? `${data.paper.avg_holding_hours.toFixed(1)}h` : "—"} />
+        <FillDivergenceStat label="Live avg hold" value={data.live.avg_holding_hours != null ? `${data.live.avg_holding_hours.toFixed(1)}h` : "—"} />
+      </div>
+      {data.avg_pnl_per_unit_diff != null && (
+        <div className="mt-3 text-xs font-medium" style={{ color: data.avg_pnl_per_unit_diff >= 0 ? C.green : C.red }}>
+          Live is {data.avg_pnl_per_unit_diff >= 0 ? "outperforming" : "underperforming"} paper by ₹{Math.abs(data.avg_pnl_per_unit_diff).toFixed(2)}/unit on average.
+        </div>
+      )}
+    </div>
+  );
+}
+
 function EquityCurveChart({ curve }: { curve: number[] }) {
   if (curve.length < 2) return null;
   const w = 640, h = 120, pad = 8;
@@ -438,6 +642,50 @@ function BacktestStatsPanel({ result }: { result: BacktestResult }) {
         <BacktestStatTile label="Avg Loss" value={result.avg_loss_pct != null ? `${result.avg_loss_pct.toFixed(2)}%` : "—"} positive={false} />
         <BacktestStatTile label="Max Streak (W / L)" value={`${result.max_consecutive_wins ?? 0} / ${result.max_consecutive_losses ?? 0}`} />
       </div>
+
+      {result.monte_carlo && (
+        <div className="mt-4">
+          <div className="text-[11px] uppercase tracking-wide text-gray-400 mb-1.5">
+            Monte Carlo ({result.monte_carlo.n_simulations.toLocaleString("en-IN")} reorderings of these same trades)
+          </div>
+          <div className="grid grid-cols-4 gap-2">
+            <BacktestStatTile
+              label="Return, Worst 5% of Orderings"
+              value={`${result.monte_carlo.total_return_pct_p5 >= 0 ? "+" : ""}${result.monte_carlo.total_return_pct_p5.toFixed(2)}%`}
+              positive={result.monte_carlo.total_return_pct_p5 >= 0}
+            />
+            <BacktestStatTile
+              label="Return, Median Ordering"
+              value={`${result.monte_carlo.total_return_pct_p50 >= 0 ? "+" : ""}${result.monte_carlo.total_return_pct_p50.toFixed(2)}%`}
+              positive={result.monte_carlo.total_return_pct_p50 >= 0}
+            />
+            <BacktestStatTile label="Max Drawdown, Median" value={`${result.monte_carlo.max_drawdown_pct_p50.toFixed(2)}%`} positive={false} />
+            <BacktestStatTile label="Max Drawdown, Worst 5%" value={`${result.monte_carlo.max_drawdown_pct_p95.toFixed(2)}%`} positive={false} />
+          </div>
+          <div className="text-xs text-gray-400 mt-1.5">
+            {result.monte_carlo.probability_of_loss_pct.toFixed(1)}% of reorderings of this strategy's own realized trades ended in an overall loss.
+          </div>
+        </div>
+      )}
+
+      {result.walk_forward && result.walk_forward.folds.length > 0 && (
+        <div className="mt-4">
+          <div className="text-[11px] uppercase tracking-wide text-gray-400 mb-1.5">
+            Fold Consistency ({result.walk_forward.profitable_fold_count}/{result.walk_forward.n_folds} sequential periods profitable)
+          </div>
+          <div className="grid gap-1.5" style={{ gridTemplateColumns: `repeat(${result.walk_forward.n_folds}, 1fr)` }}>
+            {result.walk_forward.folds.map((f, i) => (
+              <div key={i} className="px-2.5 py-2 rounded-lg border text-center" style={{ borderColor: C.border2, background: C.hover }}>
+                <div className="text-[9px] text-gray-400 mb-0.5">{fmtDate(f.from_date)} – {fmtDate(f.to_date)}</div>
+                <div className="text-sm font-semibold" style={{ color: (f.total_return_pct ?? 0) >= 0 ? C.green : C.red }}>
+                  {f.total_return_pct != null ? `${f.total_return_pct >= 0 ? "+" : ""}${f.total_return_pct.toFixed(1)}%` : "—"}
+                </div>
+                <div className="text-[9px] text-gray-400">{f.cycles_tested} cycles · {f.win_rate_pct.toFixed(0)}% won</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {result.per_symbol && Object.keys(result.per_symbol).length > 1 && (
         <div className="mt-4">
@@ -759,6 +1007,10 @@ export default function StrategiesView({
   const [backtestResult, setBacktestResult] = useState<BacktestResult | null>(null);
   const [backtestError, setBacktestError] = useState("");
   const [showBacktestModal, setShowBacktestModal] = useState(false);
+  const [optimizeTarget, setOptimizeTarget] = useState<CustomStrategy | null>(null);
+  const [optimizing, setOptimizing] = useState(false);
+  const [optimizeResult, setOptimizeResult] = useState<OptimizeResponse | null>(null);
+  const [optimizeError, setOptimizeError] = useState("");
   const [backtestRuns, setBacktestRuns] = useState<BacktestRunSummary[]>([]);
   const [compareRunIds, setCompareRunIds] = useState<number[]>([]);
   const [strategiesPage, setStrategiesPage] = useState(1);
@@ -1130,6 +1382,20 @@ export default function StrategiesView({
     }
   };
 
+  const runOptimize = async (paramGrid: Record<string, number[]>, fromDate: string, toDate: string, slippagePct: number) => {
+    if (!optimizeTarget) return;
+    setOptimizing(true);
+    setOptimizeError("");
+    try {
+      const data = await api.optimizeCustomStrategy(optimizeTarget.id, paramGrid, fromDate || null, toDate || null, slippagePct);
+      setOptimizeResult(data);
+    } catch (err) {
+      setOptimizeError(err instanceof Error ? err.message : "Optimization request failed.");
+    } finally {
+      setOptimizing(false);
+    }
+  };
+
   // Abort ongoing backtest poll when the component unmounts.
   useEffect(() => {
     return () => { backtestPollAbortRef.current?.abort(); };
@@ -1152,6 +1418,23 @@ export default function StrategiesView({
     }
   };
   void handleDeleteStrategy;
+
+  const [cloning, setCloning] = useState(false);
+  const handleCloneStrategy = async (strategy: CustomStrategy) => {
+    setCloning(true);
+    try {
+      const clone = await api.cloneCustomStrategy(strategy.id);
+      onRefresh();
+      setSelectedStrategy(clone);
+      setBacktestResult(null);
+      setBacktestError("");
+      toast.success(`Cloned as "${clone.name}" — edit freely without touching the original.`);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to clone strategy.");
+    } finally {
+      setCloning(false);
+    }
+  };
 
   const canTransitionTo = (currentStatus: string, targetStatus: string) => {
     // Mirrors routes_custom_strategies.py::update_strategy_status's
@@ -1423,6 +1706,22 @@ export default function StrategiesView({
                       <BarChart3 size={14} /> {backtesting ? "Backtesting..." : selectedStrategy.backtest_return_pct != null ? "Re-run Backtest" : "Backtest"}
                     </button>
                   )}
+                  {/* Optimize — same eligibility as Backtest above (POST /{id}/optimize rejects the same cases). */}
+                  {isLegBased(selectedStrategy) && selectedStrategy.instrument_type !== "COMMODITY" &&
+                    (canTransitionTo(selectedStrategy.status, "BACKTESTING") ||
+                    ["PAPER_TRADING", "PAUSED"].includes(selectedStrategy.status)) && (
+                    <button onClick={() => { setOptimizeTarget(selectedStrategy); setOptimizeResult(null); setOptimizeError(""); }}
+                      className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-semibold transition-colors focus:outline-none hover:opacity-80"
+                      style={{ backgroundColor: C.hover, color: C.text }}>
+                      <BarChart3 size={14} /> Optimize
+                    </button>
+                  )}
+                  {/* Clone — always available regardless of status; the clone always starts fresh at DRAFT. */}
+                  <button onClick={() => handleCloneStrategy(selectedStrategy)} disabled={cloning}
+                    className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-semibold transition-colors focus:outline-none hover:opacity-80 disabled:opacity-50"
+                    style={{ backgroundColor: C.hover, color: C.text }}>
+                    <Copy size={14} /> {cloning ? "Cloning..." : "Clone"}
+                  </button>
                   {backtesting && backtestProgress && (
                     <div className="flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-semibold" style={{ backgroundColor: C.hover, color: C.text }}>
                       <div className="w-20 h-1.5 rounded-full overflow-hidden" style={{ backgroundColor: C.border2 }}>
@@ -1994,6 +2293,8 @@ export default function StrategiesView({
               </div>
             )}
 
+            <FillDivergencePanel strategyId={selectedStrategy.id} />
+
             {backtestError && (
               <div className="px-4 py-3 rounded-xl border text-sm" style={{ backgroundColor: C.sellBg, borderColor: C.red, color: C.red }}>{backtestError}</div>
             )}
@@ -2042,6 +2343,17 @@ export default function StrategiesView({
           strategyName={selectedStrategy.name}
           result={backtestResult}
           onClose={() => setShowBacktestModal(false)}
+        />
+      )}
+
+      {optimizeTarget && (
+        <OptimizeModal
+          strategy={optimizeTarget}
+          onClose={() => { setOptimizeTarget(null); setOptimizeResult(null); setOptimizeError(""); }}
+          onRun={runOptimize}
+          result={optimizeResult}
+          error={optimizeError}
+          running={optimizing}
         />
       )}
 

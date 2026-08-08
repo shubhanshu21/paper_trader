@@ -83,6 +83,10 @@ function EntryNode({ data }: NodeProps) {
               options={[
                 { value: "MA_CROSSOVER", label: "Moving-average crossover" },
                 { value: "IV_RANK", label: "IV rank" },
+                { value: "RSI", label: "RSI" },
+                { value: "BOLLINGER_WIDTH", label: "Bollinger band width" },
+                { value: "VIX_THRESHOLD", label: "India VIX level" },
+                { value: "OI_BUILDUP", label: "Futures OI change" },
               ]}
             />
             {condition.type === "MA_CROSSOVER" ? (
@@ -97,6 +101,75 @@ function EntryNode({ data }: NodeProps) {
                   <PortalDropdown value={condition.ma_direction} onChange={(v) => onConditionChange({ ma_direction: v as "ABOVE" | "BELOW" })}
                     options={[{ value: "ABOVE", label: "Above MA" }, { value: "BELOW", label: "Below MA" }]} />
                 </div>
+              </div>
+            ) : condition.type === "RSI" ? (
+              <div className="grid grid-cols-2 gap-1.5">
+                <div>
+                  <label style={fieldLabel}>Period (days)</label>
+                  <input type="number" min={2} value={condition.rsi_period_days}
+                    onChange={(e) => onConditionChange({ rsi_period_days: e.target.value })} className={numInput} />
+                </div>
+                <div>
+                  <label style={fieldLabel}>RSI is</label>
+                  <PortalDropdown value={condition.rsi_operator} onChange={(v) => onConditionChange({ rsi_operator: v as "ABOVE" | "BELOW" })}
+                    options={[{ value: "ABOVE", label: "Above" }, { value: "BELOW", label: "Below" }]} />
+                </div>
+                <div>
+                  <label style={fieldLabel}>Threshold (0-100)</label>
+                  <input type="number" min={0} max={100} value={condition.rsi_threshold}
+                    onChange={(e) => onConditionChange({ rsi_threshold: e.target.value })} className={numInput} />
+                </div>
+              </div>
+            ) : condition.type === "BOLLINGER_WIDTH" ? (
+              <div className="grid grid-cols-2 gap-1.5">
+                <div>
+                  <label style={fieldLabel}>Period (days)</label>
+                  <input type="number" min={2} value={condition.bb_period_days}
+                    onChange={(e) => onConditionChange({ bb_period_days: e.target.value })} className={numInput} />
+                </div>
+                <div>
+                  <label style={fieldLabel}>Width is</label>
+                  <PortalDropdown value={condition.bb_operator} onChange={(v) => onConditionChange({ bb_operator: v as "ABOVE" | "BELOW" })}
+                    options={[{ value: "ABOVE", label: "Above (expanding)" }, { value: "BELOW", label: "Below (squeeze)" }]} />
+                </div>
+                <div>
+                  <label style={fieldLabel}>Threshold (%)</label>
+                  <input type="number" min={0} step={0.5} value={condition.bb_threshold}
+                    onChange={(e) => onConditionChange({ bb_threshold: e.target.value })} className={numInput} />
+                </div>
+              </div>
+            ) : condition.type === "VIX_THRESHOLD" ? (
+              <div className="grid grid-cols-2 gap-1.5">
+                <div>
+                  <label style={fieldLabel}>India VIX is</label>
+                  <PortalDropdown value={condition.vix_operator} onChange={(v) => onConditionChange({ vix_operator: v as "ABOVE" | "BELOW" })}
+                    options={[{ value: "ABOVE", label: "Above" }, { value: "BELOW", label: "Below" }]} />
+                </div>
+                <div>
+                  <label style={fieldLabel}>Level</label>
+                  <input type="number" min={0} step={0.5} value={condition.vix_threshold}
+                    onChange={(e) => onConditionChange({ vix_threshold: e.target.value })} className={numInput} />
+                </div>
+                <p className="col-span-2 text-[10px] text-gray-400 leading-snug">Live-trading only — no historical VIX series to backtest against.</p>
+              </div>
+            ) : condition.type === "OI_BUILDUP" ? (
+              <div className="grid grid-cols-2 gap-1.5">
+                <div>
+                  <label style={fieldLabel}>Period (days)</label>
+                  <input type="number" min={2} value={condition.oi_period_days}
+                    onChange={(e) => onConditionChange({ oi_period_days: e.target.value })} className={numInput} />
+                </div>
+                <div>
+                  <label style={fieldLabel}>OI change is</label>
+                  <PortalDropdown value={condition.oi_operator} onChange={(v) => onConditionChange({ oi_operator: v as "ABOVE" | "BELOW" })}
+                    options={[{ value: "ABOVE", label: "Above" }, { value: "BELOW", label: "Below" }]} />
+                </div>
+                <div>
+                  <label style={fieldLabel}>Threshold (%)</label>
+                  <input type="number" step={0.5} value={condition.oi_threshold}
+                    onChange={(e) => onConditionChange({ oi_threshold: e.target.value })} className={numInput} />
+                </div>
+                <p className="col-span-2 text-[10px] text-gray-400 leading-snug">Live-trading only — not evaluated in options backtests yet.</p>
               </div>
             ) : (
               <div className="grid grid-cols-2 gap-1.5">

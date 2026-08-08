@@ -305,6 +305,30 @@ class CustomRuleBacktestEngine:
         moving_average = sum(closes_before_today[-period:]) / period
         return today_price > moving_average if direction == "ABOVE" else today_price < moving_average
 
+    def _equity_rsi_condition_met(self, closes_before_today: list[float], period: int, operator: str, threshold: float, today_price: float) -> bool:
+        """Live/backtest parity for api/custom_strategy_scheduler.py's _rsi_condition_met() — RSI computed over the trailing closes PLUS today's own price as the final data point (RSI needs a full series of deltas up to "now," unlike the MA condition above which excludes today by design)."""
+        if not isinstance(period, int) or period < 2 or len(closes_before_today) < period:
+            return False
+        from utils.technical_indicators import rsi
+        series = [*closes_before_today[-period:], today_price]
+        latest = rsi(series, period)[-1]
+        if latest is None:
+            return False
+        return latest > threshold if operator == "ABOVE" else latest < threshold
+
+    def _equity_bollinger_width_condition_met(self, closes_before_today: list[float], period: int, operator: str, threshold: float, today_price: float) -> bool:
+        """Live/backtest parity for api/custom_strategy_scheduler.py's _bollinger_width_condition_met()."""
+        if not isinstance(period, int) or period < 2 or len(closes_before_today) < period - 1:
+            return False
+        from utils.technical_indicators import bollinger_bands
+        series = [*closes_before_today[-(period - 1):], today_price] if period > 1 else [today_price]
+        if len(series) < period:
+            return False
+        latest = bollinger_bands(series, period)[-1]
+        if latest is None or latest["width"] is None:
+            return False
+        return latest["width"] > threshold if operator == "ABOVE" else latest["width"] < threshold
+
     def run_equity(
         self,
         from_date: str | None,
@@ -316,8 +340,9 @@ class CustomRuleBacktestEngine:
         different shape from _run_one_cycle()'s per-expiry-cycle walk
         (equity has no expiry to discover cycles from at all). Re-enters
         as soon as no position is open and the entry condition is met
-        (IMMEDIATE/AT_TIME = any day; CONDITIONAL/MA_CROSSOVER computed
-        for real off this symbol's own historical closes), holds until
+        (IMMEDIATE/AT_TIME = any day; CONDITIONAL/MA_CROSSOVER/RSI/
+        BOLLINGER_WIDTH computed for real off this symbol's own historical
+        closes), holds until
         take_profit_pct/stop_loss_pct fires. AT_TIME's clock-time and
         BEFORE_EXPIRY are meaningless at this daily-EOD-bhavcopy
         granularity (equity has no expiry) — both are treated as
@@ -351,6 +376,10 @@ class CustomRuleBacktestEngine:
                 eligible = entry_rule.get("mode") != "CONDITIONAL"
                 if entry_rule.get("mode") == "CONDITIONAL" and condition.get("type") == "MA_CROSSOVER":
                     eligible = self._equity_ma_condition_met(closes_so_far, condition.get("period_days"), condition.get("direction"), price)
+                elif entry_rule.get("mode") == "CONDITIONAL" and condition.get("type") == "RSI":
+                    eligible = self._equity_rsi_condition_met(closes_so_far, condition.get("period_days"), condition.get("operator"), condition.get("threshold"), price)
+                elif entry_rule.get("mode") == "CONDITIONAL" and condition.get("type") == "BOLLINGER_WIDTH":
+                    eligible = self._equity_bollinger_width_condition_met(closes_so_far, condition.get("period_days"), condition.get("operator"), condition.get("threshold"), price)
                 if eligible:
                     try:
                         strategy = RuleBasedStrategy(

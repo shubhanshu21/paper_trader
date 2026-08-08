@@ -18,7 +18,7 @@ export type StrikeMode = "ATM" | "OTM_PERCENT" | "OTM_POINTS" | "FIXED" | "PREMI
 export type ExpiryModeOverride = "" | "WEEKLY" | "MONTHLY"; // "" = inherit the strategy default
 export type SizingMode = "LOTS" | "RISK_PCT";
 export type EntryMode = "IMMEDIATE" | "AT_TIME" | "CONDITIONAL" | "BEFORE_EXPIRY";
-export type ConditionType = "MA_CROSSOVER" | "IV_RANK";
+export type ConditionType = "MA_CROSSOVER" | "IV_RANK" | "RSI" | "BOLLINGER_WIDTH" | "VIX_THRESHOLD" | "OI_BUILDUP";
 export type Weekday = "MON" | "TUE" | "WED" | "THU" | "FRI" | "SAT" | "SUN";
 
 export interface LegForm {
@@ -53,10 +53,25 @@ export interface ConditionForm {
   ma_direction: "ABOVE" | "BELOW";
   iv_operator: "ABOVE" | "BELOW";
   iv_threshold: string;
+  rsi_period_days: string;
+  rsi_operator: "ABOVE" | "BELOW";
+  rsi_threshold: string;
+  bb_period_days: string;
+  bb_operator: "ABOVE" | "BELOW";
+  bb_threshold: string;
+  vix_operator: "ABOVE" | "BELOW";
+  vix_threshold: string;
+  oi_period_days: string;
+  oi_operator: "ABOVE" | "BELOW";
+  oi_threshold: string;
 }
 
 export const newCondition = (): ConditionForm => ({
   type: "MA_CROSSOVER", ma_period_days: "20", ma_direction: "ABOVE", iv_operator: "ABOVE", iv_threshold: "50",
+  rsi_period_days: "14", rsi_operator: "BELOW", rsi_threshold: "30",
+  bb_period_days: "20", bb_operator: "BELOW", bb_threshold: "5",
+  vix_operator: "ABOVE", vix_threshold: "20",
+  oi_period_days: "5", oi_operator: "ABOVE", oi_threshold: "10",
 });
 
 export interface BeforeExpiryForm {

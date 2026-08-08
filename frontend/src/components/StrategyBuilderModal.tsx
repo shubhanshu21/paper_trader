@@ -63,6 +63,18 @@ function conditionFromEditable(entry: EditableStrategy["rules"] extends null ? n
   if (condition.type === "MA_CROSSOVER") {
     return { ...c, type: "MA_CROSSOVER", ma_period_days: String(condition.period_days), ma_direction: condition.direction };
   }
+  if (condition.type === "RSI") {
+    return { ...c, type: "RSI", rsi_period_days: String(condition.period_days), rsi_operator: condition.operator, rsi_threshold: String(condition.threshold) };
+  }
+  if (condition.type === "BOLLINGER_WIDTH") {
+    return { ...c, type: "BOLLINGER_WIDTH", bb_period_days: String(condition.period_days), bb_operator: condition.operator, bb_threshold: String(condition.threshold * 100) };
+  }
+  if (condition.type === "VIX_THRESHOLD") {
+    return { ...c, type: "VIX_THRESHOLD", vix_operator: condition.operator, vix_threshold: String(condition.threshold) };
+  }
+  if (condition.type === "OI_BUILDUP") {
+    return { ...c, type: "OI_BUILDUP", oi_period_days: String(condition.period_days), oi_operator: condition.operator, oi_threshold: String(condition.threshold) };
+  }
   return { ...c, type: "IV_RANK", iv_operator: condition.operator, iv_threshold: String(condition.threshold) };
 }
 
@@ -162,6 +174,18 @@ function legPhrase(leg: LegForm): string {
 function conditionPhrase(condition: ConditionForm): string {
   if (condition.type === "MA_CROSSOVER") {
     return `price is ${condition.ma_direction === "ABOVE" ? "above" : "below"} its ${condition.ma_period_days}-day moving average`;
+  }
+  if (condition.type === "RSI") {
+    return `${condition.rsi_period_days}-day RSI is ${condition.rsi_operator === "ABOVE" ? "above" : "below"} ${condition.rsi_threshold}`;
+  }
+  if (condition.type === "BOLLINGER_WIDTH") {
+    return `${condition.bb_period_days}-day Bollinger band width is ${condition.bb_operator === "ABOVE" ? "above" : "below"} ${condition.bb_threshold}%`;
+  }
+  if (condition.type === "VIX_THRESHOLD") {
+    return `India VIX is ${condition.vix_operator === "ABOVE" ? "above" : "below"} ${condition.vix_threshold}`;
+  }
+  if (condition.type === "OI_BUILDUP") {
+    return `${condition.oi_period_days}-day OI change is ${condition.oi_operator === "ABOVE" ? "above" : "below"} ${condition.oi_threshold}%`;
   }
   return `IV rank is ${condition.iv_operator === "ABOVE" ? "above" : "below"} ${condition.iv_threshold}`;
 }
@@ -403,6 +427,14 @@ export default function StrategyBuilderModal({ onClose, onSuccess, editStrategy,
             condition:
               condition.type === "MA_CROSSOVER"
                 ? { type: "MA_CROSSOVER", period_days: parseInt(condition.ma_period_days) || 20, direction: condition.ma_direction }
+                : condition.type === "RSI"
+                ? { type: "RSI", period_days: parseInt(condition.rsi_period_days) || 14, operator: condition.rsi_operator, threshold: parseFloat(condition.rsi_threshold) || 30 }
+                : condition.type === "BOLLINGER_WIDTH"
+                ? { type: "BOLLINGER_WIDTH", period_days: parseInt(condition.bb_period_days) || 20, operator: condition.bb_operator, threshold: (parseFloat(condition.bb_threshold) || 5) / 100 }
+                : condition.type === "VIX_THRESHOLD"
+                ? { type: "VIX_THRESHOLD", operator: condition.vix_operator, threshold: parseFloat(condition.vix_threshold) || 20 }
+                : condition.type === "OI_BUILDUP"
+                ? { type: "OI_BUILDUP", period_days: parseInt(condition.oi_period_days) || 5, operator: condition.oi_operator, threshold: parseFloat(condition.oi_threshold) || 10 }
                 : { type: "IV_RANK", operator: condition.iv_operator, threshold: parseFloat(condition.iv_threshold) || 50 },
           }
         : entryMode === "BEFORE_EXPIRY"
@@ -579,6 +611,10 @@ export default function StrategyBuilderModal({ onClose, onSuccess, editStrategy,
                     options={[
                       { value: "MA_CROSSOVER", label: "Moving-average crossover" },
                       { value: "IV_RANK", label: "IV rank" },
+                      { value: "RSI", label: "RSI" },
+                      { value: "BOLLINGER_WIDTH", label: "Bollinger band width" },
+                      { value: "VIX_THRESHOLD", label: "India VIX level" },
+                      { value: "OI_BUILDUP", label: "Futures OI change" },
                     ]}
                   />
                   {condition.type === "MA_CROSSOVER" ? (
@@ -605,6 +641,144 @@ export default function StrategyBuilderModal({ onClose, onSuccess, editStrategy,
                           ]}
                         />
                       </div>
+                    </div>
+                  ) : condition.type === "RSI" ? (
+                    <div className="grid grid-cols-3 gap-2">
+                      <div>
+                        <label style={{ fontSize: 10, color: C.muted, marginBottom: 4, display: "block" }}>Period (days)</label>
+                        <input
+                          type="number"
+                          min={2}
+                          value={condition.rsi_period_days}
+                          onChange={(e) => setCondition(c => ({ ...c, rsi_period_days: e.target.value }))}
+                          className="w-full px-2 py-1.5 border rounded-lg text-xs font-semibold outline-none focus:border-orange-500"
+                          style={{ borderColor: C.border2 }}
+                        />
+                      </div>
+                      <div>
+                        <label style={{ fontSize: 10, color: C.muted, marginBottom: 4, display: "block" }}>RSI is</label>
+                        <Select
+                          value={condition.rsi_operator}
+                          onChange={(v) => setCondition(c => ({ ...c, rsi_operator: v as "ABOVE" | "BELOW" }))}
+                          options={[
+                            { value: "ABOVE", label: "Above" },
+                            { value: "BELOW", label: "Below" },
+                          ]}
+                        />
+                      </div>
+                      <div>
+                        <label style={{ fontSize: 10, color: C.muted, marginBottom: 4, display: "block" }}>Threshold (0-100)</label>
+                        <input
+                          type="number"
+                          min={0}
+                          max={100}
+                          value={condition.rsi_threshold}
+                          onChange={(e) => setCondition(c => ({ ...c, rsi_threshold: e.target.value }))}
+                          className="w-full px-2 py-1.5 border rounded-lg text-xs font-semibold outline-none focus:border-orange-500"
+                          style={{ borderColor: C.border2 }}
+                        />
+                      </div>
+                    </div>
+                  ) : condition.type === "BOLLINGER_WIDTH" ? (
+                    <div className="grid grid-cols-3 gap-2">
+                      <div>
+                        <label style={{ fontSize: 10, color: C.muted, marginBottom: 4, display: "block" }}>Period (days)</label>
+                        <input
+                          type="number"
+                          min={2}
+                          value={condition.bb_period_days}
+                          onChange={(e) => setCondition(c => ({ ...c, bb_period_days: e.target.value }))}
+                          className="w-full px-2 py-1.5 border rounded-lg text-xs font-semibold outline-none focus:border-orange-500"
+                          style={{ borderColor: C.border2 }}
+                        />
+                      </div>
+                      <div>
+                        <label style={{ fontSize: 10, color: C.muted, marginBottom: 4, display: "block" }}>Width is</label>
+                        <Select
+                          value={condition.bb_operator}
+                          onChange={(v) => setCondition(c => ({ ...c, bb_operator: v as "ABOVE" | "BELOW" }))}
+                          options={[
+                            { value: "ABOVE", label: "Above (expanding)" },
+                            { value: "BELOW", label: "Below (squeeze)" },
+                          ]}
+                        />
+                      </div>
+                      <div>
+                        <label style={{ fontSize: 10, color: C.muted, marginBottom: 4, display: "block" }}>Threshold (%)</label>
+                        <input
+                          type="number"
+                          min={0}
+                          step={0.5}
+                          value={condition.bb_threshold}
+                          onChange={(e) => setCondition(c => ({ ...c, bb_threshold: e.target.value }))}
+                          className="w-full px-2 py-1.5 border rounded-lg text-xs font-semibold outline-none focus:border-orange-500"
+                          style={{ borderColor: C.border2 }}
+                        />
+                      </div>
+                    </div>
+                  ) : condition.type === "VIX_THRESHOLD" ? (
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <label style={{ fontSize: 10, color: C.muted, marginBottom: 4, display: "block" }}>India VIX is</label>
+                        <Select
+                          value={condition.vix_operator}
+                          onChange={(v) => setCondition(c => ({ ...c, vix_operator: v as "ABOVE" | "BELOW" }))}
+                          options={[
+                            { value: "ABOVE", label: "Above" },
+                            { value: "BELOW", label: "Below" },
+                          ]}
+                        />
+                      </div>
+                      <div>
+                        <label style={{ fontSize: 10, color: C.muted, marginBottom: 4, display: "block" }}>Level (e.g. 20)</label>
+                        <input
+                          type="number"
+                          min={0}
+                          step={0.5}
+                          value={condition.vix_threshold}
+                          onChange={(e) => setCondition(c => ({ ...c, vix_threshold: e.target.value }))}
+                          className="w-full px-2 py-1.5 border rounded-lg text-xs font-semibold outline-none focus:border-orange-500"
+                          style={{ borderColor: C.border2 }}
+                        />
+                      </div>
+                      <p className="col-span-2 text-[10px] text-gray-400 leading-snug">Live-trading only — there's no historical India VIX series to backtest this condition against.</p>
+                    </div>
+                  ) : condition.type === "OI_BUILDUP" ? (
+                    <div className="grid grid-cols-3 gap-2">
+                      <div>
+                        <label style={{ fontSize: 10, color: C.muted, marginBottom: 4, display: "block" }}>Period (days)</label>
+                        <input
+                          type="number"
+                          min={2}
+                          value={condition.oi_period_days}
+                          onChange={(e) => setCondition(c => ({ ...c, oi_period_days: e.target.value }))}
+                          className="w-full px-2 py-1.5 border rounded-lg text-xs font-semibold outline-none focus:border-orange-500"
+                          style={{ borderColor: C.border2 }}
+                        />
+                      </div>
+                      <div>
+                        <label style={{ fontSize: 10, color: C.muted, marginBottom: 4, display: "block" }}>OI change is</label>
+                        <Select
+                          value={condition.oi_operator}
+                          onChange={(v) => setCondition(c => ({ ...c, oi_operator: v as "ABOVE" | "BELOW" }))}
+                          options={[
+                            { value: "ABOVE", label: "Above" },
+                            { value: "BELOW", label: "Below" },
+                          ]}
+                        />
+                      </div>
+                      <div>
+                        <label style={{ fontSize: 10, color: C.muted, marginBottom: 4, display: "block" }}>Threshold (%)</label>
+                        <input
+                          type="number"
+                          step={0.5}
+                          value={condition.oi_threshold}
+                          onChange={(e) => setCondition(c => ({ ...c, oi_threshold: e.target.value }))}
+                          className="w-full px-2 py-1.5 border rounded-lg text-xs font-semibold outline-none focus:border-orange-500"
+                          style={{ borderColor: C.border2 }}
+                        />
+                      </div>
+                      <p className="col-span-3 text-[10px] text-gray-400 leading-snug">Live-trading only — the options backtest engine doesn't evaluate this condition yet.</p>
                     </div>
                   ) : (
                     <div className="grid grid-cols-2 gap-2">

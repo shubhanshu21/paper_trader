@@ -84,19 +84,19 @@ export default function MarketDepthModal({ instrument, mode, onClose, onTrade }:
             >
               S
             </button>
-            <button className="p-1.5 rounded text-gray-400 hover:text-gray-700 hover:bg-gray-100" title="Order book">
+            <button className="p-1.5 rounded text-gray-400 hover:text-gray-700 hover:bg-gray-100" title="Order book" aria-label="Order book">
               <AlignLeft size={15} />
             </button>
-            <button className="p-1.5 rounded text-gray-400 hover:text-gray-700 hover:bg-gray-100" title="Chart">
+            <button className="p-1.5 rounded text-gray-400 hover:text-gray-700 hover:bg-gray-100" title="Chart" aria-label="Chart">
               <TrendingUp size={15} />
             </button>
-            <button className="p-1.5 rounded text-gray-400 hover:text-gray-700 hover:bg-gray-100" title="Remove">
+            <button className="p-1.5 rounded text-gray-400 hover:text-gray-700 hover:bg-gray-100" title="Remove" aria-label="Remove">
               <Trash2 size={15} />
             </button>
-            <button className="p-1.5 rounded text-gray-400 hover:text-gray-700 hover:bg-gray-100" title="More">
+            <button className="p-1.5 rounded text-gray-400 hover:text-gray-700 hover:bg-gray-100" title="More" aria-label="More options">
               <MoreHorizontal size={15} />
             </button>
-            <button onClick={onClose} className="p-1.5 ml-1 rounded text-gray-400 hover:text-gray-700 hover:bg-gray-100" title="Close">
+            <button onClick={onClose} className="p-1.5 ml-1 rounded text-gray-400 hover:text-gray-700 hover:bg-gray-100" title="Close" aria-label="Close">
               <X size={15} />
             </button>
           </div>

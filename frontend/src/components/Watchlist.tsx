@@ -31,6 +31,11 @@ interface LocalWatchlistItem {
   watchlist_id?: number;
   added_at?: string | null;
   order_index?: number | null;
+  // Set to "up"/"down" for ~600ms right after a tick moves the price, so
+  // the LTP cell can flash instead of relying on the eye to catch a
+  // silent number change — cleared by a per-symbol timeout in the /ws/market
+  // handler below.
+  flash?: "up" | "down" | null;
 }
 
 
@@ -50,6 +55,25 @@ export default function Watchlist({ onTrade }: WatchlistProps) {
 
   const searchContainerRef = useRef<HTMLDivElement>(null);
   const searchRequestIdRef = useRef(0);
+  const flashTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+  const searchInputRef = useRef<HTMLInputElement>(null);
+
+  // Global "/" focuses symbol search — same convention TradingView/Slack use
+  // — except while the user is already typing somewhere else (another
+  // input/textarea/contenteditable), where "/" must stay a literal
+  // character.
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== "/" || e.metaKey || e.ctrlKey || e.altKey) return;
+      const active = document.activeElement as HTMLElement | null;
+      const isTyping = active && (active.tagName === "INPUT" || active.tagName === "TEXTAREA" || active.isContentEditable);
+      if (isTyping) return;
+      e.preventDefault();
+      searchInputRef.current?.focus();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
 
   // Load user watchlist from backend
   useEffect(() => {
@@ -94,6 +118,7 @@ export default function Watchlist({ onTrade }: WatchlistProps) {
     let cancelled = false;
     let reconnectTimer: ReturnType<typeof setTimeout>;
     let ws: WebSocket;
+    const flashTimers = flashTimersRef.current;
 
     const connect = () => {
       if (cancelled) return;
@@ -112,7 +137,17 @@ export default function Watchlist({ onTrade }: WatchlistProps) {
               const ref = item.refPrice > 0 ? item.refPrice : newLtp;
               const chg = newLtp - ref;
               const pct = ref > 0 ? (chg / ref) * 100 : 0;
-              return { ...item, ltp: newLtp, chg, pct, hasQuote: true };
+              const flash: LocalWatchlistItem["flash"] =
+                item.hasQuote && newLtp !== item.ltp ? (newLtp > item.ltp ? "up" : "down") : item.flash;
+              if (flash && flash !== item.flash) {
+                const key = msg.instrument_key;
+                clearTimeout(flashTimersRef.current.get(key));
+                flashTimersRef.current.set(key, setTimeout(() => {
+                  setWatchlist(cur => cur.map(w => (w.instrument_key === key ? { ...w, flash: null } : w)));
+                  flashTimersRef.current.delete(key);
+                }, 600));
+              }
+              return { ...item, ltp: newLtp, chg, pct, hasQuote: true, flash };
             }));
           }
         } catch (err) {
@@ -130,6 +165,8 @@ export default function Watchlist({ onTrade }: WatchlistProps) {
       cancelled = true;
       clearTimeout(reconnectTimer);
       ws?.close();
+      flashTimers.forEach(clearTimeout);
+      flashTimers.clear();
     };
   }, [instrumentKeysKey]);
 
@@ -301,13 +338,29 @@ export default function Watchlist({ onTrade }: WatchlistProps) {
       >
         <Search size={14} style={{ color: C.faint }} />
         <input
+          ref={searchInputRef}
           placeholder="Search (infy bse, nifty fut, etc)"
           className="flex-1 text-[13px] bg-transparent outline-none py-1 text-gray-700"
           value={searchQuery}
           onChange={(e) => setSearchQuery(e.target.value)}
           onFocus={() => setIsFocused(true)}
+          onKeyDown={(e) => {
+            if (e.key === "Escape") {
+              setSearchQuery("");
+              setIsFocused(false);
+              (e.target as HTMLInputElement).blur();
+            }
+          }}
         />
         {searching && <span className="w-3 h-3 border-2 border-orange-500 border-t-transparent rounded-full animate-spin" />}
+        {!searchQuery && !isFocused && (
+          <kbd
+            className="hidden sm:inline-flex items-center justify-center text-[10px] font-semibold rounded px-1.5 py-0.5 text-gray-400 border"
+            style={{ borderColor: C.border2 }}
+          >
+            /
+          </kbd>
+        )}
         {(searchQuery || isFocused) && (
           <button
             onClick={() => {
@@ -336,6 +389,12 @@ export default function Watchlist({ onTrade }: WatchlistProps) {
               onMouseLeave={() => setHover(null)}
               onFocus={() => setHover(i)}
               onBlur={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setHover(null); }}
+              onKeyDown={(e) => {
+                // Kite's own convention for a focused watchlist row: B = buy, S = sell.
+                if (e.key === "b" || e.key === "B") { e.preventDefault(); handleWatchlistTrade(w, "BUY"); }
+                else if (e.key === "s" || e.key === "S") { e.preventDefault(); handleWatchlistTrade(w, "SELL"); }
+              }}
+              title="Press B to buy, S to sell"
               className="relative flex items-center justify-between px-4 cursor-pointer transition-colors border-b focus:outline-none focus-visible:ring-1"
               style={{
                 height: 40,
@@ -374,7 +433,13 @@ export default function Watchlist({ onTrade }: WatchlistProps) {
                   <span className="w-3 flex justify-center" style={{ color: col }}>
                     {!w.hasQuote || w.chg === 0 ? null : up ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
                   </span>
-                  <span className="w-16 text-right font-normal" style={{ color: col }}>
+                  <span
+                    className="w-16 text-right font-normal rounded px-0.5 -mx-0.5 transition-colors duration-500"
+                    style={{
+                      color: col,
+                      backgroundColor: w.flash === "up" ? "#e6f7ee" : w.flash === "down" ? "#fdeceb" : "transparent",
+                    }}
+                  >
                     {w.ltp === 0 ? "" : inr(w.ltp)}
                   </span>
                 </div>

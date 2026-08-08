@@ -386,6 +386,133 @@ def _ma_crossover_met(broker, symbol: str, instrument_type: str, condition: dict
     return ltp > moving_average if direction == "ABOVE" else ltp < moving_average
 
 
+def _fetch_recent_closes(symbol: str, instrument_type: str, n: int) -> list[float]:
+    """Trailing `n` daily futures closes (oldest first), same fno_bhavcopy source _ma_crossover_met() reads — shared by _rsi_condition_met/_bollinger_width_condition_met below. Empty list on any lookup failure or insufficient history, never a partial/guessed series."""
+    future_instrument = "FUTIDX" if instrument_type == "INDEX" else "FUTSTK"
+    db = SessionLocal()
+    try:
+        rows = db.execute(
+            text(
+                "SELECT close FROM fno_bhavcopy WHERE symbol=:symbol AND instrument=:instrument "
+                "AND expiry_dt >= trade_date ORDER BY trade_date DESC LIMIT :n"
+            ),
+            {"symbol": symbol, "instrument": future_instrument, "n": n},
+        ).fetchall()
+    except Exception as exc:
+        log.warning("custom_strategy_scheduler: closes history lookup failed for %s: %s", symbol, exc)
+        return []
+    finally:
+        db.close()
+    closes = [float(r[0]) for r in rows if r[0] is not None]
+    closes.reverse()  # DESC query -> oldest first, matching rsi()/bollinger_bands()'s expected order
+    return closes
+
+
+def _rsi_condition_met(symbol: str, instrument_type: str, condition: dict) -> bool:
+    """entry.condition {"type": "RSI", "period_days", "operator", "threshold"} — see utils/technical_indicators.py:rsi(). Not enough history always means "not met," never a guess."""
+    period = condition.get("period_days")
+    operator = condition.get("operator")
+    threshold = condition.get("threshold")
+    if not isinstance(period, int) or period < 2 or operator not in ("ABOVE", "BELOW") or not isinstance(threshold, (int, float)):
+        return False
+
+    from utils.technical_indicators import rsi
+    closes = _fetch_recent_closes(symbol, instrument_type, period + 1)
+    if len(closes) < period + 1:
+        return False
+    latest = rsi(closes, period)[-1]
+    if latest is None:
+        return False
+    return latest > threshold if operator == "ABOVE" else latest < threshold
+
+
+def _bollinger_width_condition_met(symbol: str, instrument_type: str, condition: dict) -> bool:
+    """entry.condition {"type": "BOLLINGER_WIDTH", "period_days", "operator", "threshold"} — see utils/technical_indicators.py:bollinger_bands(). Not enough history always means "not met," never a guess."""
+    period = condition.get("period_days")
+    operator = condition.get("operator")
+    threshold = condition.get("threshold")
+    if not isinstance(period, int) or period < 2 or operator not in ("ABOVE", "BELOW") or not isinstance(threshold, (int, float)):
+        return False
+
+    from utils.technical_indicators import bollinger_bands
+    closes = _fetch_recent_closes(symbol, instrument_type, period)
+    if len(closes) < period:
+        return False
+    latest = bollinger_bands(closes, period)[-1]
+    if latest is None or latest["width"] is None:
+        return False
+    return latest["width"] > threshold if operator == "ABOVE" else latest["width"] < threshold
+
+
+_INDIA_VIX_SYMBOL = "INDIA VIX"
+
+
+def _vix_threshold_condition_met(broker, condition: dict) -> bool:
+    """
+    entry.condition {"type": "VIX_THRESHOLD", "operator", "threshold"} —
+    live India VIX index LEVEL (not a percentile), resolved the same way
+    every other index (NIFTY, BANKNIFTY) is via InstrumentCache.resolve_key
+    against the cached Upstox instrument master (NSE_INDEX|India VIX).
+    Live-scheduler only — there's no historical VIX series in this
+    dataset to backtest against, so this condition simply never triggers
+    in a backtest (same "not met" default every other condition here uses
+    when it can't be evaluated safely, never a fabricated value).
+    """
+    operator = condition.get("operator")
+    threshold = condition.get("threshold")
+    if operator not in ("ABOVE", "BELOW") or not isinstance(threshold, (int, float)):
+        return False
+    try:
+        vix_key = broker.resolve_instrument_key(_INDIA_VIX_SYMBOL)
+        vix_ltp = broker.get_ltp(vix_key) if vix_key else None
+    except Exception as exc:
+        log.warning("custom_strategy_scheduler: India VIX lookup failed: %s", exc)
+        return False
+    if vix_ltp is None:
+        return False
+    return vix_ltp > threshold if operator == "ABOVE" else vix_ltp < threshold
+
+
+def _oi_buildup_condition_met(symbol: str, instrument_type: str, condition: dict) -> bool:
+    """
+    entry.condition {"type": "OI_BUILDUP", "period_days", "operator",
+    "threshold"} — %% change in the underlying's own FUTSTK/FUTIDX open
+    interest (fno_bhavcopy.open_int) over the trailing period_days, same
+    fno_bhavcopy source _fetch_recent_closes() reads for RSI/Bollinger.
+    Live-scheduler only, same rationale as _vix_threshold_condition_met.
+    """
+    period = condition.get("period_days")
+    operator = condition.get("operator")
+    threshold = condition.get("threshold")
+    if not isinstance(period, int) or period < 2 or operator not in ("ABOVE", "BELOW") or not isinstance(threshold, (int, float)):
+        return False
+
+    future_instrument = "FUTIDX" if instrument_type == "INDEX" else "FUTSTK"
+    db = SessionLocal()
+    try:
+        rows = db.execute(
+            text(
+                "SELECT open_int FROM fno_bhavcopy WHERE symbol=:symbol AND instrument=:instrument "
+                "AND expiry_dt >= trade_date AND open_int IS NOT NULL ORDER BY trade_date DESC LIMIT :n"
+            ),
+            {"symbol": symbol, "instrument": future_instrument, "n": period + 1},
+        ).fetchall()
+    except Exception as exc:
+        log.warning("custom_strategy_scheduler: OI history lookup failed for %s: %s", symbol, exc)
+        return False
+    finally:
+        db.close()
+
+    oi_values = [int(r[0]) for r in rows if r[0] is not None]
+    if len(oi_values) < 2:
+        return False  # not enough history yet — safe default, no entry
+    latest, oldest = oi_values[0], oi_values[-1]
+    if oldest == 0:
+        return False
+    oi_change_pct = (latest - oldest) / oldest * 100.0
+    return oi_change_pct > threshold if operator == "ABOVE" else oi_change_pct < threshold
+
+
 def _iv_rank_condition_met(symbol: str, condition: dict) -> bool:
     """entry.condition {"type": "IV_RANK", "operator", "threshold"} — see utils/iv_rank.py. None (insufficient history) always means "not met," never a fabricated trigger."""
     operator = condition.get("operator")
@@ -408,6 +535,14 @@ def _entry_condition_met(broker, symbol: str, condition: dict, instrument_type: 
             return _ma_crossover_met(broker, symbol, instrument_type, condition)
         if condition_type == "IV_RANK":
             return _iv_rank_condition_met(symbol, condition)
+        if condition_type == "RSI":
+            return _rsi_condition_met(symbol, instrument_type, condition)
+        if condition_type == "BOLLINGER_WIDTH":
+            return _bollinger_width_condition_met(symbol, instrument_type, condition)
+        if condition_type == "VIX_THRESHOLD":
+            return _vix_threshold_condition_met(broker, condition)
+        if condition_type == "OI_BUILDUP":
+            return _oi_buildup_condition_met(symbol, instrument_type, condition)
     except Exception as exc:
         log.warning("custom_strategy_scheduler: entry condition check failed for %s (%s): %s", symbol, condition_type, exc)
     return False
@@ -530,6 +665,7 @@ def _try_entry(db, strategy: CustomStrategy, broker) -> None:
                 rule_strategy = RuleBasedStrategy(
                     broker=broker, audit=_audit, kill_switch=_kill_switch, rate_limiter=_rate_limiter,
                     symbol=symbol, rules=rules, product=_resolve_product(rules), user_id=strategy.user_id,
+                    strategy_id=strategy.id,
                 )
                 result = rule_strategy.run(leg_indices=leg_indices)
             except Exception as exc:

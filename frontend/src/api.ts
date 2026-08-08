@@ -62,6 +62,43 @@ export interface BacktestResult {
   sample_size_warning?: "limited" | "very_limited" | null;
   per_symbol?: Record<string, PerSymbolBreakdown>;
   skipped_symbols?: Record<string, string>;
+  monte_carlo?: MonteCarloStats | null;
+  walk_forward?: WalkForwardStats | null;
+}
+
+// Trade-order-resampling Monte Carlo — see
+// backend/utils/backtest_stats.py:compute_monte_carlo_stats(). null when
+// there were fewer than 5 cycles to reorder.
+export interface MonteCarloStats {
+  n_simulations: number;
+  total_return_pct_p5: number;
+  total_return_pct_p25: number;
+  total_return_pct_p50: number;
+  total_return_pct_p75: number;
+  total_return_pct_p95: number;
+  max_drawdown_pct_p50: number;
+  max_drawdown_pct_p95: number;
+  probability_of_loss_pct: number;
+}
+
+// Fold-consistency breakdown — see
+// backend/utils/backtest_stats.py:compute_walk_forward_stats(). null when
+// there weren't at least 2*n_folds cycles to split.
+export interface WalkForwardFold {
+  from_date: string;
+  to_date: string;
+  cycles_tested: number;
+  win_rate_pct: number;
+  total_return_pct: number | null;
+  sharpe_ratio: number | null;
+  max_drawdown_pct: number;
+}
+
+export interface WalkForwardStats {
+  n_folds: number;
+  folds: WalkForwardFold[];
+  profitable_fold_count: number;
+  consistency_score: number | null;
 }
 
 export interface BacktestRunSummary {
@@ -816,6 +853,10 @@ export const api = {
     }),
   deleteCustomStrategy: (id: number) =>
     request<{ status: string }>(`/api/custom-strategies/${id}`, { method: 'DELETE' }),
+  cloneCustomStrategy: (id: number) =>
+    request<CustomStrategy>(`/api/custom-strategies/${id}/clone`, { method: 'POST' }),
+  getFillDivergence: (id: number) =>
+    request<FillDivergenceResponse>(`/api/custom-strategies/${id}/fill-divergence`),
   getPortfolioGreeks: () => request<PortfolioGreeksResponse>('/api/custom-strategies/portfolio/greeks'),
   getPortfolioMargin: () => request<PortfolioMarginResponse>('/api/custom-strategies/portfolio/margin'),
   closeCustomStrategyPosition: (id: number) =>
@@ -840,4 +881,46 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ from_date: fromDate, to_date: toDate, slippage_pct: slippagePct }),
     }),
+  optimizeCustomStrategy: (id: number, paramGrid: Record<string, number[]>, fromDate: string | null, toDate: string | null, slippagePct: number = 0.1) =>
+    request<OptimizeResponse>(`/api/custom-strategies/${id}/optimize`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ from_date: fromDate, to_date: toDate, slippage_pct: slippagePct, param_grid: paramGrid }),
+    }),
 };
+
+// Grid-search parameter sweep — see backend/utils/optimizer.py.
+export interface OptimizeResultRow {
+  params: Record<string, number>;
+  cycles_tested: number;
+  win_rate_pct: number | null;
+  total_return_pct: number | null;
+  sharpe_ratio: number | null;
+  max_drawdown_pct: number | null;
+  error?: string;
+}
+
+export interface OptimizeResponse {
+  strategy_id: number;
+  combinations_tested: number;
+  max_combinations: number;
+  results: OptimizeResultRow[];
+}
+
+// Paper-vs-live realized fill comparison — see backend/utils/fill_divergence.py.
+export interface FillDivergenceModeSummary {
+  legs_closed: number;
+  avg_pnl_per_unit: number | null;
+  avg_holding_hours: number | null;
+  exit_reason_breakdown: Record<string, number>;
+  sample_size_warning: "very_limited" | null;
+}
+
+export interface FillDivergenceResponse {
+  strategy_id: number;
+  paper: FillDivergenceModeSummary;
+  live: FillDivergenceModeSummary;
+  avg_pnl_per_unit_diff: number | null;
+  avg_holding_hours_diff: number | null;
+  comparable: boolean;
+}

@@ -77,8 +77,29 @@ Rules JSON shape::
           "type": "IV_RANK",
           "operator": "ABOVE" | "BELOW",
           "threshold": <number> 0-100                  # IV rank over the trailing ~1y window; see
-        } | null,                                       #   utils/iv_rank.py — returns "not triggered" (never
+        } | {                                           #   utils/iv_rank.py — returns "not triggered" (never
                                                          #   a fabricated signal) until enough history exists
+          "type": "RSI",
+          "period_days": <int> >= 2,
+          "operator": "ABOVE" | "BELOW",
+          "threshold": <number> 0-100                  # Wilder's RSI on daily closes; see
+        } | {                                           #   utils/technical_indicators.py:rsi()
+          "type": "BOLLINGER_WIDTH",
+          "period_days": <int> >= 2,
+          "operator": "ABOVE" | "BELOW",
+          "threshold": <number> > 0                     # (upper-lower)/middle, e.g. 0.05 = 5%; BELOW threshold
+        } | {                                            #   = volatility squeeze; see technical_indicators.py:bollinger_bands()
+          "type": "VIX_THRESHOLD",
+          "operator": "ABOVE" | "BELOW",
+          "threshold": <number> > 0                     # India VIX index LEVEL (e.g. 20, not a percentile) —
+        } | {                                            #   live NSE_INDEX|India VIX LTP; live-scheduler only,
+                                                         #   no historical VIX series exists to backtest against
+          "type": "OI_BUILDUP",
+          "period_days": <int> >= 2,
+          "operator": "ABOVE" | "BELOW",
+          "threshold": <number>                         # %% change in the underlying's FUTSTK/FUTIDX open
+        } | null,                                       #   interest over the trailing period_days; see
+                                                         #   fno_bhavcopy.open_int — live-scheduler only
         "before_expiry": {                              # required iff BEFORE_EXPIRY — "enter close to expiry"
           "days_before_expiry": <int> >= 1,             #   instead of right after the PREVIOUS expiry rolls
           "weekday": "MON".."SUN" | null,               #   over (which is what AT_TIME alone would do). Window
@@ -194,9 +215,13 @@ _EXPIRY_MODES = {"WEEKLY", "MONTHLY"}
 _PRODUCT_MODES = {"DELIVERY", "INTRADAY"}
 _SIZING_MODES = {"LOTS", "RISK_PCT"}
 _TRAIL_TYPES = {"points", "percentage"}
-_CONDITION_TYPES = {"MA_CROSSOVER", "IV_RANK"}
+_CONDITION_TYPES = {"MA_CROSSOVER", "IV_RANK", "RSI", "BOLLINGER_WIDTH", "VIX_THRESHOLD", "OI_BUILDUP"}
 _MA_DIRECTIONS = {"ABOVE", "BELOW"}
 _IV_RANK_OPERATORS = {"ABOVE", "BELOW"}
+_RSI_OPERATORS = {"ABOVE", "BELOW"}
+_BOLLINGER_WIDTH_OPERATORS = {"ABOVE", "BELOW"}
+_VIX_THRESHOLD_OPERATORS = {"ABOVE", "BELOW"}
+_OI_BUILDUP_OPERATORS = {"ABOVE", "BELOW"}
 _WEEKDAYS = {"MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"}
 
 MAX_LEGS = 8
@@ -266,6 +291,39 @@ def _validate_entry_condition(entry: dict) -> list[str]:
         threshold = condition.get("threshold")
         if not isinstance(threshold, (int, float)) or not (0 <= threshold <= 100):
             return ["IV rank 'threshold' must be a number between 0 and 100."]
+    elif condition["type"] == "RSI":
+        period = condition.get("period_days")
+        if not isinstance(period, int) or period < 2:
+            return ["RSI 'period_days' must be a whole number >= 2."]
+        if condition.get("operator") not in _RSI_OPERATORS:
+            return [f"RSI 'operator' must be one of {sorted(_RSI_OPERATORS)}."]
+        threshold = condition.get("threshold")
+        if not isinstance(threshold, (int, float)) or not (0 <= threshold <= 100):
+            return ["RSI 'threshold' must be a number between 0 and 100."]
+    elif condition["type"] == "BOLLINGER_WIDTH":
+        period = condition.get("period_days")
+        if not isinstance(period, int) or period < 2:
+            return ["Bollinger width 'period_days' must be a whole number >= 2."]
+        if condition.get("operator") not in _BOLLINGER_WIDTH_OPERATORS:
+            return [f"Bollinger width 'operator' must be one of {sorted(_BOLLINGER_WIDTH_OPERATORS)}."]
+        threshold = condition.get("threshold")
+        if not isinstance(threshold, (int, float)) or threshold <= 0:
+            return ["Bollinger width 'threshold' must be a positive number (band width as a fraction of the middle band, e.g. 0.05 = 5%)."]
+    elif condition["type"] == "VIX_THRESHOLD":
+        if condition.get("operator") not in _VIX_THRESHOLD_OPERATORS:
+            return [f"VIX threshold 'operator' must be one of {sorted(_VIX_THRESHOLD_OPERATORS)}."]
+        threshold = condition.get("threshold")
+        if not isinstance(threshold, (int, float)) or threshold <= 0:
+            return ["VIX threshold 'threshold' must be a positive number (India VIX index level, e.g. 20)."]
+    elif condition["type"] == "OI_BUILDUP":
+        period = condition.get("period_days")
+        if not isinstance(period, int) or period < 2:
+            return ["OI buildup 'period_days' must be a whole number >= 2."]
+        if condition.get("operator") not in _OI_BUILDUP_OPERATORS:
+            return [f"OI buildup 'operator' must be one of {sorted(_OI_BUILDUP_OPERATORS)}."]
+        threshold = condition.get("threshold")
+        if not isinstance(threshold, (int, float)):
+            return ["OI buildup 'threshold' must be a number (percent change in open interest over period_days, e.g. 10 = +10%)."]
     return []
 
 
@@ -512,6 +570,14 @@ def describe_rules(rules: dict | None, symbol: str = "") -> str:
             sentence += f", enter when price crosses {c.get('direction', '?').lower()} its {c.get('period_days')}-day average"
         elif c.get("type") == "IV_RANK":
             sentence += f", enter when IV rank is {c.get('operator', '?').lower()} {c.get('threshold')}"
+        elif c.get("type") == "RSI":
+            sentence += f", enter when {c.get('period_days')}-day RSI is {c.get('operator', '?').lower()} {c.get('threshold')}"
+        elif c.get("type") == "BOLLINGER_WIDTH":
+            sentence += f", enter when {c.get('period_days')}-day Bollinger band width is {c.get('operator', '?').lower()} {c.get('threshold')}"
+        elif c.get("type") == "VIX_THRESHOLD":
+            sentence += f", enter when India VIX is {c.get('operator', '?').lower()} {c.get('threshold')}"
+        elif c.get("type") == "OI_BUILDUP":
+            sentence += f", enter when {c.get('period_days')}-day OI change is {c.get('operator', '?').lower()} {c.get('threshold')}%"
     elif entry.get("mode") == "BEFORE_EXPIRY" and entry.get("before_expiry"):
         b = entry["before_expiry"]
         sentence += f", enter within {b.get('days_before_expiry')} day(s) of expiry"

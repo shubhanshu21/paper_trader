@@ -15,6 +15,7 @@ return over the same span (see custom_engine.compute_nifty_benchmark_return),
 not S&P 500 or any other index.
 """
 import math
+import random
 import statistics
 from datetime import date
 
@@ -270,4 +271,158 @@ def compute_backtest_stats(
         "benchmark_return_pct": round(benchmark_return_pct, 2) if benchmark_return_pct is not None else None,
         "alpha_pct": alpha_pct,
         "sample_size_warning": sample_size_warning,
+    }
+
+
+def compute_monte_carlo_stats(
+    cycles: list[dict],
+    n_simulations: int = 1000,
+    seed: int | None = None,
+) -> dict | None:
+    """
+    Monte Carlo robustness check via trade-ORDER resampling — same practice
+    TradingView's own Monte Carlo tooling uses: reshuffle the sequence of
+    the REALIZED per-cycle pnl_pct_of_premium returns `n_simulations`
+    times (no synthetic trades invented, no bootstrap-with-replacement
+    duplication) and replay each shuffled order through the same
+    compounding math compute_backtest_stats uses. A single backtest run
+    only shows one historical ordering of wins/losses; this answers "how
+    much did that ordering alone drive the headline numbers" — a strategy
+    whose 5th-percentile outcome is still profitable is far more
+    trustworthy than one whose single realized run happened to front-load
+    its wins.
+
+    Returns None if there are fewer than 5 cycles — too few distinct
+    orderings for a distribution to mean anything (matches
+    compute_backtest_stats's own 'very_limited' sample-size threshold).
+
+    Returns:
+        n_simulations: echoed back for the caller/frontend to display.
+        total_return_pct_p5/p25/p50/p75/p95: percentiles of each
+            simulated path's overall %% return on the compounded curve.
+        max_drawdown_pct_p50/p95: percentiles of each path's max
+            peak-to-trough %% drawdown (ratio-based, on the compounded
+            capital curve — NOT the additive-curve max_drawdown_pct
+            compute_backtest_stats returns, which is a different, coarser
+            measure kept only for backward compat there).
+        probability_of_loss_pct: %% of simulated paths that ended below
+            the starting notional — 0% means every reordering of this
+            strategy's own realized trades stayed profitable.
+    """
+    if len(cycles) < 5:
+        return None
+
+    pct_returns = [c["pnl_pct_of_premium"] for c in cycles]
+    rng = random.Random(seed)
+
+    final_returns_pct = []
+    max_drawdowns_pct = []
+    for _ in range(n_simulations):
+        order = pct_returns[:]
+        rng.shuffle(order)
+
+        capital = _NOTIONAL_START
+        peak_capital = _NOTIONAL_START
+        max_dd = 0.0
+        for pct in order:
+            capital *= (1.0 + pct / 100.0)
+            peak_capital = max(peak_capital, capital)
+            max_dd = max(max_dd, (peak_capital - capital) / peak_capital * 100.0)
+
+        final_returns_pct.append((capital / _NOTIONAL_START - 1.0) * 100.0)
+        max_drawdowns_pct.append(max_dd)
+
+    def _percentile(values: list[float], p: float) -> float:
+        ordered = sorted(values)
+        idx = min(int(p / 100.0 * len(ordered)), len(ordered) - 1)
+        return round(ordered[idx], 2)
+
+    loss_paths = sum(1 for r in final_returns_pct if r < 0)
+
+    return {
+        "n_simulations": n_simulations,
+        "total_return_pct_p5": _percentile(final_returns_pct, 5),
+        "total_return_pct_p25": _percentile(final_returns_pct, 25),
+        "total_return_pct_p50": _percentile(final_returns_pct, 50),
+        "total_return_pct_p75": _percentile(final_returns_pct, 75),
+        "total_return_pct_p95": _percentile(final_returns_pct, 95),
+        "max_drawdown_pct_p50": _percentile(max_drawdowns_pct, 50),
+        "max_drawdown_pct_p95": _percentile(max_drawdowns_pct, 95),
+        "probability_of_loss_pct": round(loss_paths / n_simulations * 100.0, 1),
+    }
+
+
+def compute_walk_forward_stats(
+    cycles: list[dict],
+    rules: dict | None = None,
+    n_folds: int = 4,
+) -> dict | None:
+    """
+    Fold-consistency analysis: splits the chronologically-ordered `cycles`
+    into `n_folds` sequential, contiguous, roughly-equal windows and runs
+    compute_backtest_stats() independently on each — so a strategy whose
+    headline numbers are really just one lucky early fold carrying the
+    whole result is visible as a fold-by-fold breakdown, not hidden inside
+    a single aggregate.
+
+    This is NOT walk-forward PARAMETER optimization (train on fold N,
+    re-optimize parameters, validate on fold N+1) — that requires a
+    parameter search step this codebase doesn't have yet. This is the
+    narrower, still-useful piece: does this strategy's performance hold up
+    consistently across sequential slices of its own history, or is it
+    concentrated in one period? Named accordingly so it isn't mistaken for
+    the fuller technique.
+
+    Returns None if there are fewer than `n_folds * 2` cycles — each fold
+    needs at least 2 cycles for compute_backtest_stats to produce anything
+    beyond the empty-cycles defaults.
+
+    Returns:
+        n_folds: echoed back (may be fewer than requested if cycles don't
+            divide evenly — the last fold absorbs the remainder).
+        folds: list of {from_date, to_date, cycles_tested, win_rate_pct,
+            total_return_pct, sharpe_ratio, max_drawdown_pct}, oldest
+            first.
+        profitable_fold_count: how many folds had total_return_pct > 0.
+        consistency_score: profitable_fold_count / n_folds — 1.0 means
+            every single fold was independently profitable, not just the
+            aggregate.
+    """
+    if len(cycles) < n_folds * 2:
+        return None
+
+    fold_size = len(cycles) // n_folds
+    folds = []
+    profitable_fold_count = 0
+
+    for i in range(n_folds):
+        start = i * fold_size
+        # Last fold absorbs any remainder from integer division so every
+        # cycle is covered exactly once.
+        end = len(cycles) if i == n_folds - 1 else start + fold_size
+        fold_cycles = cycles[start:end]
+        if not fold_cycles:
+            continue
+
+        stats = compute_backtest_stats(fold_cycles, rules=rules)
+        wins = sum(1 for c in fold_cycles if c["won"])
+        is_profitable = (stats["total_return_pct"] or 0) > 0
+        if is_profitable:
+            profitable_fold_count += 1
+
+        folds.append({
+            "from_date": fold_cycles[0]["entry_date"],
+            "to_date": max(c["exit_date"] for c in fold_cycles),
+            "cycles_tested": len(fold_cycles),
+            "win_rate_pct": round(wins / len(fold_cycles) * 100.0, 2),
+            "total_return_pct": stats["total_return_pct"],
+            "sharpe_ratio": stats["sharpe_ratio"],
+            "max_drawdown_pct": stats["max_drawdown_pct"],
+        })
+
+    return {
+        "n_folds": len(folds),
+        "folds": folds,
+        "profitable_fold_count": profitable_fold_count,
+        "consistency_score": round(profitable_fold_count / len(folds), 2) if folds else None,
     }
