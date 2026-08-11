@@ -48,6 +48,7 @@ Each tick (called from strategy_scheduler.py, only during real NSE market hours)
 """
 import json
 import threading
+import time
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
@@ -55,9 +56,9 @@ from sqlalchemy import text, update
 
 from compliance.sebi_rules import (
     AuditTrail,
-    OrderRateLimiter,
     assert_market_is_open,
     get_global_kill_switch,
+    get_rate_limiter_for,
 )
 from db.engine import SessionLocal
 from db.models import CustomStrategy, CustomStrategyPosition
@@ -86,7 +87,6 @@ _IST = ZoneInfo("Asia/Kolkata")
 
 _audit = AuditTrail(audit_log_path="logs/custom_strategy_audit.log")
 _kill_switch = get_global_kill_switch()
-_rate_limiter = OrderRateLimiter(max_per_second=10)
 _brokers: dict | None = None
 # Lock protecting _brokers — the asyncio scheduler loop reads it from
 # the event-loop thread, while reset_brokers_cache() (called from the
@@ -661,9 +661,21 @@ def _try_entry(db, strategy: CustomStrategy, broker) -> None:
             if entry_mode == "BEFORE_EXPIRY" and not _before_expiry_eligible(entry_rule.get("before_expiry") or {}, current_expiry):
                 continue
 
+            # Re-check the strategy's live status right before placing a
+            # real order — `strategy` was loaded once at the top of this
+            # scheduler tick, so a user hitting Stop (routes_custom_strategies.py,
+            # a separate request running concurrently) after that load but
+            # before we get here would otherwise still get one more entry
+            # order placed on a strategy they already believed was stopped.
+            current_status = db.query(CustomStrategy.status).filter(CustomStrategy.id == strategy.id).scalar()
+            if current_status not in ("PAPER_TRADING", "LIVE"):
+                log.info("custom_strategy_scheduler: skipping entry for strategy %s (%s) — status changed to %s mid-tick.",
+                          strategy.id, strategy.name, current_status)
+                continue
+
             try:
                 rule_strategy = RuleBasedStrategy(
-                    broker=broker, audit=_audit, kill_switch=_kill_switch, rate_limiter=_rate_limiter,
+                    broker=broker, audit=_audit, kill_switch=_kill_switch, rate_limiter=get_rate_limiter_for(strategy.user_id),
                     symbol=symbol, rules=rules, product=_resolve_product(rules), user_id=strategy.user_id,
                     strategy_id=strategy.id,
                 )
@@ -692,9 +704,16 @@ def _try_entry(db, strategy: CustomStrategy, broker) -> None:
             # "% of deployed capital" means % of what the broker actually
             # blocked for this multi-leg basket, not % of premium
             # collected. Never guessed: None (unsupported broker, e.g.
-            # MockBroker/backtest, or a lookup failure) means those two
-            # exit checks simply never fire for this cycle — see
-            # _get_last_entered_margin/_try_exit.
+            # MockBroker/backtest, or a lookup failure after retrying) means
+            # those two exit checks simply never fire for this cycle — see
+            # _get_last_entered_margin/_try_exit. A couple of retries here
+            # (a broker hiccup right after order placement is exactly the
+            # kind of transient failure worth one immediate retry for)
+            # plus a user-facing warning when it's still unavailable AND
+            # this strategy actually configures a capital-% exit — without
+            # the warning, a configured stop-loss/take-profit silently
+            # never firing for the whole cycle is invisible until the user
+            # notices the position rode past where they expected it to exit.
             margin_at_entry = None
             option_instruments = [
                 {"instrument_key": leg["instrument_token"], "quantity": leg["quantity"],
@@ -702,11 +721,29 @@ def _try_entry(db, strategy: CustomStrategy, broker) -> None:
                 for leg in result["legs"] if leg["instrument_type"] == "OPTION"
             ]
             if option_instruments:
-                try:
-                    margin_at_entry = broker.get_basket_required_margin(option_instruments)
-                except Exception as exc:
-                    log.warning("custom_strategy_scheduler: basket margin lookup failed for strategy %s (%s) symbol %s: %s",
-                                strategy.id, strategy.name, symbol, exc)
+                last_margin_exc: Exception | None = None
+                for margin_attempt in range(1, 3):
+                    try:
+                        margin_at_entry = broker.get_basket_required_margin(option_instruments)
+                        last_margin_exc = None
+                        break
+                    except Exception as exc:
+                        last_margin_exc = exc
+                        log.warning("custom_strategy_scheduler: basket margin lookup failed for strategy %s (%s) symbol %s (attempt %d/2): %s",
+                                    strategy.id, strategy.name, symbol, margin_attempt, exc)
+                        if margin_attempt < 2:
+                            time.sleep(1.0)
+
+                if last_margin_exc is not None:
+                    exit_rule = rules.get("exit") or {}
+                    if exit_rule.get("take_profit_capital_pct") is not None or exit_rule.get("stop_loss_capital_pct") is not None:
+                        notify(
+                            "custom_strategy",
+                            f"Basket margin lookup failed for \"{strategy.name}\" ({symbol}) after entry — "
+                            f"{last_margin_exc}. This strategy's take-profit/stop-loss %-of-capital exit checks "
+                            f"will NOT fire for this cycle (no other exit rule is affected). Monitor this position manually.",
+                            level="warning", user_id=strategy.user_id,
+                        )
 
             _set_last_entered_expiry(strategy, symbol, mode, entered_expiry, margin_at_entry)
 
@@ -819,7 +856,7 @@ def _close_leg(db, strategy: CustomStrategy, broker, leg: CustomStrategyPosition
 
     opposite = broker.place_buy_order if leg.transaction_type == "SELL" else broker.place_sell_order
     try:
-        _rate_limiter.acquire()
+        get_rate_limiter_for(strategy.user_id).acquire()
         # MUST match the product this leg was actually ENTERED with (see
         # _resolve_product) — closing an MIS-entered leg with the NRML
         # default has no matching intraday position for the broker to net
@@ -828,7 +865,7 @@ def _close_leg(db, strategy: CustomStrategy, broker, leg: CustomStrategyPosition
         exit_order_id = opposite(
             instrument_token=leg.instrument_key, quantity=leg.quantity, product=product, order_type="MARKET",
             tag=f"CUSTOM_EXIT_{strategy.id}_{leg.leg_index}"[:20],
-            user_id=strategy.user_id,
+            user_id=strategy.user_id, is_close=True,
         )
     except Exception as exc:
         log.critical(

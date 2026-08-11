@@ -186,6 +186,10 @@ async def strategy_scheduler() -> None:
 
     log.info("strategy_scheduler: started.")
     while True:
+        # Set before the try so a failure anywhere inside it (including
+        # _market_is_open_now() itself) can't leave this unbound — it's
+        # read below, outside the try, to pick the sleep interval.
+        market_open = False
         try:
             market_open = _market_is_open_now()
             if market_open:

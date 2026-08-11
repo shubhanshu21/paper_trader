@@ -48,11 +48,11 @@ class FakeBroker:
     def get_ltp_batch(self, tokens):
         return dict.fromkeys(tokens, self.ltp)
 
-    def place_buy_order(self, instrument_token, quantity, order_type, tag, user_id=None, product="NRML"):
+    def place_buy_order(self, instrument_token, quantity, order_type, tag, user_id=None, product="NRML", is_close=False):
         self.orders_placed.append(instrument_token)
         return "ORD1"
 
-    def place_sell_order(self, instrument_token, quantity, order_type, tag, user_id=None, product="NRML"):
+    def place_sell_order(self, instrument_token, quantity, order_type, tag, user_id=None, product="NRML", is_close=False):
         self.orders_placed.append(instrument_token)
         return "ORD1"
 

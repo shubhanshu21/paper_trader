@@ -18,6 +18,7 @@ Like telegram_alert.send_telegram_alert(), this NEVER raises — a
 notification failure must never be able to break whatever background
 task is reporting through it.
 """
+import re
 import threading
 import time
 
@@ -29,6 +30,26 @@ log = get_logger(__name__)
 _DEDUP_WINDOW_SEC = 900  # 15 minutes — long enough to kill tick-by-tick spam, short enough that a same-day recurrence after a fix still gets reported.
 _recent_lock = threading.Lock()
 _recent: dict[tuple[int | None, str, str], float] = {}
+
+# Matches any run of digits (with an optional decimal point/comma group
+# inside it, e.g. "12,345.67") — used only to build the dedup key below.
+_NUMBER_RE = re.compile(r"[0-9][0-9,]*(?:\.[0-9]+)?")
+
+
+def _dedup_key_message(message: str) -> str:
+    """
+    Collapse every number in `message` down to a single placeholder before
+    it's used as (part of) the dedup key.
+
+    A retry-every-tick failure (e.g. a margin shortfall notify() call that
+    embeds the leg's CURRENT required-margin/available-balance figures)
+    would otherwise produce a technically-unique message on every single
+    call — those numbers move a little each tick — sailing straight past
+    the window below and defeating the dedup entirely. The stored/sent
+    message itself is untouched; only the key used to decide "have we
+    already said this" is normalized.
+    """
+    return _NUMBER_RE.sub("#", message)
 
 
 def notify(source: str, message: str, level: str = "error", user_id: int | None = None) -> None:
@@ -47,7 +68,7 @@ def notify(source: str, message: str, level: str = "error", user_id: int | None 
             per-user. Telegram delivery is unaffected either way (there's
             one shared Telegram chat for the whole panel).
     """
-    key = (user_id, source, message)
+    key = (user_id, source, _dedup_key_message(message))
     now = time.monotonic()
     with _recent_lock:
         last = _recent.get(key)

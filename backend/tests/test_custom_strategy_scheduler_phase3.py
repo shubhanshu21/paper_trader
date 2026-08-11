@@ -255,11 +255,11 @@ class FakeOrderBroker:
     def __init__(self):
         self.orders = []
 
-    def place_buy_order(self, instrument_token, quantity, order_type, tag, user_id, product="NRML"):
+    def place_buy_order(self, instrument_token, quantity, order_type, tag, user_id, product="NRML", is_close=False):
         self.orders.append(("BUY", instrument_token, quantity))
         return "ORD-1"
 
-    def place_sell_order(self, instrument_token, quantity, order_type, tag, user_id, product="NRML"):
+    def place_sell_order(self, instrument_token, quantity, order_type, tag, user_id, product="NRML", is_close=False):
         self.orders.append(("SELL", instrument_token, quantity))
         return "ORD-1"
 

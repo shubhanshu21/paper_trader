@@ -31,12 +31,13 @@ new cycle and the configured entry_time-entry_time_end window is open.
 """
 import json
 from datetime import date, datetime
+from zoneinfo import ZoneInfo
 
 from compliance.sebi_rules import (
     AuditTrail,
     ComplianceError,
-    OrderRateLimiter,
     get_global_kill_switch,
+    get_rate_limiter_for,
 )
 from db.models import CustomStrategy, CustomStrategyPosition
 from strategies.custom.delta_neutral_schema import get_setting
@@ -48,9 +49,10 @@ from utils.telegram_alert import alert_trade_closed, alert_trade_opened
 
 log = get_logger(__name__)
 
+_IST = ZoneInfo("Asia/Kolkata")
+
 _audit = AuditTrail(audit_log_path="logs/delta_neutral_audit.log")
 _kill_switch = get_global_kill_switch()
-_rate_limiter = OrderRateLimiter(max_per_second=10)
 
 
 def _mode_for_status(status: str) -> str:
@@ -233,7 +235,7 @@ def _tick_one_strategy(db, strategy: CustomStrategy, brokers: dict) -> None:
         return
 
     try:
-        engine = DeltaNeutralStrategy(broker=broker, audit=_audit, kill_switch=_kill_switch, rate_limiter=_rate_limiter, symbol=symbol, rules=rules, user_id=strategy.user_id)
+        engine = DeltaNeutralStrategy(broker=broker, audit=_audit, kill_switch=_kill_switch, rate_limiter=get_rate_limiter_for(strategy.user_id), symbol=symbol, rules=rules, user_id=strategy.user_id)
     except Exception as exc:
         log.error("delta_neutral_engine: could not build engine for strategy %s (%s): %s", strategy.id, strategy.name, exc)
         return
@@ -255,7 +257,7 @@ def _tick_one_strategy(db, strategy: CustomStrategy, brokers: dict) -> None:
                 log.warning("delta_neutral_engine: could not resolve 3rd weekly expiry for strategy %s (%s): %s", strategy.id, strategy.name, exc)
 
         exit_time = get_setting(rules, "third_weekly_exit_time")
-        if third_weekly and date.today().isoformat() == third_weekly and datetime.now().strftime("%H:%M") >= exit_time:
+        if third_weekly and datetime.now(_IST).date().isoformat() == third_weekly and datetime.now(_IST).strftime("%H:%M") >= exit_time:
             _close_all(db, strategy, engine, open_positions, "TIME_EXIT", mode_label, symbol)
             return
 
@@ -376,7 +378,7 @@ def _tick_one_strategy(db, strategy: CustomStrategy, brokers: dict) -> None:
     if marker.get("expiry") == current_expiry:
         return  # already traded this cycle
 
-    now_hhmm = datetime.now().strftime("%H:%M")
+    now_hhmm = datetime.now(_IST).strftime("%H:%M")
     entry_start, entry_end = get_setting(rules, "entry_time"), get_setting(rules, "entry_time_end")
     if not (entry_start <= now_hhmm < entry_end):
         return
@@ -401,7 +403,7 @@ def _tick_one_strategy(db, strategy: CustomStrategy, brokers: dict) -> None:
         log.warning("delta_neutral_engine: could not resolve 3rd weekly expiry for strategy %s (%s): %s", strategy.id, strategy.name, exc)
         third_weekly = None
 
-    _set_marker(strategy, expiry=current_expiry, date=date.today().isoformat(), margin=margin_at_entry, adjustment_stage=0, third_weekly_expiry=third_weekly)
+    _set_marker(strategy, expiry=current_expiry, date=datetime.now(_IST).date().isoformat(), margin=margin_at_entry, adjustment_stage=0, third_weekly_expiry=third_weekly)
     for i, leg in enumerate(legs):
         _add_leg(db, strategy, leg, i, mode_label)
     db.commit()

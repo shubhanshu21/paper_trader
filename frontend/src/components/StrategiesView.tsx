@@ -1206,10 +1206,19 @@ export default function StrategiesView({
   // the fresh closed-history row for it once, rather than guessing on a
   // timer.
   const prevOpenCountRef = useRef<number>(0);
+  // Tracks which strategy prevOpenCountRef's baseline belongs to — without
+  // this, switching to a strategy with a different open-leg count reads as
+  // "a leg just closed/reopened" against the PREVIOUS strategy's baseline
+  // and fires a spurious (switching to fewer legs) or missed (switching to
+  // more, then losing one) refetch.
+  const prevOpenCountStrategyIdRef = useRef<number | null>(null);
   useEffect(() => {
     if (!selectedStrategy) return;
-    if (liveOpenLegs.length < prevOpenCountRef.current) fetchClosedLegs(selectedStrategy);
+    if (prevOpenCountStrategyIdRef.current === selectedStrategy.id && liveOpenLegs.length < prevOpenCountRef.current) {
+      fetchClosedLegs(selectedStrategy);
+    }
     prevOpenCountRef.current = liveOpenLegs.length;
+    prevOpenCountStrategyIdRef.current = selectedStrategy.id;
   }, [liveOpenLegs.length, selectedStrategy]);
 
   // Pull whatever backtest result is already stored for this strategy (if

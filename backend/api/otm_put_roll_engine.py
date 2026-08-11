@@ -30,12 +30,13 @@ and this expiry cycle hasn't already been entered.
 """
 import json
 from datetime import date, datetime
+from zoneinfo import ZoneInfo
 
 from compliance.sebi_rules import (
     AuditTrail,
     ComplianceError,
-    OrderRateLimiter,
     get_global_kill_switch,
+    get_rate_limiter_for,
 )
 from db.models import CustomStrategy, CustomStrategyPosition
 from strategies.custom.otm_put_roll_schema import get_setting
@@ -48,9 +49,10 @@ from utils.telegram_alert import alert_trade_closed, alert_trade_opened
 
 log = get_logger(__name__)
 
+_IST = ZoneInfo("Asia/Kolkata")
+
 _audit = AuditTrail(audit_log_path="logs/otm_put_roll_audit.log")
 _kill_switch = get_global_kill_switch()
-_rate_limiter = OrderRateLimiter(max_per_second=10)
 
 
 def _mode_for_status(status: str) -> str:
@@ -68,7 +70,7 @@ def _get_cycle_marker(strategy: CustomStrategy) -> dict:
 
 
 def _set_cycle_marker(strategy: CustomStrategy, expiry: str, margin_at_entry: float | None) -> None:
-    strategy.last_entry_date = json.dumps({"expiry": expiry, "date": date.today().isoformat(), "margin": margin_at_entry})
+    strategy.last_entry_date = json.dumps({"expiry": expiry, "date": datetime.now(_IST).date().isoformat(), "margin": margin_at_entry})
 
 
 def _cycle_pnl(db, strategy_id: int, expiry: str, open_position: CustomStrategyPosition | None, open_now_price: float | None) -> float:
@@ -201,7 +203,7 @@ def _tick_one_strategy(db, strategy: CustomStrategy, brokers: dict) -> None:
         return
 
     try:
-        engine = OtmPutRollStrategy(broker=broker, audit=_audit, kill_switch=_kill_switch, rate_limiter=_rate_limiter, symbol=symbol, rules=rules, user_id=strategy.user_id)
+        engine = OtmPutRollStrategy(broker=broker, audit=_audit, kill_switch=_kill_switch, rate_limiter=get_rate_limiter_for(strategy.user_id), symbol=symbol, rules=rules, user_id=strategy.user_id)
     except Exception as exc:
         log.error("otm_put_roll_engine: could not build engine for strategy %s (%s): %s", strategy.id, strategy.name, exc)
         return
@@ -217,7 +219,7 @@ def _tick_one_strategy(db, strategy: CustomStrategy, brokers: dict) -> None:
         except (TypeError, ValueError):
             expiry_date = None
 
-        if expiry_date is not None and is_within_pre_expiry_buffer(date.today(), expiry_date, exit_days):
+        if expiry_date is not None and is_within_pre_expiry_buffer(datetime.now(_IST).date(), expiry_date, exit_days):
             if _close_position(db, strategy, engine, open_position, "EXPIRY"):
                 _log_close(strategy, mode_label, symbol, open_position, "EXPIRY")
             return

@@ -34,12 +34,13 @@ plain ATM, reusing the same hedges). Each tick:
 """
 import json
 from datetime import date, datetime
+from zoneinfo import ZoneInfo
 
 from compliance.sebi_rules import (
     AuditTrail,
     ComplianceError,
-    OrderRateLimiter,
     get_global_kill_switch,
+    get_rate_limiter_for,
 )
 from db.models import CustomStrategy, CustomStrategyPosition
 from strategies.custom.session_seller_schema import get_setting
@@ -51,9 +52,10 @@ from utils.telegram_alert import alert_trade_closed, alert_trade_opened
 
 log = get_logger(__name__)
 
+_IST = ZoneInfo("Asia/Kolkata")
+
 _audit = AuditTrail(audit_log_path="logs/session_seller_audit.log")
 _kill_switch = get_global_kill_switch()
-_rate_limiter = OrderRateLimiter(max_per_second=10)
 
 _WEEKDAY_NAMES = ["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"]
 
@@ -200,7 +202,7 @@ def _close_many(db, strategy: CustomStrategy, engine: SessionSellerStrategy, pos
 
 def _build_engine(broker, symbol: str, rules: dict, user_id: int | None) -> SessionSellerStrategy | None:
     try:
-        return SessionSellerStrategy(broker=broker, audit=_audit, kill_switch=_kill_switch, rate_limiter=_rate_limiter, symbol=symbol, rules=rules, user_id=user_id)
+        return SessionSellerStrategy(broker=broker, audit=_audit, kill_switch=_kill_switch, rate_limiter=get_rate_limiter_for(user_id), symbol=symbol, rules=rules, user_id=user_id)
     except Exception:
         return None
 
@@ -226,9 +228,9 @@ def _tick_one_strategy(db, strategy: CustomStrategy, brokers: dict) -> None:
         return
 
     mode_label = _mode_for_status(strategy.status)
-    today = date.today()
+    today = datetime.now(_IST).date()
     today_str = today.isoformat()
-    now_hhmm = datetime.now().strftime("%H:%M")
+    now_hhmm = datetime.now(_IST).strftime("%H:%M")
 
     # 1. SAFETY — never carry anything overnight, regardless of what today's schedule says.
     stale = [p for p in open_positions if _leg_meta(p).get("date") != today_str]

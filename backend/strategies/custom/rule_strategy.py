@@ -21,7 +21,7 @@ direction.
 """
 
 from broker.base_broker import BaseBroker
-from compliance.sebi_rules import AuditTrail, ComplianceError, KillSwitch, OrderRateLimiter
+from compliance.sebi_rules import AuditTrail, ComplianceError, KillSwitch, OrderRateLimiter, assert_kill_switch_not_active
 from strategies.common.base_strategy import BaseStrategy
 from utils.logger import get_logger
 from utils.option_utils import (
@@ -437,6 +437,11 @@ class RuleBasedStrategy(BaseStrategy):
         return f"{'CUSTOM' if prefix == 'L' else 'UNWIND'}_{resolved['option_type']}_{self.symbol[:6]}_{idx}"[:20]
 
     def _place_leg(self, resolved: dict, idx: int) -> str | None:
+        # Kill switch blocks NEW order flow (entries) only — never a close/
+        # unwind (_unwind_leg does not call this), which would strand real
+        # open risk with no way to exit while halted. Matches every other
+        # engine's precedent (e.g. smart_condor_strategy.py's `_place`).
+        assert_kill_switch_not_active(self.kill_switch)
         self.rate_limiter.acquire()
         place = self.broker.place_sell_order if resolved["transaction_type"] == "SELL" else self.broker.place_buy_order
         self.audit.record(
@@ -516,6 +521,7 @@ class RuleBasedStrategy(BaseStrategy):
                     order_type="MARKET",
                     tag=self._order_tag("U", resolved, idx),
                     user_id=self.user_id,
+                    is_close=True,
                 )
                 self.audit.record(
                     event_type="AUTO_UNWIND",

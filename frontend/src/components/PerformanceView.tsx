@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSelector } from "react-redux";
 import { BarChart3, Download, RefreshCw, TrendingUp, TrendingDown } from "lucide-react";
 import {
@@ -102,8 +102,15 @@ export default function PerformanceView() {
 
   const modeParam: PerformanceMode = mode === "all" ? undefined : mode;
 
+  // Guards against an earlier, slower request resolving AFTER a newer one
+  // — rapidly toggling period/mode could otherwise let a stale response
+  // land last and overwrite the screen with figures for the wrong filter
+  // combination. Same pattern as StrategiesView.tsx's payoffRequestIdRef.
+  const loadRequestIdRef = useRef(0);
+
   const load = useCallback(async () => {
     if (!userId) return;
+    const requestId = ++loadRequestIdRef.current;
     setLoading(true);
     setError(null);
     try {
@@ -112,14 +119,16 @@ export default function PerformanceView() {
         api.getPerformanceAnalytics(userId, modeParam),
         api.getTradeJournal({ period, mode: modeParam, limit: 100 }),
       ]);
+      if (loadRequestIdRef.current !== requestId) return;
       setMetrics(m);
       setAnalytics(a);
       setEntries(j.entries || []);
     } catch (err) {
+      if (loadRequestIdRef.current !== requestId) return;
       const detail = err instanceof ApiError && err.detail ? (Array.isArray(err.detail) ? err.detail.join(" ") : err.detail) : null;
       setError(detail || (err instanceof Error ? err.message : "Could not load performance data."));
     } finally {
-      setLoading(false);
+      if (loadRequestIdRef.current === requestId) setLoading(false);
     }
   }, [userId, period, modeParam]);
 

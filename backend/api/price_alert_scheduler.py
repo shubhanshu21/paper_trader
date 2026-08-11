@@ -79,24 +79,32 @@ def _run_once() -> None:
             current = prices.get(alert.symbol)
             if current is None:
                 continue  # no fresh price this tick — leave last_seen_price untouched, try again next tick rather than guess
-            target = float(alert.target_price)
-            last_seen = float(alert.last_seen_price) if alert.last_seen_price is not None else None
+            try:
+                target = float(alert.target_price)
+                last_seen = float(alert.last_seen_price) if alert.last_seen_price is not None else None
 
-            if _condition_met(alert.condition, current, target, last_seen):
-                alert.status = "TRIGGERED"
-                alert.triggered_price = current
-                alert.triggered_at = datetime.now()
-                db.commit()
-                notify(
-                    "price_alert",
-                    f"🔔 {alert.symbol} {alert.condition.replace('_', ' ').lower()} {target:g} — now {current:g}."
-                    + (f" ({alert.note})" if alert.note else ""),
-                    level="info", user_id=alert.user_id,
-                )
-                log.info("price_alert_scheduler: alert %s (%s %s %s) triggered at %s", alert.id, alert.symbol, alert.condition, target, current)
-            else:
-                alert.last_seen_price = current
-                db.commit()
+                if _condition_met(alert.condition, current, target, last_seen):
+                    alert.status = "TRIGGERED"
+                    alert.triggered_price = current
+                    alert.triggered_at = datetime.now()
+                    db.commit()
+                    notify(
+                        "price_alert",
+                        f"🔔 {alert.symbol} {alert.condition.replace('_', ' ').lower()} {target:g} — now {current:g}."
+                        + (f" ({alert.note})" if alert.note else ""),
+                        level="info", user_id=alert.user_id,
+                    )
+                    log.info("price_alert_scheduler: alert %s (%s %s %s) triggered at %s", alert.id, alert.symbol, alert.condition, target, current)
+                else:
+                    alert.last_seen_price = current
+                    db.commit()
+            except Exception as exc:
+                # One alert's failure (a bad DB write, a notify() hiccup)
+                # must not abort evaluating every alert queued after it
+                # this tick — same discipline as strategy_scheduler.py's
+                # per-strategy try/except.
+                db.rollback()
+                log.error("price_alert_scheduler: alert %s (%s) failed this tick: %s", alert.id, alert.symbol, exc, exc_info=True)
     finally:
         db.close()
 

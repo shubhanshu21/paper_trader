@@ -114,7 +114,7 @@ def get_strategy_template(strategy_name: str):
 
 
 @router.post("/calculate")
-def calculate_strategy_premium(req: MultiLegOrderRequest):
+def calculate_strategy_premium(req: MultiLegOrderRequest, user: dict = Depends(get_current_user)):
     """
     Calculate net premium and Greeks for a multi-leg strategy.
     
@@ -239,7 +239,7 @@ def list_multi_leg_orders(strategy_type: str | None = None, user: dict = Depends
 
 
 @router.post("/analyze")
-def analyze_risk_profile(req: MultiLegOrderRequest):
+def analyze_risk_profile(req: MultiLegOrderRequest, user: dict = Depends(get_current_user)):
     """
     Analyze the risk profile of a multi-leg strategy.
     

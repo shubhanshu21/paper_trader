@@ -41,9 +41,9 @@ from sqlalchemy import func
 from compliance.sebi_rules import (
     AuditTrail,
     ComplianceError,
-    OrderRateLimiter,
     assert_market_is_open,
     get_global_kill_switch,
+    get_rate_limiter_for,
 )
 from db.models import CustomStrategy, CustomStrategyPosition
 from strategies.custom.intraday_indicator_strategy import IntradaySupertrendStrategy
@@ -60,7 +60,6 @@ _IST = ZoneInfo("Asia/Kolkata")
 
 _audit = AuditTrail(audit_log_path="logs/intraday_indicator_audit.log")
 _kill_switch = get_global_kill_switch()
-_rate_limiter = OrderRateLimiter(max_per_second=10)
 
 
 def _market_is_open_now() -> bool:
@@ -120,10 +119,11 @@ def _close_position(db, strategy: CustomStrategy, broker, position: CustomStrate
         return False
 
     try:
-        _rate_limiter.acquire()
+        get_rate_limiter_for(strategy.user_id).acquire()
         exit_order_id = broker.place_buy_order(
             instrument_token=position.instrument_key, quantity=position.quantity, product="MIS",
             order_type="MARKET", tag=f"INTRADAY_EXIT_{strategy.id}"[:20], user_id=strategy.user_id,
+            is_close=True,
         )
     except Exception as exc:
         log.critical(
@@ -188,7 +188,7 @@ def _tick_one_strategy(db, strategy: CustomStrategy, brokers: dict) -> None:
 
     try:
         engine = IntradaySupertrendStrategy(
-            broker=broker, audit=_audit, kill_switch=_kill_switch, rate_limiter=_rate_limiter,
+            broker=broker, audit=_audit, kill_switch=_kill_switch, rate_limiter=get_rate_limiter_for(strategy.user_id),
             symbol=symbol, rules=rules, user_id=strategy.user_id,
         )
     except Exception as exc:

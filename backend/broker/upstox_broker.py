@@ -939,6 +939,23 @@ class UpstoxBroker(BaseBroker):
             return None
 
         # --- LIVE: Send the order to Upstox ---
+        # Same known-bad-token circuit breaker as get_ltp/get_ltp_batch/
+        # get_ohlc_batch above — without this, a live order call kept using
+        # a stale token (refreshed by a DIFFERENT process, e.g.
+        # token_refresh_scheduler, that this process hasn't picked up yet)
+        # would fail with 401 every retry every tick, hammering Upstox with
+        # a request everyone already knows is doomed instead of pausing.
+        # Deliberately NOT retried in a loop here (unlike get_ltp) — order
+        # placement is not safely idempotent to retry blindly; a single
+        # resync-and-one-attempt is the right amount of resilience.
+        if _circuit_is_open():
+            self._resync_access_token()
+            if _circuit_is_open():
+                raise RuntimeError(
+                    f"Order placement skipped for token '{instrument_token}': "
+                    f"Upstox token is known-bad (circuit open)."
+                )
+
         log.info(
             "Placing LIVE %s order | token=%s | qty=%d | product=%s",
             transaction_type, instrument_token, quantity, product,
@@ -961,6 +978,9 @@ class UpstoxBroker(BaseBroker):
                 "ApiException placing order for token '%s': HTTP %s — %s",
                 instrument_token, exc.status, exc.body,
             )
+            if exc.status == 401:
+                self._resync_access_token()
+                _trip_circuit()
             raise RuntimeError(
                 f"Order placement failed for token '{instrument_token}': "
                 f"HTTP {exc.status}"
@@ -983,8 +1003,9 @@ class UpstoxBroker(BaseBroker):
         user_id: int | None = None,
         price: float = 0,
         trigger_price: float = 0,
+        is_close: bool = False,
     ) -> str | None:
-        """Place a SELL (write) order for one options leg. See BaseBroker. user_id unused — a live order is checked against the real broker's own real margin, not a simulated wallet. price/trigger_price: see _place_order — only meaningful for order_type 'LIMIT'/'SL'/'SL-M'."""
+        """Place a SELL (write) order for one options leg. See BaseBroker. user_id/is_close unused — a live order is checked against the real broker's own real margin, not a simulated wallet. price/trigger_price: see _place_order — only meaningful for order_type 'LIMIT'/'SL'/'SL-M'."""
         return self._place_order("SELL", instrument_token, quantity, product, order_type, tag, price, trigger_price)
 
     def place_buy_order(
@@ -997,8 +1018,9 @@ class UpstoxBroker(BaseBroker):
         user_id: int | None = None,
         price: float = 0,
         trigger_price: float = 0,
+        is_close: bool = False,
     ) -> str | None:
-        """Place a BUY order to square off an options leg. See BaseBroker. user_id unused — see place_sell_order. price/trigger_price: see _place_order."""
+        """Place a BUY order to square off an options leg. See BaseBroker. user_id/is_close unused — see place_sell_order. price/trigger_price: see _place_order."""
         return self._place_order("BUY", instrument_token, quantity, product, order_type, tag, price, trigger_price)
 
     # ------------------------------------------------------------------

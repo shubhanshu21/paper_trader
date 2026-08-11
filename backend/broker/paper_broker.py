@@ -105,10 +105,21 @@ class PaperBroker(BaseBroker):
         order_type: str = "MARKET",
         tag: str = "",
         user_id: int | None = None,
+        is_close: bool = False,
     ) -> str | None:
         """
         Simulate a paper fill: validates virtual balance/margin for both spot equities
         and options/futures, applies slippage, and generates a synthetic order_id.
+
+        is_close=True (exit/unwind/expiry square-off) skips the balance/
+        margin rejection below entirely — a real broker always lets you
+        reduce risk, even at a loss with zero spare margin; only opening
+        NEW exposure needs to clear a check. Without this, an account that
+        goes deeply negative (e.g. several expiring legs losing at once)
+        could never close ANY of them — every exit order raises the same
+        "insufficient funds" error as a fresh entry would, permanently
+        stranding the position and spamming MANUAL INTERVENTION alerts
+        every tick with no way to actually resolve them.
         """
         current_price = self.get_ltp(instrument_token)
         if current_price is None:
@@ -175,8 +186,9 @@ class PaperBroker(BaseBroker):
                 log.error("PaperBroker: could not query virtual balance for user_id=%s: %s", user_id, exc)
                 available = 0.0
 
-        # 3. Perform validations based on segment (Equity vs F&O)
-        if inst_type in ("EQUITY", "EQ", "ES"):
+        # 3. Perform validations based on segment (Equity vs F&O) — skipped
+        # entirely for is_close=True, see this method's docstring.
+        if not is_close and inst_type in ("EQUITY", "EQ", "ES"):
             # Spot Equity segment
             if transaction_type.upper() == "BUY":
                 cash_required = current_price * quantity
@@ -189,7 +201,24 @@ class PaperBroker(BaseBroker):
                         f"Insufficient funds: Cash shortfall to buy equity. "
                         f"Required Cash: ₹{cash_required:,.2f}, Available Balance: ₹{available:,.2f}."
                     )
-        else:
+            else:
+                # SELL (short) — previously fell through with NO check at
+                # all, so a paper equity short of any size was accepted
+                # regardless of wallet balance, unlike every other branch
+                # here. Conservatively require the same full notional as a
+                # BUY would (this simulator has no separate SLB/margin
+                # model for equity shorts).
+                cash_required = current_price * quantity
+                if cash_required > available:
+                    log.error(
+                        "PaperBroker REJECTED Equity SELL %s | Qty: %d | Insufficient Balance. Required Cash: %.2f, Available: %.2f",
+                        instrument_token, quantity, cash_required, available
+                    )
+                    raise RuntimeError(
+                        f"Insufficient funds: Cash shortfall to short equity. "
+                        f"Required Cash: ₹{cash_required:,.2f}, Available Balance: ₹{available:,.2f}."
+                    )
+        elif not is_close:
             # F&O segment (options/futures)
             if transaction_type.upper() == "SELL":
                 # Margin requirements for writing options — real
@@ -264,9 +293,10 @@ class PaperBroker(BaseBroker):
         order_type: str = "MARKET",
         tag: str = "",
         user_id: int | None = None,
+        is_close: bool = False,
     ) -> str | None:
         """Place a SELL (write) order for one options leg. See BaseBroker."""
-        return self._place_order("SELL", instrument_token, quantity, product, order_type, tag, user_id)
+        return self._place_order("SELL", instrument_token, quantity, product, order_type, tag, user_id, is_close)
 
     def place_buy_order(
         self,
@@ -276,6 +306,7 @@ class PaperBroker(BaseBroker):
         order_type: str = "MARKET",
         tag: str = "",
         user_id: int | None = None,
+        is_close: bool = False,
     ) -> str | None:
         """Place a BUY order to square off an options leg. See BaseBroker."""
-        return self._place_order("BUY", instrument_token, quantity, product, order_type, tag, user_id)
+        return self._place_order("BUY", instrument_token, quantity, product, order_type, tag, user_id, is_close)

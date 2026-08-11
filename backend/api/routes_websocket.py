@@ -9,6 +9,7 @@ import uuid
 
 from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
 
+from api.auth import get_current_user_ws
 from api.websocket_manager import manager
 
 log = logging.getLogger("api.websocket")
@@ -22,12 +23,19 @@ async def websocket_market_data(
 ):
     """
     WebSocket endpoint for real-time market data streaming.
-    
+
     Subscribe to live price updates for specified symbols.
     Messages are broadcast when prices change.
     """
+    await websocket.accept()
+    if get_current_user_ws(websocket) is None:
+        await websocket.send_json({"type": "error", "detail": "Not authenticated"})
+        await websocket.close()
+        return
+
     connection_id = str(uuid.uuid4())
-    await manager.connect(websocket, connection_id)
+    manager.active_connections[connection_id] = websocket
+    log.info(f"WebSocket connected: {connection_id}")
     
     # Parse symbols and subscribe. Deliberately NOT .upper()'d — instrument_key
     # is a structured 'EXCHANGE|identifier' string, not a plain ticker, and
@@ -75,9 +83,16 @@ async def websocket_orders(websocket: WebSocket):
     
     Subscribe to order status changes, fills, and execution updates.
     """
+    await websocket.accept()
+    if get_current_user_ws(websocket) is None:
+        await websocket.send_json({"type": "error", "detail": "Not authenticated"})
+        await websocket.close()
+        return
+
     connection_id = str(uuid.uuid4())
-    await manager.connect(websocket, connection_id)
-    
+    manager.active_connections[connection_id] = websocket
+    log.info(f"WebSocket connected: {connection_id}")
+
     try:
         await websocket.send_json({
             "type": "connected",

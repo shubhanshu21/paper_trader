@@ -230,6 +230,7 @@ class BaseBroker(ABC):
         order_type: str = "MARKET",
         tag: str = "",
         user_id: int | None = None,
+        is_close: bool = False,
     ) -> str | None:
         """
         Place a SELL order for an options leg.
@@ -250,6 +251,15 @@ class BaseBroker(ABC):
                                legacy CLI daemon, backtest) — PaperBroker
                                skips its balance check in that case rather
                                than guessing whose wallet to charge.
+            is_close:         True when this order is CLOSING/reducing an
+                               existing position (exit, unwind, expiry
+                               square-off) rather than opening new risk.
+                               PaperBroker never rejects a close for
+                               insufficient balance/margin — a real broker
+                               always lets you reduce risk even at a loss;
+                               only NEW exposure needs to clear a margin
+                               check. Ignored by UpstoxBroker (the real
+                               exchange enforces its own rules regardless).
 
         Returns:
             Order ID string on success, None on dry-run.
@@ -265,6 +275,7 @@ class BaseBroker(ABC):
         order_type: str = "MARKET",
         tag: str = "",
         user_id: int | None = None,
+        is_close: bool = False,
     ) -> str | None:
         """
         Place a BUY order for an options leg.
@@ -281,6 +292,7 @@ class BaseBroker(ABC):
             order_type:       'MARKET' or 'LIMIT'.
             tag:              Order tag / correlation ID.
             user_id:          Owning account — see place_sell_order's user_id.
+            is_close:         See place_sell_order's is_close.
 
         Returns:
             Order ID string on success, None on dry-run.

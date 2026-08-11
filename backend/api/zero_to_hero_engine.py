@@ -41,8 +41,8 @@ from zoneinfo import ZoneInfo
 from compliance.sebi_rules import (
     AuditTrail,
     ComplianceError,
-    OrderRateLimiter,
     get_global_kill_switch,
+    get_rate_limiter_for,
 )
 from db.models import CustomStrategy, CustomStrategyPosition
 from strategies.custom.zero_to_hero_schema import get_setting
@@ -57,7 +57,6 @@ _IST = ZoneInfo("Asia/Kolkata")
 
 _audit = AuditTrail(audit_log_path="logs/zero_to_hero_audit.log")
 _kill_switch = get_global_kill_switch()
-_rate_limiter = OrderRateLimiter(max_per_second=10)
 
 
 def _mode_for_status(status: str) -> str:
@@ -121,10 +120,11 @@ def _close_leg(db, strategy: CustomStrategy, broker, position: CustomStrategyPos
         return False
 
     try:
-        _rate_limiter.acquire()
+        get_rate_limiter_for(strategy.user_id).acquire()
         exit_order_id = broker.place_sell_order(
             instrument_token=position.instrument_key, quantity=position.quantity, product="MIS",
             order_type="MARKET", tag=f"Z2H_EXIT_{strategy.id}"[:20], user_id=strategy.user_id,
+            is_close=True,
         )
     except Exception as exc:
         log.critical(
@@ -240,7 +240,7 @@ def _tick_one_strategy(db, strategy: CustomStrategy, brokers: dict) -> None:
 
     try:
         engine = ZeroToHeroStrategy(
-            broker=broker, audit=_audit, kill_switch=_kill_switch, rate_limiter=_rate_limiter,
+            broker=broker, audit=_audit, kill_switch=_kill_switch, rate_limiter=get_rate_limiter_for(strategy.user_id),
             symbol=symbol, rules=rules, user_id=strategy.user_id,
         )
     except Exception as exc:

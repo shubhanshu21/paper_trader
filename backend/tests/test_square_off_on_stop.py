@@ -52,13 +52,13 @@ class FakeBroker:
     def get_ltp_batch(self, tokens):
         return dict.fromkeys(tokens, self._ltp)
 
-    def place_buy_order(self, instrument_token, quantity, order_type, tag, user_id=None, product="NRML"):
+    def place_buy_order(self, instrument_token, quantity, order_type, tag, user_id=None, product="NRML", is_close=False):
         if self._fail:
             raise RuntimeError("broker rejected order")
         self.orders_placed.append(("BUY", instrument_token, quantity))
         return "ORD1"
 
-    def place_sell_order(self, instrument_token, quantity, order_type, tag, user_id=None, product="NRML"):
+    def place_sell_order(self, instrument_token, quantity, order_type, tag, user_id=None, product="NRML", is_close=False):
         if self._fail:
             raise RuntimeError("broker rejected order")
         self.orders_placed.append(("SELL", instrument_token, quantity))

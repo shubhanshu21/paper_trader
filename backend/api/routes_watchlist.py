@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import select
 
-from api.auth import get_current_user_optional
+from api.auth import get_current_user
 from api.deps import get_brokers
 from db.engine import get_session
 from db.models import Instrument, UserWatchlist
@@ -34,12 +34,9 @@ class WatchlistReorderRequest(BaseModel):
 
 
 @router.get("")
-def get_user_watchlist(page: int = 1, payload: dict | None = Depends(get_current_user_optional)):
-    """
-    Get user's watchlist for a specific page with instrument details.
-    If user is not authenticated, falls back to default user_id = 1.
-    """
-    user_id = int(payload["sub"]) if payload else 1
+def get_user_watchlist(page: int = 1, payload: dict = Depends(get_current_user)):
+    """Get user's watchlist for a specific page with instrument details."""
+    user_id = int(payload["sub"])
     with get_session() as session:
         query = select(UserWatchlist).where(
             (UserWatchlist.user_id == user_id) &
@@ -66,9 +63,9 @@ def get_user_watchlist(page: int = 1, payload: dict | None = Depends(get_current
 
 
 @router.post("/add")
-def add_to_watchlist(req: WatchlistAddRequest, payload: dict | None = Depends(get_current_user_optional)):
+def add_to_watchlist(req: WatchlistAddRequest, payload: dict = Depends(get_current_user)):
     """Add an instrument to user's watchlist for a specific page."""
-    user_id = int(payload["sub"]) if payload else 1
+    user_id = int(payload["sub"])
     
     # Verify instrument exists
     with get_session() as session:
@@ -111,9 +108,9 @@ def add_to_watchlist(req: WatchlistAddRequest, payload: dict | None = Depends(ge
 
 
 @router.post("/remove")
-def remove_from_watchlist(req: WatchlistRemoveRequest, payload: dict | None = Depends(get_current_user_optional)):
+def remove_from_watchlist(req: WatchlistRemoveRequest, payload: dict = Depends(get_current_user)):
     """Remove an instrument from user's watchlist for a specific page."""
-    user_id = int(payload["sub"]) if payload else 1
+    user_id = int(payload["sub"])
     
     with get_session() as session:
         item = session.execute(
@@ -134,9 +131,9 @@ def remove_from_watchlist(req: WatchlistRemoveRequest, payload: dict | None = De
 
 
 @router.post("/reorder")
-def reorder_watchlist(req: WatchlistReorderRequest, payload: dict | None = Depends(get_current_user_optional)):
+def reorder_watchlist(req: WatchlistReorderRequest, payload: dict = Depends(get_current_user)):
     """Reorder items in user's watchlist."""
-    user_id = int(payload["sub"]) if payload else 1
+    user_id = int(payload["sub"])
     
     with get_session() as session:
         for item_data in req.items:

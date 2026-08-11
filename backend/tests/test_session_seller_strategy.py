@@ -123,11 +123,11 @@ class OrderPlacingFakeBroker(FakeBroker):
         super().__init__(**kwargs)
         self.placed_orders = []
 
-    def place_sell_order(self, instrument_token, quantity, product, order_type, tag, user_id=None):
+    def place_sell_order(self, instrument_token, quantity, product, order_type, tag, user_id=None, is_close=False):
         self.placed_orders.append(("SELL", instrument_token))
         return "ORDER-1"
 
-    def place_buy_order(self, instrument_token, quantity, product, order_type, tag, user_id=None):
+    def place_buy_order(self, instrument_token, quantity, product, order_type, tag, user_id=None, is_close=False):
         self.placed_orders.append(("BUY", instrument_token))
         return "ORDER-1"
 

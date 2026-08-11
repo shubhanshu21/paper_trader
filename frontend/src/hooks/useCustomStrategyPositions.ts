@@ -49,7 +49,14 @@ export function useCustomStrategyPositions(): CustomPositionRow[] {
         }
       };
       ws.onclose = () => {
-        if (!cancelled) reconnectTimer = setTimeout(connect, 3000);
+        if (cancelled) return;
+        // Drop the last-known snapshot rather than continuing to show it
+        // through the reconnect gap — otherwise a leg the server closed
+        // (SL/TP hit) WHILE the socket was down stays visible as a
+        // phantom open position with stale P&L until the next push
+        // lands, with no indication to the trader that it's stale.
+        setRows([]);
+        reconnectTimer = setTimeout(connect, 3000);
       };
       ws.onerror = () => ws.close();
       return ws;

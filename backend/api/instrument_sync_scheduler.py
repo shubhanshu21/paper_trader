@@ -17,6 +17,7 @@ instrument master doesn't care about market hours the way token refresh
 does, so this doesn't gate on assert_market_is_open()).
 """
 import asyncio
+import threading
 from datetime import date
 from pathlib import Path
 
@@ -32,6 +33,15 @@ log = get_logger(__name__)
 _CHECK_INTERVAL_SEC = 1800  # cheap marker-file check; the real work only happens once/day
 _BATCH_SIZE = 5000
 _instrument_cache = InstrumentCache()
+
+# Guards _sync_once's DELETE-then-batch-insert against ever running twice
+# at once — the module's own startup-then-loop sequencing already can't
+# overlap with itself, but this is cheap insurance against a future caller
+# (a manual re-sync endpoint, a second scheduler task) racing the wholesale
+# table replace: two interleaved DELETE FROM instruments + re-insert passes
+# would otherwise both hold row locks on the same table and serialize
+# anyway, but non-deterministically re-wipe/re-insert each other's work.
+_sync_lock = threading.Lock()
 
 _INSERT_SQL = text(
     """
@@ -86,17 +96,23 @@ def _sync_once() -> int:
     if not rows:
         return 0
 
-    db = SessionLocal()
+    if not _sync_lock.acquire(blocking=False):
+        log.warning("instrument_sync_scheduler: a sync is already in progress — skipping this call rather than racing it.")
+        return 0
     try:
-        db.execute(text("DELETE FROM instruments"))
-        for i in range(0, len(rows), _BATCH_SIZE):
-            db.execute(_INSERT_SQL, rows[i:i + _BATCH_SIZE])
-        db.commit()
-    except Exception:
-        db.rollback()
-        raise
+        db = SessionLocal()
+        try:
+            db.execute(text("DELETE FROM instruments"))
+            for i in range(0, len(rows), _BATCH_SIZE):
+                db.execute(_INSERT_SQL, rows[i:i + _BATCH_SIZE])
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
+        finally:
+            db.close()
     finally:
-        db.close()
+        _sync_lock.release()
     return len(rows)
 
 

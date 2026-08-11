@@ -243,6 +243,33 @@ class OrderRateLimiter:
             self._timestamps.append(time.monotonic())
 
 
+# Every strategy engine used to build ONE module-level OrderRateLimiter and
+# share it across every user's strategies of that type — unlike the kill
+# switch (deliberately global, see _global_kill_switch above), SEBI's 10
+# orders/second cap is a PER-ACCOUNT limit, not a shared pool for the whole
+# panel. Under the old shared instance, a burst of orders from one user's
+# strategy could throttle/delay another user's real-money order placement
+# or exit through the same bucket. get_rate_limiter_for(user_id) hands back
+# a lazily-created, per-user limiter instead so each account's order flow
+# only ever waits on its own recent order history.
+_rate_limiters_lock = threading.Lock()
+_rate_limiters_by_user: dict[int | None, "OrderRateLimiter"] = {}
+
+
+def get_rate_limiter_for(user_id: int | None) -> "OrderRateLimiter":
+    """
+    Per-user OrderRateLimiter, created on first use and reused after that.
+    user_id=None (no real per-request user — legacy CLI daemon, backtest)
+    gets its own shared bucket, same as before this was scoped per user.
+    """
+    with _rate_limiters_lock:
+        limiter = _rate_limiters_by_user.get(user_id)
+        if limiter is None:
+            limiter = OrderRateLimiter()
+            _rate_limiters_by_user[user_id] = limiter
+        return limiter
+
+
 # ---------------------------------------------------------------------------
 # 3. Market Hours Gate
 # ---------------------------------------------------------------------------
@@ -473,63 +500,3 @@ def print_risk_disclaimer() -> None:
     print(disclaimer)
     log.info("[SEBI] Risk disclaimer displayed.")
 
-
-# ---------------------------------------------------------------------------
-# Composite SEBI compliance check — run all gates before every strategy run
-# ---------------------------------------------------------------------------
-
-def run_all_pre_trade_checks(
-    symbol: str,
-    call_strike: int,
-    put_strike: int,
-    spot_price: float,
-    quantity: int,
-    kill_switch: KillSwitch,
-    check_time: datetime | None = None,
-) -> None:
-    """
-    Run the full SEBI pre-trade compliance suite.
-
-    Raises RuntimeError or ValueError if any check fails.
-    All checks are logged to the audit trail automatically.
-
-    Args:
-        symbol:       Stock symbol.
-        call_strike:  Computed CE strike price.
-        put_strike:   Computed PE strike price.
-        spot_price:   Current spot LTP.
-        quantity:     Total units per leg.
-        kill_switch:  The active KillSwitch instance.
-        check_time:   Optional timestamp for the market-hours check (used by
-                      backtests to validate against simulated dates instead
-                      of real time). None = use real wall-clock time.
-    """
-    log.info("[SEBI] Running pre-trade compliance checks for %s ...", symbol)
-
-    try:
-        # 1. Kill switch
-        if kill_switch.is_active():
-            raise RuntimeError(
-                "[SEBI] KILL SWITCH IS ACTIVE — all order flow is halted. "
-                "Reset it manually before retrying."
-            )
-
-        # 2. Market hours
-        assert_market_is_open(check_time=check_time)
-
-        # 3. Price band — CE
-        validate_price_band(call_strike, spot_price)
-
-        # 4. Price band — PE
-        validate_price_band(put_strike, spot_price)
-
-        # 5. Order quantity
-        validate_order_quantity(symbol, quantity)
-
-        # 6. Position limit warning (2 legs × lots)
-        warn_position_limits(symbol, total_lots=2)
-
-    except (RuntimeError, ValueError) as exc:
-        raise ComplianceError(str(exc)) from exc
-
-    log.info("[SEBI] All pre-trade compliance checks PASSED for %s.", symbol)

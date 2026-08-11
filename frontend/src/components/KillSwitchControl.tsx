@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from "react";
 import { Power, ShieldAlert } from "lucide-react";
 import { api } from "../api";
 import { C } from "../lib/format";
+import { useToast } from "../hooks/useToast";
 
 const POLL_MS = 10_000;
 
@@ -19,6 +20,7 @@ export default function KillSwitchControl() {
   const [reason, setReason] = useState<string | null>(null);
   const [activatedAt, setActivatedAt] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const toast = useToast();
 
   const refresh = useCallback(async () => {
     try {
@@ -47,8 +49,16 @@ export default function KillSwitchControl() {
       setActive(status.active);
       setReason(status.reason);
       setActivatedAt(status.activated_at);
+      toast.success("Kill switch activated — all new order flow is halted.");
     } catch (err) {
       console.error("Failed to activate kill switch:", err);
+      // This must never fail silently — a trader who believes they just
+      // halted every strategy but actually didn't (network blip, 403,
+      // backend error) would otherwise keep assuming order flow is
+      // stopped while it isn't. Re-sync from the server so the button's
+      // displayed state reflects reality, not the optimistic click.
+      toast.error("Failed to activate the kill switch — trading is NOT halted. Retry, or check the server.");
+      refresh();
     } finally {
       setBusy(false);
     }
@@ -64,8 +74,11 @@ export default function KillSwitchControl() {
       setActive(status.active);
       setReason(status.reason);
       setActivatedAt(status.activated_at);
+      toast.success("Kill switch reset — order flow has resumed.");
     } catch (err) {
       console.error("Failed to reset kill switch:", err);
+      toast.error("Failed to reset the kill switch — trading is still halted. Retry, or check the server.");
+      refresh();
     } finally {
       setBusy(false);
     }

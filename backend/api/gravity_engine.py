@@ -24,12 +24,13 @@ min_roi_pct, otherwise enter.
 """
 import json
 from datetime import date, datetime
+from zoneinfo import ZoneInfo
 
 from compliance.sebi_rules import (
     AuditTrail,
     ComplianceError,
-    OrderRateLimiter,
     get_global_kill_switch,
+    get_rate_limiter_for,
 )
 from db.models import CustomStrategy, CustomStrategyPosition
 from strategies.custom.gravity_schema import get_setting
@@ -42,9 +43,10 @@ from utils.telegram_alert import alert_trade_closed, alert_trade_opened
 
 log = get_logger(__name__)
 
+_IST = ZoneInfo("Asia/Kolkata")
+
 _audit = AuditTrail(audit_log_path="logs/gravity_audit.log")
 _kill_switch = get_global_kill_switch()
-_rate_limiter = OrderRateLimiter(max_per_second=10)
 
 
 def _mode_for_status(status: str) -> str:
@@ -129,9 +131,9 @@ def _close_position(db, strategy: CustomStrategy, engine: GravityStrategy, posit
             )
             notify(
                 "custom_strategy",
-                "MANUAL INTERVENTION REQUIRED — \"{strategy.name}\" leg {position.instrument_key} "
-                "({position.transaction_type} {position.option_type} {position.strike}) has expired/delisted, "
-                "and this system could not fetch a spot price for {engine.symbol} to settle it either. Left OPEN "
+                f"MANUAL INTERVENTION REQUIRED — \"{strategy.name}\" leg {position.instrument_key} "
+                f"({position.transaction_type} {position.option_type} {position.strike}) has expired/delisted, "
+                f"and this system could not fetch a spot price for {engine.symbol} to settle it either. Left OPEN "
                 "so this keeps retrying — please settle manually against your broker's contract note.",
                 user_id=strategy.user_id,
             )
@@ -153,10 +155,10 @@ def _close_position(db, strategy: CustomStrategy, engine: GravityStrategy, posit
         db.commit()
         notify(
             "custom_strategy",
-            "\"{strategy.name}\" leg {position.instrument_key} ({position.transaction_type} {position.option_type} "
-            "{position.strike}) had already expired/delisted by the time {trigger} ran — no live contract left to "
-            "close against. Settled at intrinsic value ₹{intrinsic:.2f} ({engine.symbol} spot was ₹{spot:.2f} vs "
-            "strike {position.strike}). Please cross-check against your broker's contract note if this was a live position.",
+            f"\"{strategy.name}\" leg {position.instrument_key} ({position.transaction_type} {position.option_type} "
+            f"{position.strike}) had already expired/delisted by the time {trigger} ran — no live contract left to "
+            f"close against. Settled at intrinsic value ₹{intrinsic:.2f} ({engine.symbol} spot was ₹{spot:.2f} vs "
+            f"strike {position.strike}). Please cross-check against your broker's contract note if this was a live position.",
             level="warning", user_id=strategy.user_id,
         )
         return True
@@ -219,7 +221,7 @@ def _tick_one_strategy(db, strategy: CustomStrategy, brokers: dict) -> None:
         return
 
     try:
-        engine = GravityStrategy(broker=broker, audit=_audit, kill_switch=_kill_switch, rate_limiter=_rate_limiter, symbol=symbol, rules=rules, user_id=strategy.user_id)
+        engine = GravityStrategy(broker=broker, audit=_audit, kill_switch=_kill_switch, rate_limiter=get_rate_limiter_for(strategy.user_id), symbol=symbol, rules=rules, user_id=strategy.user_id)
     except Exception as exc:
         log.error("gravity_engine: could not build engine for strategy %s (%s): %s", strategy.id, strategy.name, exc)
         return
@@ -234,7 +236,7 @@ def _tick_one_strategy(db, strategy: CustomStrategy, brokers: dict) -> None:
             expiry_date = date.fromisoformat(expiry)
         except (TypeError, ValueError):
             expiry_date = None
-        if expiry_date is not None and is_within_pre_expiry_buffer(date.today(), expiry_date, exit_days):
+        if expiry_date is not None and is_within_pre_expiry_buffer(datetime.now(_IST).date(), expiry_date, exit_days):
             _close_all(db, strategy, engine, open_positions, "EXPIRY", mode_label, symbol)
             return
 
@@ -261,12 +263,12 @@ def _tick_one_strategy(db, strategy: CustomStrategy, brokers: dict) -> None:
     if strategy.status == "PAUSED":
         return
 
-    today = date.today()
+    today = datetime.now(_IST).date()
     if engine.is_blacked_out(today):
         return
 
     check_time = get_setting(rules, "signal_check_time")
-    if datetime.now().strftime("%H:%M") < check_time:
+    if datetime.now(_IST).strftime("%H:%M") < check_time:
         return
 
     if _get_marker(strategy).get("last_signal_date") == today.isoformat():

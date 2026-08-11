@@ -144,7 +144,7 @@ class WeekendGapComboStrategy:
             self.rate_limiter.acquire()
             buyback_id = opposite(
                 instrument_token=leg["instrument_token"], quantity=leg["quantity"], product=_PRODUCT,
-                order_type="MARKET", tag=f"COMBO_UNWIND_{idx}"[:20], user_id=self.user_id,
+                order_type="MARKET", tag=f"COMBO_UNWIND_{idx}"[:20], user_id=self.user_id, is_close=True,
             )
             self.audit.record(
                 event_type="AUTO_UNWIND", symbol=leg["symbol"], instrument_token=leg["instrument_token"],

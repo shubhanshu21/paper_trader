@@ -17,6 +17,8 @@ from api.auth import get_current_user
 from api.deps import get_brokers
 from db.engine import get_session
 from db.models import EquityPosition, Instrument
+from utils.costs import calculate_equity_transaction_cost_breakdown
+from utils.wallet import get_charge_rates
 
 log = logging.getLogger("api.terminal")
 router = APIRouter(prefix="/api/terminal", tags=["terminal"])
@@ -340,8 +342,14 @@ def execute_manual_trade(req: ManualTradeRequest, user: dict = Depends(get_curre
             if pos.direction == "SHORT" or pos.direction == "SELL":
                 gross_pnl = -gross_pnl
 
-            # Round transaction charges
-            charges = round((exit_price * pos.quantity) * 0.0003, 2)
+            # Real per-user transaction cost breakdown — matches every
+            # other P&L computation in the app (positions, custom
+            # strategies, leaderboard), instead of a flat rate that
+            # ignores a user's own configured overrides (Profile page).
+            exit_transaction_type = "BUY" if pos.direction in ("SHORT", "SELL") else "SELL"
+            charges = calculate_equity_transaction_cost_breakdown(
+                exit_price, pos.quantity, exit_transaction_type, get_charge_rates(user_id),
+            )["total"]
             net_pnl = gross_pnl - charges
 
             pos.status = "CLOSED"
@@ -363,6 +371,11 @@ def execute_manual_trade(req: ManualTradeRequest, user: dict = Depends(get_curre
             if pos.direction == "SHORT" or pos.direction == "SELL":
                 portion_pnl = -portion_pnl
 
+            portion_exit_transaction_type = "BUY" if pos.direction in ("SHORT", "SELL") else "SELL"
+            portion_charges = calculate_equity_transaction_cost_breakdown(
+                exit_price, portion_qty, portion_exit_transaction_type, get_charge_rates(user_id),
+            )["total"]
+
             # Create a separate closed position row for the closed portion to log P&L correctly
             closed_portion = EquityPosition(
                 user_id=user_id,
@@ -381,8 +394,8 @@ def execute_manual_trade(req: ManualTradeRequest, user: dict = Depends(get_curre
                 exit_reason="MANUAL_PARTIAL",
                 exit_order_id=order_id,
                 gross_pnl=portion_pnl,
-                net_pnl=portion_pnl - round((exit_price * portion_qty) * 0.0003, 2),
-                charges=round((exit_price * portion_qty) * 0.0003, 2),
+                net_pnl=portion_pnl - portion_charges,
+                charges=portion_charges,
             )
             session.add(closed_portion)
 

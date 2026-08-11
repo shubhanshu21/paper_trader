@@ -214,7 +214,7 @@ class GravityStrategy:
             event_type="ORDER_INITIATED", symbol=self.symbol, instrument_token=instrument_token,
             option_type=option_type, strike=strike, quantity=quantity, status="PENDING", note=f"gravity action={action}",
         )
-        order_id = place(instrument_token=instrument_token, quantity=quantity, product=_PRODUCT, order_type="MARKET", tag=tag[:20], user_id=self.user_id)
+        order_id = place(instrument_token=instrument_token, quantity=quantity, product=_PRODUCT, order_type="MARKET", tag=tag[:20], user_id=self.user_id, is_close=is_close)
         status = "DRY_RUN" if self.broker.dry_run else ("PLACED" if order_id else "FAILED")
         self.audit.record(
             event_type="ORDER_PLACED" if status != "FAILED" else "ORDER_FAILED",
