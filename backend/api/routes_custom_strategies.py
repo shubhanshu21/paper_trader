@@ -1200,7 +1200,7 @@ def get_expected_payoff(strategy_id: int, db: Session = Depends(get_db), user: d
         _audit,
         _get_brokers,
         _kill_switch,
-        _rate_limiter,
+        get_rate_limiter_for,
     )
     from strategies.custom.rule_strategy import RuleBasedStrategy, resolve_leg_strike
     from utils import black76
@@ -1224,7 +1224,7 @@ def get_expected_payoff(strategy_id: int, db: Session = Depends(get_db), user: d
     for symbol in symbols:
         try:
             strategy = RuleBasedStrategy(
-                broker=broker, audit=_audit, kill_switch=_kill_switch, rate_limiter=_rate_limiter,
+                broker=broker, audit=_audit, kill_switch=_kill_switch, rate_limiter=get_rate_limiter_for(_current_user_id(user)),
                 symbol=symbol, rules=rules,
             )
             preview = strategy.preview()
@@ -1380,7 +1380,7 @@ def get_required_margin(strategy_id: int, db: Session = Depends(get_db), user: d
         _audit,
         _get_brokers,
         _kill_switch,
-        _rate_limiter,
+        get_rate_limiter_for,
     )
     from strategies.custom.rule_strategy import RuleBasedStrategy
     from utils.margin import is_commodity_instrument_key, resolve_required_margin
@@ -1404,7 +1404,7 @@ def get_required_margin(strategy_id: int, db: Session = Depends(get_db), user: d
     for symbol in symbols:
         try:
             strategy = RuleBasedStrategy(
-                broker=broker, audit=_audit, kill_switch=_kill_switch, rate_limiter=_rate_limiter,
+                broker=broker, audit=_audit, kill_switch=_kill_switch, rate_limiter=get_rate_limiter_for(_current_user_id(user)),
                 symbol=symbol, rules=rules,
             )
             preview = strategy.preview()
